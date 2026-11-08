@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Technologies CoreXalt Inc.
+# Files that cannot carry a header of their own: the plugin manifests (JSON), the skill (its front matter comes first)
+# and the page template (its bytes are hashed for the page's security policy).
+version = 1
+
+[[annotations]]
+path = [".claude-plugin/plugin.json", ".claude-plugin/marketplace.json", "skills/flightboard/SKILL.md",
+        "skills/flightboard/scripts/flightboard/template.html"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Technologies CoreXalt Inc."
+SPDX-License-Identifier = "Apache-2.0"

@@ -1,0 +1,742 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src '__SCRIPT_HASH__'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'">
+<meta name="referrer" content="no-referrer">
+<title>flightboard</title>
+<style>
+:root{--ink:#15171c;--muted:#596070;--line:#dde2ea;--paper:#f5f6f8;--card:#fff;--soft:#eef1f5;--accent:#7fe3ff;--link:#075e78;
+--done:#008300;--review:#6250d6;--progress:#eda100;--ready:#2a78d6;--blocked:#e34948;--planned:#b9c0cc;--dropped:#9aa1ad;
+--good:#006300;--bad:#c62f2f;--grid:#e8ebf0;--axis:#c3c8d2;--hot:#e6efff;--hot-ink:#173f7a;
+font-family:system-ui,-apple-system,"Segoe UI",Arial,sans-serif;font-size:15px;color:var(--ink);background:var(--paper)}
+@media(prefers-color-scheme:dark){:root{--ink:#e7eaf0;--muted:#a3abb9;--line:#2c323d;--paper:#12151a;--card:#1a1e25;--soft:#232833;--link:#8fdcf3;
+--review:#9085e9;--progress:#c98500;--ready:#3987e5;--blocked:#e66767;--planned:#5d6676;--good:#0ca30c;--bad:#ff8a8a;--grid:#252b35;--axis:#3a414d;--hot:#1f3352;--hot-ink:#cfe0ff}}
+*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;background:var(--paper)}
+header{background:linear-gradient(120deg,#07090d,#141b26);color:#fff;padding:20px max(24px,calc((100vw - 1260px)/2));display:flex;align-items:center;gap:18px 22px;flex-wrap:wrap}
+.mark{font-weight:800;font-size:22px;letter-spacing:.5px;border:2px solid var(--accent);border-radius:12px;padding:12px 14px;color:#fff;white-space:nowrap}
+.mark span,.accent{color:var(--accent)}h1{font-size:24px;margin:0 0 6px;overflow-wrap:anywhere}.head-text{flex:1 1 420px;min-width:0}
+.resume{color:#f2f5fa;margin:0 0 4px;line-height:1.5;font-size:16px}.snapshot{color:#aeb8c8;margin:0;line-height:1.5;font-size:13px;overflow-wrap:anywhere}
+.live{display:flex;align-items:center;gap:9px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.2);border-radius:999px;padding:8px 15px;font-size:14px;color:#eef2f8;white-space:nowrap}
+.live .beacon{width:10px;height:10px;border-radius:50%;background:#3ddc84;flex:none}
+.live.on .beacon{animation:pulse 2s infinite}.live.snapshot .beacon{background:#9aa1ad}.live.lost .beacon{background:#ff6b6b}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(61,220,132,.6)}70%{box-shadow:0 0 0 9px rgba(61,220,132,0)}100%{box-shadow:0 0 0 0 rgba(61,220,132,0)}}
+@media(prefers-reduced-motion:reduce){.live.on .beacon{animation:none}*{transition:none!important}}
+main{max-width:1308px;margin:auto;padding:18px 24px 60px}h2{font-size:19px;margin:28px 0 10px}h3{margin:0;font-size:15px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.banner{background:#fde7e7;color:#7a1717;border-radius:8px;padding:12px 14px;margin:0 0 14px;line-height:1.5}
+@media(prefers-color-scheme:dark){.banner{background:#4a2224;color:#ffd5d5}}
+.lead{color:var(--muted);font-size:14px;margin:0 0 12px;line-height:1.5}
+.waiting{list-style:none;margin:0;padding:0;display:grid;gap:7px}
+.wait{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--edge,var(--ready));border-radius:8px;padding:10px 13px;line-height:1.5;font-size:15px;display:flex;flex-wrap:wrap;gap:2px 8px;align-items:baseline}
+.wait b{white-space:nowrap}.wait .since{color:var(--muted);font-size:13px;margin-left:auto}
+.k-merge{--edge:var(--done)}.k-conflict,.k-alert{--edge:var(--blocked)}.k-check{--edge:var(--review)}.k-review{--edge:var(--progress)}.k-session{--edge:var(--planned)}
+.pointer{color:var(--muted);font-size:13px;margin:8px 0 0}
+.sessions{display:grid;grid-template-columns:repeat(auto-fill,minmax(370px,1fr));gap:12px}
+.session{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--act,var(--planned));border-radius:10px;padding:13px 15px;display:grid;gap:8px;align-content:start;min-width:0}
+.act-active{--act:var(--done)}.act-recent{--act:var(--ready)}.act-quiet,.act-unknown{--act:var(--planned)}
+.c-title{font-weight:700;font-size:16px;line-height:1.35;overflow-wrap:anywhere}.c-sub,.c-meta,.c-last{font-size:13px;color:var(--muted);margin:0;line-height:1.5;overflow-wrap:anywhere}
+.c-badges{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;border-radius:999px;padding:3px 9px;background:var(--soft);white-space:nowrap}
+.badge{font-size:12px;border-radius:4px;padding:2px 7px;background:var(--soft);color:var(--ink);white-space:nowrap}
+.badge.hot{background:var(--hot);color:var(--hot-ink);font-weight:600}.badge.warn{background:#fff2d6;color:#6b4500}
+@media(prefers-color-scheme:dark){.badge.warn{background:#4a3a14;color:#ffe2a6}}
+.moves{list-style:none;margin:0;padding:0;display:grid;gap:6px}
+.move{display:grid;grid-template-columns:auto minmax(0,1fr);gap:1px 9px;font-size:14px;line-height:1.4}
+.trans{grid-column:2;display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px;color:var(--muted);font-size:13px}
+.tid{font:inherit;font-weight:700;white-space:nowrap;background:none;border:0;padding:0;color:var(--link);cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px}.tid-plain{font-weight:700;white-space:nowrap}
+.sdot{width:9px;height:9px;border-radius:50%;display:inline-block;background:var(--c,var(--planned));flex:none}
+.st-done{--c:var(--done)}.st-awaiting_review{--c:var(--review)}.st-in_progress{--c:var(--progress)}.st-ready{--c:var(--ready)}.st-blocked{--c:var(--blocked)}.st-planned{--c:var(--planned)}.st-dropped{--c:var(--dropped)}
+.quiet{color:var(--muted);font-size:14px;margin:0;line-height:1.5}.warn-text{color:var(--bad);font-size:13px;margin:0;line-height:1.45}
+code{background:var(--soft);border-radius:3px;padding:1px 4px;overflow-wrap:anywhere;font-size:.92em}
+details>summary{cursor:pointer}details.more summary{font-size:13px;color:var(--link)}details.more ul{margin:6px 0 0;padding-left:18px;font-size:13px;line-height:1.5;color:var(--muted)}
+.ended{margin-top:12px;background:var(--card);border:1px dashed var(--line);border-radius:10px;padding:11px 15px}.ended ul{margin:8px 0 0;padding-left:18px;line-height:1.6;font-size:14px}
+.split{display:grid;grid-template-columns:1fr 1.4fr;gap:24px}.split.single{grid-template-columns:1fr}.panel{display:grid;gap:7px;align-content:start}
+.item{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:9px 12px;line-height:1.45;font-size:14px}.item p{margin:2px 0 0;color:var(--muted);font-size:13px}
+.empty{padding:16px;background:var(--card);border:1px dashed var(--line);border-radius:8px;text-align:center;color:var(--muted);margin:0}
+.events{list-style:none;margin:0;padding:0;display:grid;gap:6px}
+.event{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 12px;display:grid;grid-template-columns:92px minmax(0,1fr);gap:10px;font-size:14px;line-height:1.45}
+.event time{color:var(--muted);font-size:13px}.event .where{color:var(--muted);font-size:13px}.new-tag{font-size:11px;font-weight:700;color:var(--hot-ink);background:var(--hot);border-radius:3px;padding:1px 5px;margin-left:6px}
+.kpis{display:grid;grid-template-columns:minmax(260px,1.5fr) repeat(3,minmax(150px,1fr));gap:12px;margin-bottom:14px}
+.tile{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;display:grid;gap:4px;align-content:start;min-width:0}
+.tile .label{font-size:13px;color:var(--muted);font-weight:600}.tile .value{font-size:30px;font-weight:650;line-height:1.15}.tile.hero .value{font-size:48px}.tile .sub{font-size:13px;color:var(--muted);line-height:1.45}
+.meter{height:8px;border-radius:4px;background:var(--soft);display:flex;gap:2px;overflow:hidden;margin-top:8px}.meter span{display:block;height:100%}
+.ahead{color:var(--good);font-weight:600}.late{color:var(--bad);font-weight:600}
+.charts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.charts .wide{grid-column:1/-1}
+.chart{margin:0;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px 12px;display:grid;gap:8px;min-width:0;align-content:start}
+.chart figcaption{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:baseline}.chart figcaption p{margin:0;flex-basis:100%;font-size:13px;color:var(--muted);line-height:1.45}.plot{min-width:0;display:grid;gap:8px;align-content:start}
+.toggle{margin-left:auto;display:inline-flex;border:1px solid var(--line);border-radius:7px;overflow:hidden}.toggle button{font:inherit;font-size:12px;border:0;background:var(--card);color:var(--muted);padding:4px 10px;cursor:pointer}
+.toggle button[aria-pressed="true"]{background:var(--soft);color:var(--ink);font-weight:650}
+.chart svg{display:block;width:100%;height:auto;overflow:visible}
+svg text{font-size:12px;fill:var(--muted);font-family:inherit}svg text.ink{fill:var(--ink)}svg text.strong{fill:var(--ink);font-weight:650}
+svg .grid{stroke:var(--grid);stroke-width:1;shape-rendering:crispEdges}svg .axis{stroke:var(--axis);stroke-width:1;shape-rendering:crispEdges}
+svg .hit{fill:transparent}svg .hit:focus{outline:none}svg .hit:focus-visible{stroke:var(--link);stroke-width:2}svg .mark:hover,svg .mark:focus-visible{filter:brightness(1.15)}
+.legend{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:var(--muted);margin:0;padding:0;list-style:none}
+.legend .key{display:inline-block;width:12px;height:12px;border-radius:3px;background:var(--c);vertical-align:-2px;margin-right:5px}
+.legend .key.line{height:2px;width:14px;border-radius:1px;vertical-align:3px}.legend .key.dash{height:0;width:14px;border-top:2px dashed var(--c);background:none;vertical-align:3px}.legend .key.light{opacity:.45}
+.table-view summary{font-size:13px;color:var(--link)}.table-view{overflow-x:auto}
+.table-view table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px;font-variant-numeric:tabular-nums}
+.table-view th,.table-view td{text-align:left;padding:4px 7px;border-bottom:1px solid var(--line);white-space:nowrap}.table-view th{color:var(--muted);font-weight:600}
+.tooltip{position:fixed;z-index:10;pointer-events:none;background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.2);padding:8px 11px;font-size:13px;line-height:1.5;max-width:330px}
+.tooltip .tt-head{color:var(--muted);font-size:12px}.tooltip .row{display:flex;align-items:center;gap:7px}.tooltip .lk{width:12px;height:2px;background:var(--c);flex:none}.tooltip b{font-size:14px}.tooltip .wrap{overflow-wrap:anywhere}
+dialog{border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--ink);max-width:min(620px,calc(100vw - 32px));padding:18px 20px;line-height:1.5}
+dialog::backdrop{background:rgba(5,8,12,.55)}dialog h3{font-size:17px;margin:0 0 4px}dialog ul{padding-left:18px;margin:4px 0 10px}dialog .close{float:right;font:inherit;background:var(--soft);border:0;border-radius:6px;padding:4px 10px;cursor:pointer;color:var(--ink)}
+dialog h4{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin:12px 0 2px}
+.fade{transition:opacity .3s}.stale .fade{opacity:.55}
+button:focus-visible,summary:focus-visible,a:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
+@media(max-width:1100px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.kpis .hero{grid-column:1/-1}}
+@media(max-width:1000px){.charts,.split{grid-template-columns:1fr}}
+@media(max-width:640px){.live,.badge,.pill{white-space:normal;min-width:0}header{padding:16px;gap:12px}.mark{font-size:16px;padding:8px}h1{font-size:20px}.resume{font-size:15px}main{padding:16px 16px 48px}
+.sessions{grid-template-columns:1fr}.tile.hero .value{font-size:40px}.event{grid-template-columns:1fr;gap:2px}.wait .since{margin-left:0}}
+</style>
+</head>
+<body>
+<header>
+  <div class="mark" aria-hidden="true">flight<span>board</span></div>
+  <div class="head-text"><h1><span id="repo"></span> <span class="accent" id="mode"></span></h1><p class="resume" id="resume"></p><p class="snapshot" id="snapshot"></p></div>
+  <div class="live snapshot" id="live"><span class="beacon" aria-hidden="true"></span><span id="live-text"></span></div>
+  <p class="sr" role="status" id="live-state"></p>
+</header>
+<main>
+  <div id="banner"></div>
+  <section aria-labelledby="h-waiting" class="fade"><h2 id="h-waiting" data-t="page.waiting"></h2><ul class="waiting" id="waiting"></ul><p class="pointer" id="pointer"></p></section>
+
+  <section aria-labelledby="h-sessions" class="fade"><h2 id="h-sessions" data-t="page.sessions"></h2>
+    <p class="lead" data-t="page.sessions_lead"></p>
+    <div class="sessions" id="sessions"></div><div id="ended"></div>
+  </section>
+
+  <section class="split fade" id="split">
+    <div id="next-panel"><h2 id="h-next" data-t="page.next"></h2><div class="panel" id="next" aria-labelledby="h-next"></div></div>
+    <div><h2 id="h-events"></h2><ol class="events" id="events" aria-labelledby="h-events"></ol></div>
+  </section>
+
+  <section aria-labelledby="h-progress" class="fade" id="progress"><h2 id="h-progress" data-t="page.progress"></h2>
+    <div class="kpis" id="kpis"></div>
+    <div class="charts">
+      <figure class="chart wide" aria-labelledby="t-burnup"><figcaption><h3 id="t-burnup" data-t="page.burnup"></h3><span class="toggle" id="scope" role="group"></span><p data-t="page.burnup_caption"></p></figcaption><div class="plot" id="burnup"></div></figure>
+      <figure class="chart" aria-labelledby="t-milestones"><figcaption><h3 id="t-milestones" data-t="page.milestones"></h3><p data-t="page.milestones_caption"></p></figcaption><div class="plot" id="milestones"></div></figure>
+      <figure class="chart" aria-labelledby="t-daily"><figcaption><h3 id="t-daily" data-t="page.daily"></h3><p data-t="page.daily_caption"></p></figcaption><div class="plot" id="daily"></div></figure>
+    </div>
+  </section>
+
+  <footer id="footer"></footer>
+</main>
+<dialog id="task" aria-labelledby="task-title"><button type="button" class="close" id="task-close" data-t="page.close"></button><div id="task-body"></div></dialog>
+<div class="tooltip" id="tooltip" role="tooltip" hidden></div>
+<script type="application/json" id="flightboard-data">__FLIGHTBOARD_JSON__</script>
+<script>
+'use strict';
+(() => {
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const DAY = 864e5;
+  const ORDER = ['done', 'awaiting_review', 'in_progress', 'blocked', 'ready', 'planned'];
+  const SEEN_KEY = 'flightboard-seen';
+  const $ = id => document.getElementById(id);
+  let data = JSON.parse($('flightboard-data').textContent);
+  let lastKey = '';
+  let lastOk = Date.now();
+  let lost = false;
+  let timer = 0;
+  let failed = '';
+  let scope = '1.0';
+  let burnupPick = null;  // {live, t}: the burn-up point the owner browses, kept across redraws
+  const polling = data.mode === 'live' && (location.protocol === 'http:' || location.protocol === 'https:');
+  const seen = (() => { try { return Date.parse(localStorage.getItem(SEEN_KEY) || '') || null; } catch (error) { return null; } })();
+  const remember = () => { try { localStorage.setItem(SEEN_KEY, new Date().toISOString()); } catch (error) { /* private window: no memory */ } };
+
+  // ---- helpers: every node is built here, and source text only ever becomes text, never markup
+  const own = (object, key) => object !== null && typeof object === 'object' && Object.hasOwn(object, key) ? object[key] : undefined;
+  const i18n = () => own(data, 'i18n') || {};
+  const label = (group, key) => { const value = own(own(i18n().labels, group), key); return typeof value === 'string' ? value : String(key); };
+  const count = (counts, key) => { const value = own(counts, key); return typeof value === 'number' ? value : 0; };
+  // a message of the catalog, its {names} filled with text: the result only ever becomes a text node
+  const fill = (template, params) => String(template).replace(/\{(\w+)\}/g, (whole, name) => { const value = own(params, name); return value === undefined ? whole : String(value); });
+  const t = (key, params) => { const value = own(i18n().messages, key); return fill(typeof value === 'string' ? value : Array.isArray(value) ? value[1] : key, params); };
+  let rules = null, rulesLocale = '';
+  const plural = n => { const locale = i18n().locale || 'en'; if (rulesLocale !== locale) { rules = new Intl.PluralRules(locale); rulesLocale = locale; } return rules.select(n) === 'one'; };
+  const tn = (key, n, params) => { const value = own(i18n().messages, key); const form = Array.isArray(value) ? value[plural(n) ? 0 : 1] : value; return fill(typeof form === 'string' ? form : key, {...params, n}); };
+  function build(node, props, children) {
+    for (const [key, value] of Object.entries(props || {})) {
+      if (value === null || value === undefined || value === false) continue;
+      if (key.startsWith('on')) node.addEventListener(key.slice(2), value);
+      else if (key === 'css') for (const [name, css] of Object.entries(value)) node.style.setProperty(name, String(css));
+      else node.setAttribute(key === 'className' ? 'class' : key, value === true ? '' : String(value));
+    }
+    for (const child of children.flat(Infinity)) {
+      if (child === null || child === undefined || child === false) continue;
+      node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+    }
+    return node;
+  }
+  const h = (tag, props, ...children) => build(document.createElement(tag), props, children);
+  const s = (tag, props, ...children) => build(document.createElementNS(SVG_NS, tag), props, children);
+  // replaceChildren would write a null or an array as text: put() flattens and drops the empty ones
+  const put = (node, ...children) => node.replaceChildren(...children.flat(Infinity).filter(child => child !== null && child !== undefined && child !== false));
+
+  let formats = null, formatsLocale = '';
+  function fmt() {
+    const locale = i18n().locale || 'en';
+    if (formatsLocale !== locale) {
+      formats = {day: new Intl.DateTimeFormat(locale, {day: 'numeric', month: 'long', year: 'numeric'}),
+        short: new Intl.DateTimeFormat(locale, {day: 'numeric', month: 'short'}),
+        stamp: new Intl.DateTimeFormat(locale, {weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'})};
+      formatsLocale = locale;
+    }
+    return formats;
+  }
+  const when = iso => { const t0 = Date.parse(String(iso)); return Number.isNaN(t0) ? null : t0; };
+  const dayTime = text => when(String(text) + 'T12:00:00');
+  const day = text => { const t0 = dayTime(text); return t0 === null ? String(text) : fmt().day.format(t0); };
+  const shortDate = text => { const t0 = dayTime(text); return t0 === null ? String(text) : fmt().short.format(t0); };
+  const stamp = iso => { const t0 = when(iso); return t0 === null ? '—' : fmt().stamp.format(t0); };
+  const clock = () => polling ? Date.now() : (when(data.generated_at) || Date.now());
+  function span(iso) {
+    const t0 = when(iso);
+    if (t0 === null) return '';
+    const minutes = Math.max(0, Math.round((clock() - t0) / 60000));
+    if (minutes < 1) return t('page.less_than_minute');
+    if (minutes < 60) return t('page.minutes', {n: minutes});
+    const hours = Math.round(minutes / 60);
+    if (hours < 48) return t('page.hours', {n: hours});
+    return t('page.days', {n: Math.round(hours / 24)});
+  }
+  const ago = iso => { const text = span(iso); return text ? t('page.ago', {span: text}) : '—'; };
+  // a time that keeps itself current: key names the catalog message that wraps the span ("{span} ago" by default)
+  const live = (iso, key = 'page.ago') => h('time', {datetime: iso, title: stamp(iso), 'data-ago': iso, 'data-message': key}, t(key, {span: span(iso) || '—'}));
+  const gapText = days => typeof days !== 'number' ? '' : days === 0 ? t('page.on_time') : days < 0 ? t('page.days_ahead', {n: -days}) : t('page.days_late', {n: days});
+  const gapNode = days => h('span', {className: typeof days === 'number' && days > 0 ? 'late' : 'ahead'}, gapText(days));
+  const statusDot = status => h('span', {className: 'sdot st-' + status, 'aria-hidden': 'true'});
+  const statusName = status => status === null || status === undefined ? t('page.removed') : label('status', status);
+  function transition(from, to) {
+    if (from === null || from === undefined) return [statusDot(to), t('page.new_status', {status: statusName(to)})];
+    if (to === null || to === undefined) return t('page.removed_was', {status: statusName(from)});
+    return [statusDot(from), statusName(from), ' → ', statusDot(to), statusName(to)];
+  }
+  const tracked = () => Boolean(data.ledger && data.ledger.kind !== 'none');
+  const taskTitle = id => { const task = own(data.tasks, id); return task ? task.title : ''; };
+  // where says which list the button sits in: with the id, it finds the button again after a redraw
+  const taskButton = (id, where) => own(data.tasks, id) ? h('button', {type: 'button', className: 'tid', 'data-focus': where + '|' + id, onclick: () => openTask(id)}, id) : h('span', {className: 'tid-plain'}, id);
+
+  // ---- a task's detail, on a click of its id
+  function mainSide(task) {
+    if (task.declared_in) return t('page.declared_in', {name: task.declared_in});
+    if (!task.status_main) return t('page.not_in_main');
+    return task.status_main !== task.status ? t('page.in_main', {status: statusName(task.status_main)}) : '';
+  }
+  let opener = '';  // the focus key of the button that opened the dialog: it may be redrawn while the dialog is open
+  function openTask(id) {
+    const task = own(data.tasks, id);
+    if (!task) return;
+    const facts = [task.milestone, task.owner ? label('owner', task.owner) : '', task.priority, task.release ? label('release', task.release) : ''].filter(Boolean);
+    put($('task-body'), h('h3', {id: 'task-title'}, id + (task.title ? ' · ' + task.title : '')),
+      facts.length ? h('p', {className: 'quiet'}, facts.join(' · ')) : null,
+      h('p', null, statusDot(task.status), ' ', statusName(task.status), mainSide(task)),
+      task.acceptance.length ? [h('h4', null, t('page.acceptance')), h('ul', null, task.acceptance.map(text => h('li', null, text)))] : null,
+      task.dependencies.length ? [h('h4', null, t('page.dependencies')), h('p', null, task.dependencies.map((dep, i) => [i ? ', ' : '', dep + (task.waiting_on.includes(dep) ? t('page.awaited') : '')]))] : null);
+    const from = document.activeElement;
+    opener = from && from !== document.body && from.getAttribute ? focusKey(from) : '';
+    if (typeof $('task').showModal === 'function') $('task').showModal();
+  }
+  $('task-close').addEventListener('click', () => $('task').close());
+  // the browser gives the focus back to the opener; if a redraw replaced it, the focus is left nowhere (on the page,
+  // or still on the closed dialog's button), and the opener's new self takes it
+  $('task').addEventListener('close', () => {
+    const active = document.activeElement;
+    const gone = !active || active === document.body || !active.isConnected || $('task').contains(active);
+    const back = opener && gone ? byFocusKey(opener) : null;
+    opener = '';
+    if (back) reachable(back).focus({preventScroll: true});
+  });
+
+  // ---- the tooltip, shared by every chart; it repeats what the tables give
+  const tip = $('tooltip');
+  let tipOwner = null;  // who shows the tooltip: 'hover' (the pointer), or the zone whose keyboard focus shows it
+  function showTip(x, y, rows, owner) {
+    put(tip, rows);
+    tip.hidden = false;
+    tipOwner = owner;
+    const box = tip.getBoundingClientRect();
+    let left = x + 14, top = y + 14;
+    if (left + box.width > window.innerWidth - 8) left = x - box.width - 14;
+    if (top + box.height > window.innerHeight - 8) top = y - box.height - 14;
+    tip.style.left = Math.max(8, left) + 'px';
+    tip.style.top = Math.max(8, top) + 'px';
+  }
+  const hideTip = () => { tip.hidden = true; tipOwner = null; };
+  const tipRows = new WeakMap();  // a chart zone -> what its tooltip says, read again after a redraw
+  let hovered = null;  // {key, x, y}: the zone under the pointer, found again after a redraw
+  let quietFocus = false;  // a focus given back after a redraw shows no tooltip of its own
+  // anchor, when given, says where a keyboard focus shows the tooltip (the burn-up: at the point browsed)
+  function hoverable(node, rows, text, key, anchor) {
+    node.setAttribute('tabindex', '0');
+    node.setAttribute('role', 'img');
+    node.setAttribute('aria-label', text);
+    node.setAttribute('data-focus', key);
+    tipRows.set(node, rows);
+    node.addEventListener('pointermove', event => { hovered = {key, x: event.clientX, y: event.clientY}; showTip(event.clientX, event.clientY, rows(), 'hover'); });
+    node.addEventListener('pointerleave', () => { hovered = null; if (tipOwner === 'hover') hideTip(); });
+    node.addEventListener('focus', () => {
+      if (quietFocus || (hovered && hovered.key === key)) return;  // under the pointer, the pointer's tooltip stays
+      const r = node.getBoundingClientRect(), at = anchor ? anchor() : {x: r.right, y: r.top};
+      showTip(at.x, at.y, rows(), node);
+    });
+    node.addEventListener('blur', () => { if (tipOwner === node) { hideTip(); retip(hovered); } });
+    return node;
+  }
+  // label first, then the figure: "Done: 3" reads right whatever the count
+  const tipRow = (color, name, value, note) => h('div', {className: 'row'}, h('span', {className: 'lk', css: {'--c': color}}), t('page.pair', {name}), h('b', null, value), note ? ' ' + note : null);
+
+  // ---- chart furniture
+  const widthOf = node => Math.max(300, Math.floor(node.clientWidth || 600));
+  const linear = (d0, d1, r0, r1) => value => d1 === d0 ? (r0 + r1) / 2 : r0 + (value - d0) * (r1 - r0) / (d1 - d0);
+  function niceStep(max, ticks) {
+    const raw = Math.max(1, max) / ticks;
+    const power = 10 ** Math.floor(Math.log10(raw));
+    return Math.max(1, [1, 2, 5, 10].map(f => f * power).find(step => step >= raw) || power * 10);
+  }
+  const legend = items => h('ul', {className: 'legend'}, items.map(([color, name, kind]) => h('li', null, h('span', {className: 'key ' + (kind || ''), css: {'--c': color}}), name)));
+  const tableView = (key, headers, rows) => h('details', {className: 'table-view', 'data-key': key}, h('summary', null, t('page.table')),
+    h('table', null, h('thead', null, h('tr', null, headers.map(text => h('th', {scope: 'col'}, text)))), h('tbody', null, rows.map(row => h('tr', null, row.map(cell => h('td', null, cell)))))));
+  const svgRoot = (width, height, name) => s('svg', {viewBox: '0 0 ' + width + ' ' + height, width, height, role: 'group', 'aria-label': name});
+  const truncate = (text, max) => { const value = String(text); return value.length > max ? value.slice(0, max - 1) + '…' : value; };
+  // A bar whose data end is rounded and whose baseline end stays square.
+  function endRounded(x0, x1, y, height, radius, up) {
+    const r = Math.max(0, Math.min(radius, (up ? height : x1 - x0) / 2, (up ? x1 - x0 : height) / 2));
+    if (up) return 'M' + x0 + ',' + (y + height) + 'V' + (y + r) + 'Q' + x0 + ',' + y + ' ' + (x0 + r) + ',' + y + 'H' + (x1 - r) + 'Q' + x1 + ',' + y + ' ' + x1 + ',' + (y + r) + 'V' + (y + height) + 'Z';
+    return 'M' + x0 + ',' + y + 'H' + (x1 - r) + 'Q' + x1 + ',' + y + ' ' + x1 + ',' + (y + r) + 'V' + (y + height - r) + 'Q' + x1 + ',' + (y + height) + ' ' + (x1 - r) + ',' + (y + height) + 'H' + x0 + 'Z';
+  }
+  const statusVar = status => 'var(--' + ({done: 'done', awaiting_review: 'review', in_progress: 'progress', ready: 'ready', blocked: 'blocked', planned: 'planned', dropped: 'dropped'}[status] || 'planned') + ')';
+
+  // ---- the fixed words of the page, in the language of the data
+  function renderStatic() {
+    document.documentElement.lang = i18n().lang || 'en';
+    for (const node of document.querySelectorAll('[data-t]')) node.textContent = t(node.getAttribute('data-t'));
+    $('scope').setAttribute('aria-label', t('page.scope'));
+    const git = !tracked();
+    $('progress').hidden = git || data.main.state !== 'ok';
+    $('next-panel').hidden = git;
+    $('split').classList.toggle('single', git);
+    $('h-events').textContent = git ? t('page.main_moves') : t('page.events');
+  }
+
+  // ---- header and live state
+  function renderHeader() {
+    const main = data.main;
+    $('repo').textContent = data.repository || t('page.title');
+    $('resume').textContent = data.resume;
+    put($('snapshot'), main.state === 'ok'
+      ? [main.ref + ' ' + main.head + ' · ' + t('page.subject', {subject: main.subject}) + ' · ', live(main.date), tracked() && main.updated_at ? t('page.ledger_of', {date: day(main.updated_at)}) : '',
+        main.note_text ? ' · ' + main.note_text : '']
+      : t('page.unreadable', {reason: main.reason_text}));
+    put($('banner'), main.state === 'ok'
+      ? [main.valid ? null : h('p', {className: 'banner'}, t('page.invalid_main', {error: main.error})),
+        data.ledger && data.ledger.missing ? h('p', {className: 'banner'}, t('page.ledger_missing', {path: data.ledger.missing})) : null]
+      : h('p', {className: 'banner'}, t('page.cannot_read', {reason: main.reason_text})));
+    const waitingTotal = data.waiting.length + (data.waiting_more || 0);
+    document.title = (waitingTotal ? '(' + waitingTotal + ') ' : '') + (data.repository ? data.repository + ' · ' : '') + 'flightboard';
+  }
+  function renderLive() {
+    let state, text;
+    if (!polling) { state = 'snapshot'; text = t('page.snapshot_of', {when: stamp(data.generated_at)}); }
+    else if (lost) { state = 'lost'; text = t('page.lost', {ago: ago(new Date(lastOk).toISOString())}); }
+    else { state = 'on'; text = t('page.live_read', {n: Math.max(0, Math.round((Date.now() - (when(data.generated_at) || Date.now())) / 1000))}); }
+    $('live').className = 'live ' + state;
+    $('mode').textContent = t(state === 'on' ? 'page.mode_live' : state === 'lost' ? 'page.mode_lost' : 'page.mode_snapshot');
+    $('live-text').textContent = text;
+    const spoken = t(state === 'on' ? 'page.spoken_live' : state === 'lost' ? 'page.spoken_lost' : 'page.spoken_snapshot');
+    if ($('live-state').textContent !== spoken) $('live-state').textContent = spoken;
+    document.body.classList.toggle('stale', lost || Boolean(failed));
+  }
+
+  // ---- what waits for the owner
+  const waitItem = item => h('li', {className: 'wait k-' + item.kind}, h('b', null, t('page.verb', {verb: item.verb})), ' ',
+    h('span', null, item.text), item.since ? h('span', {className: 'since'}, live(item.since, item.kind === 'review' ? 'page.waiting_since' : 'page.since')) : null);
+  function renderWaiting() {
+    const first = data.waiting.slice(0, 8), rest = data.waiting.slice(8);
+    put($('waiting'), first.length ? first.map(waitItem) : h('li', {className: 'empty'}, data.main.state === 'ok' ? t('page.nothing_waits') : t('page.nothing_readable')),
+      rest.length ? h('li', null, h('details', {className: 'more', 'data-key': 'waiting'}, h('summary', null, tn('page.more_items', rest.length)), h('ul', {className: 'waiting'}, rest.map(waitItem)))) : null);
+    const yours = data.yours;
+    put($('pointer'), data.waiting_more ? t('page.beyond', {n: data.waiting_more}) : '',
+      yours.decisions || yours.tasks ? t('page.yours', {decisions: tn('page.decisions_n', yours.decisions), tasks: tn('page.tasks_n', yours.tasks)}) : null);
+  }
+
+  // ---- sessions
+  const isEnded = c => c.advice === 'ended';
+  function activityText(c) {
+    if (c.activity === 'active') return t('page.writing_now');
+    if (c.activity === 'recent') return live(c.last_activity, 'page.wrote');
+    if (c.activity === 'quiet') return live(c.last_activity, 'page.quiet_for');
+    return t('page.activity_unknown');
+  }
+  function changeItem(change, where) {
+    const move = change.new ? [statusDot(change.to), t('page.new_task', {status: statusName(change.to)})]
+      : change.removed ? t('page.removed_from', {status: statusName(change.from)}) : transition(change.from, change.to);
+    return h('li', {className: 'move'}, taskButton(change.task, where), h('span', null, change.title),
+      h('span', {className: 'trans'}, move, change.uncommitted ? h('span', {className: 'badge warn'}, t('page.uncommitted')) : null, change.back ? h('span', {className: 'badge warn'}, t('page.back')) : null));
+  }
+  function cardTitle(c) {
+    if (c.kind === 'checkout') return t('page.checkout_title');
+    if (!tracked()) return c.name;
+    const first = c.tasks[0];
+    return first ? first + (taskTitle(first) ? ' · ' + taskTitle(first) : '') : t('page.new_session');
+  }
+  function cardMeta(c) {
+    const meta = [];
+    if (c.kind !== 'checkout') meta.push(c.ahead ? tn('page.commits_out', c.ahead) : t('page.no_commit_out'));
+    if (c.behind) meta.push(tn('page.behind', c.behind));
+    if (c.modified) meta.push(tn('page.modified', c.modified));
+    if (c.untracked) meta.push(tn('page.untracked', c.untracked));
+    if (c.conflicted) meta.push(tn('page.conflicted', c.conflicted));
+    if (c.kept) meta.push(tn('page.kept', c.kept));
+    return meta;
+  }
+  function cardLedger(c) {
+    return [
+      c.changes.length ? h('ul', {className: 'moves', 'aria-label': t('page.changes_aria')}, c.changes.map(change => changeItem(change, 'card:' + c.id))) : null,
+      c.hidden_changes ? h('p', {className: 'quiet'}, tn('page.more_changes', c.hidden_changes)) : null,
+      c.hidden_tasks ? h('p', {className: 'quiet'}, tn('page.more_tasks', c.hidden_tasks)) : null,
+      c.inferred.length ? h('p', {className: 'quiet'}, (c.changes.length ? t('page.also') : t('page.works_on')), c.inferred.map((id, i) => [i ? ', ' : '', taskButton(id, 'inferred:' + c.id), t('page.inferred_status', {status: statusName(own(data.tasks, id) ? data.tasks[id].status : null).toLowerCase()})]), t('page.inferred_tail')) : null,
+      !c.changes.length && !c.inferred.length && c.kind !== 'checkout' ? h('p', {className: 'quiet'}, t('page.no_change')) : null,
+      c.decisions.length ? h('p', {className: 'quiet'}, t('page.records'), c.decisions.map((d, i) => [i ? ', ' : '', d.id + ' (' + label('decision', d.status) + ')' + (d.quote ? t('page.quote_inline', {quote: d.quote}) : '')]), t('page.records_tail')) : null,
+      c.sections.length ? h('p', {className: 'quiet'}, t('page.also_changes', {sections: c.sections.map(name => label('section', name)).join(', ')})) : null,
+      c.ledger === 'ok' || c.ledger === 'absent' || c.ledger === 'none' ? null : h('p', {className: 'warn-text'}, label('ledger', c.ledger))];
+  }
+  function card(c) {
+    const meta = cardMeta(c);
+    return h('article', {className: 'session act-' + c.activity},
+      h('div', {className: 'c-title'}, cardTitle(c)),
+      h('p', {className: 'c-sub'}, tracked() || c.kind === 'checkout' ? [c.name, ' · '] : null, c.kind === 'checkout' ? '' : [h('code', null, c.branch), ' · '], label('kind', c.kind), c.created ? [' · ', live(c.created, 'page.opened')] : null),
+      h('div', {className: 'c-badges'}, h('span', {className: 'pill'}, h('span', {className: 'sdot ' + (c.activity === 'active' ? 'st-done' : c.activity === 'recent' ? 'st-ready' : 'st-planned'), 'aria-hidden': 'true'}), activityText(c)),
+        h('span', {className: 'badge'}, label('stage', c.stage)), c.operation ? h('span', {className: 'badge warn'}, label('operation', c.operation)) : null,
+        c.advice && label('advice', c.advice) !== label('stage', c.stage) ? h('span', {className: 'badge' + (c.advice === 'ready_to_merge' ? ' hot' : '')}, label('advice', c.advice)) : null),
+      meta.length ? h('p', {className: 'c-meta'}, meta.join(' · ')) : null,
+      tracked() ? cardLedger(c) : null,
+      c.files_read === false && c.files_issue && !c.gone && c.kind !== 'branch' && c.kind !== 'remote' ? h('p', {className: 'warn-text'}, t('page.files_not_read', {issue: c.files_issue_text})) : null,
+      c.reason ? h('p', {className: 'warn-text'}, t(tracked() ? 'page.not_applied' : 'page.note_reason', {reason: c.reason_text})) : null,
+      c.subject && c.kind !== 'checkout' ? h('p', {className: 'c-last'}, t('page.last_commit'), h('code', null, c.head), ' ', live(c.head_date), t('page.colon'), c.subject, c.pushed ? t('page.pushed_tag') : '') : null,
+      c.commits.length > 1 ? h('details', {className: 'more', 'data-key': 'commits:' + c.id}, h('summary', null, tn('page.commits_out', c.commits.length)),
+        h('ul', null, c.commits.map(commit => h('li', null, h('code', null, commit.sha), ' ', commit.subject, ' · ', live(commit.at))))) : null);
+  }
+  function renderSessions() {
+    const open = data.sessions.filter(c => !isEnded(c)), ended = data.sessions.filter(isEnded);
+    put($('sessions'), open.length ? open.map(card) : h('p', {className: 'empty'}, data.main.state === 'ok' ? t('page.no_session') : t('page.sessions_unreadable')));
+    put($('ended'), ended.length ? h('details', {className: 'ended', 'data-key': 'ended'}, h('summary', null, tn('page.ended', ended.length)),
+      h('ul', null, ended.map(c => h('li', null, h('b', null, c.tasks.join(', ') || c.name), ' · ', c.name, ' · ', live(c.last_activity, 'page.last_activity'))))) : null);
+  }
+
+  // ---- next tasks and what moved
+  function renderNext() {
+    put($('next'), data.next.length ? data.next.map(task => h('div', {className: 'item'}, taskButton(task.id, 'next'), ' ', task.title,
+      h('p', null, [task.milestone, task.priority, statusName(task.status), t('page.next_meta')].filter(Boolean).join(' · '))))
+      : h('p', {className: 'empty'}, data.main.state === 'ok' ? t('page.no_next') : t('page.next_unreadable')));
+  }
+  // a move is known by what it is, never by its date, which moves while a session writes: a session holds one change
+  // per task, and a version of main one move per task
+  const eventKey = event => 'event:' + event.where + '|' + (event.where === 'main' ? event.sha : '') + '|' + event.to;
+  const approx = item => item.approx ? t('page.approx') : '';
+  const fresh = at => seen && (when(at) || 0) > seen ? h('span', {className: 'new-tag'}, t('page.new_tag')) : null;
+  const eventItem = event => h('li', {className: 'event'}, live(event.at),
+    h('div', null, taskButton(event.task, eventKey(event)), ' ', event.title, fresh(event.at),
+      h('div', {className: 'trans'}, transition(event.from, event.to)),
+      h('div', {className: 'where'}, event.where === 'main' ? 'main · ' + event.sha + (event.subject ? ' · ' + event.subject : '') + approx(event)
+        : event.where + (event.uncommitted ? ' · ' + t('page.uncommitted') : event.sha ? ' · ' + event.sha : '') + approx(event) + t('page.declared_tail'))));
+  const moveItem = move => h('li', {className: 'event'}, live(move.at),
+    h('div', null, h('code', null, move.sha), ' ', move.via, fresh(move.at), h('div', {className: 'where'}, 'main' + approx(move))));
+  function renderEvents() {
+    const items = tracked() ? data.events : data.moves, draw = tracked() ? eventItem : moveItem;
+    const first = items.slice(0, 8), rest = items.slice(8);
+    put($('events'), first.length ? first.map(draw) : h('li', {className: 'empty'}, t('page.no_events')),
+      rest.length ? h('li', null, h('details', {className: 'more', 'data-key': 'events'}, h('summary', null, tn('page.earlier_moves', rest.length)), h('ol', {className: 'events'}, rest.map(draw)))) : null);
+  }
+
+  // ---- key figures
+  function tile(name, value, sub, extra, hero) {
+    return h('div', {className: 'tile' + (hero ? ' hero' : '')}, h('div', {className: 'label'}, name), h('div', {className: 'value'}, value), extra, h('div', {className: 'sub'}, sub));
+  }
+  function renderKpis() {
+    const k = data.kpis, launch = data.launch, releases = Boolean(data.ledger && data.ledger.releases);
+    if (data.main.state !== 'ok') { put($('kpis'), tile(t('page.figures'), '—', t('page.figures_unreadable'))); return; }
+    const extra = Math.max(0, k.done_live - k.done_main);
+    // the bar holds what the sessions add too: it never overflows, and it says on how many tasks it counts
+    const scale = Math.max(k.active, k.active_live, k.done_main + extra + k.review_live + k.progress_live);
+    const part = n => (scale ? 100 * n / scale : 0) + '%';
+    const meter = h('div', {className: 'meter', role: 'img', 'aria-label': t('page.meter', {done: tn('page.done_n', k.done_main), extra: tn('page.more_declared', extra), review: k.review_live, progress: k.progress_live, scale: tn('page.tasks_n', scale)}) + (scale > k.active ? t('page.meter_tail') : '')},
+      [[k.done_main, 'var(--done)', 1], [extra, 'var(--done)', .45], [k.review_live, 'var(--review)', 1], [k.progress_live, 'var(--progress)', 1]]
+        .filter(([n]) => n > 0).map(([n, color, alpha]) => h('span', {css: {width: part(n), background: color, opacity: alpha}})));
+    put($('kpis'),
+      tile(t('page.done_in_main'), (k.active ? Math.round(100 * k.done_main / k.active) : 0) + ' %', [tn('page.tasks_done', k.done_main) + t('page.out_of', {n: k.active}), extra ? tn('page.extra_sessions', extra) : '', releases ? t('page.v10', {done: k.done_main_10, active: k.active_10}) : ''], meter, true),
+      tile(t('page.in_review'), String(k.review_live), k.review_live ? tn('page.awaits_review', k.review_live) : t('page.no_review')),
+      tile(t('page.in_progress'), String(k.progress_live), k.blocked_live ? tn('page.blocked', k.blocked_live) : t('page.in_main_and_sessions')),
+      releases ? tile(t('page.launch'), launch ? day(launch.forecast) : '—', launch ? [gapNode(launch.gap), t('page.on_plan', {date: day(launch.planned)})] : t('page.no_forecast')) : null);
+  }
+
+  // ---- chart 1: tasks done over time
+  // the buttons are made once and kept, so a redraw never takes the focus away from them
+  function renderScope() {
+    const releases = Boolean(data.ledger && data.ledger.releases);
+    $('scope').hidden = !releases;
+    if (!releases) {
+      scope = 'all';
+      put($('scope'));
+      return;
+    }
+    if (!$('scope').children.length) {
+      scope = '1.0';
+      put($('scope'), [['1.0', t('page.scope_10')], ['all', t('page.scope_all')]].map(([key, name]) => h('button', {type: 'button', 'data-scope': key, onclick: () => { scope = key; redraw(() => { renderScope(); draw('burnup', renderBurnup); }); }}, name)));
+    }
+    for (const button of $('scope').children) button.setAttribute('aria-pressed', String(button.getAttribute('data-scope') === scope));
+  }
+  function renderBurnup(box) {
+    const v10 = scope === '1.0';
+    const pick = version => ({t: when(version.at), done: count(v10 ? version.counts_10 : version.counts, 'done'),
+      review: count(v10 ? version.counts_10 : version.counts, 'done') + count(v10 ? version.counts_10 : version.counts, 'awaiting_review'),
+      scope: v10 ? version.active_10 : version.active, name: version.via, sha: version.sha});
+    const points = data.history.map(pick).filter(point => point.t !== null);
+    const now = when(data.generated_at);
+    if (!points.length || now === null) { put(box, h('p', {className: 'empty'}, t('page.no_history'))); return; }
+    const k = data.kpis;
+    const liveDone = v10 ? k.done_live_10 : k.done_live;
+    const liveReview = liveDone + (v10 ? k.review_live_10 : k.review_live);
+    const end = {t: Math.max(now, points[points.length - 1].t), done: liveDone, review: Math.max(liveReview, liveDone), scope: v10 ? k.active_live_10 : k.active_live, name: t('page.now_with_sessions'), sha: '', live: true};
+    const all = points.concat([end]);
+    const t0 = points[0].t, t1 = end.t + Math.max((end.t - t0) * 0.03, 3600e3);
+    const steps = data.plan.map(point => ({t: dayTime(point.at), n: v10 ? point.v10 : point.all})).filter(point => point.t !== null);
+    const before = steps.filter(point => point.t <= t0).pop();
+    const plan = (before ? [{t: t0, n: before.n}] : []).concat(steps.filter(point => point.t > t0 && point.t <= t1));
+    const width = widthOf(box), height = 260, m = {l: 40, r: 150, t: 14, b: 30};
+    const top0 = Math.max(...all.map(p => p.scope), ...plan.map(p => p.n), 1);
+    const step = niceStep(top0, 4), top = Math.ceil(top0 / step) * step;
+    const x = linear(t0, t1, m.l, width - m.r), y = linear(0, top, height - m.b, m.t);
+    const svg = svgRoot(width, height, t('page.burnup'));
+    for (let value = 0; value <= top; value += step) svg.append(s('line', {className: value ? 'grid' : 'axis', x1: m.l, x2: width - m.r, y1: y(value), y2: y(value)}), s('text', {x: m.l - 6, y: y(value) + 4, 'text-anchor': 'end'}, value));
+    const perDay = (width - m.l - m.r) / Math.max(1, (t1 - t0) / DAY);
+    const every = [1, 2, 3, 7, 14, 30, 61, 91].find(n => n * perDay >= 64) || 182;
+    const tick = new Date(t0); tick.setHours(0, 0, 0, 0); tick.setDate(tick.getDate() + 1);
+    for (; tick.getTime() <= t1; tick.setDate(tick.getDate() + every)) { const at = tick.getTime(); svg.append(s('text', {x: x(at), y: height - 10, 'text-anchor': 'middle'}, fmt().short.format(at)), s('line', {className: 'grid', x1: x(at), x2: x(at), y1: height - m.b, y2: height - m.b + 4})); }
+    const path = (key, from, to) => { let d = 'M' + x(all[from].t) + ',' + y(all[from][key]); for (let i = from + 1; i <= to; i += 1) d += 'H' + x(all[i].t) + 'V' + y(all[i][key]); return d; };
+    const last = points.length - 1;
+    if (plan.length > 1) { let d = 'M' + x(plan[0].t) + ',' + y(plan[0].n); for (const p of plan.slice(1)) d += 'H' + x(p.t) + 'V' + y(p.n); svg.append(s('path', {d, fill: 'none', stroke: 'var(--muted)', 'stroke-width': 1.5, opacity: .7})); }
+    svg.append(s('path', {d: path('done', 0, last) + 'H' + x(end.t) + 'V' + y(0) + 'H' + x(all[0].t) + 'Z', fill: 'var(--done)', opacity: .1}));
+    const series = [['scope', t('page.s_total'), 'var(--planned)'], ['review', t('page.s_review'), 'var(--review)'], ['done', t('page.s_done'), 'var(--done)']];
+    const ends = [];
+    for (const [key, name, color] of series) {
+      svg.append(s('path', {d: path(key, 0, last), fill: 'none', stroke: color, 'stroke-width': 2, 'stroke-linejoin': 'round'}),
+        s('path', {d: path(key, last, all.length - 1), fill: 'none', stroke: color, 'stroke-width': 2, 'stroke-dasharray': '4 3', opacity: .7}),
+        s('circle', {cx: x(end.t), cy: y(end[key]), r: 4, fill: color, stroke: 'var(--card)', 'stroke-width': 2}));
+      ends.push({y: y(end[key]), at: y(end[key]), text: name + ' ' + end[key]});
+    }
+    const queue = end.review - end.done;
+    if (queue > 0) ends.push({y: (y(end.review) + y(end.done)) / 2, at: (y(end.review) + y(end.done)) / 2, text: t('page.review_queue', {n: queue}), quiet: true});
+    ends.sort((a, b) => a.y - b.y);
+    for (let i = 1; i < ends.length; i += 1) if (ends[i].y - ends[i - 1].y < 15) ends[i].y = ends[i - 1].y + 15;
+    for (const mark of ends) {
+      if (Math.abs(mark.y - mark.at) > 2) svg.append(s('line', {x1: x(end.t) + 5, y1: mark.at, x2: x(end.t) + 12, y2: mark.y - 4, stroke: 'var(--axis)'}));
+      svg.append(s('text', {x: x(end.t) + 14, y: mark.y, className: mark.quiet ? '' : 'ink'}, mark.text));
+    }
+    const cross = s('line', {x1: 0, x2: 0, y1: m.t, y2: height - m.b, stroke: 'var(--axis)', visibility: 'hidden'});
+    svg.append(cross);
+    // the point browsed keeps its place across redraws: a past move of main by its time, the live end as the end
+    const kept = burnupPick && !burnupPick.live ? all.findIndex(p => !p.live && p.t === burnupPick.t) : -1;
+    let index = kept >= 0 ? kept : all.length - 1;
+    const showCross = () => { cross.setAttribute('x1', x(all[index].t)); cross.setAttribute('x2', x(all[index].t)); cross.setAttribute('visibility', 'visible'); };
+    const choose = i => { index = i; burnupPick = {live: Boolean(all[i].live), t: all[i].t}; showCross(); };
+    const rows = () => { const p = all[index]; return [h('div', {className: 'tt-head'}, p.live ? p.name : stamp(new Date(p.t).toISOString()) + ' · ' + p.sha), p.live ? null : h('div', {className: 'wrap'}, p.name), series.slice().reverse().map(([key, name, color]) => tipRow(color, name, p[key]))]; };
+    const zone = s('rect', {className: 'hit', x: m.l, y: m.t, width: Math.max(1, width - m.l - m.r), height: height - m.t - m.b});
+    const move = clientX => { const b = svg.getBoundingClientRect(); const local = (clientX - b.left) * (width / b.width); choose(all.reduce((best, p, i) => Math.abs(x(p.t) - local) < Math.abs(x(all[best].t) - local) ? i : best, 0)); };
+    const browsed = () => { const r = zone.getBoundingClientRect(); return {x: r.left + (x(all[index].t) - m.l) * (r.width / (width - m.l - m.r)), y: r.top}; };
+    zone.addEventListener('pointermove', event => move(event.clientX));
+    hoverable(zone, rows, t('page.burnup_aria', {done: end.done, review: end.review, scope: end.scope}), 'zone:burnup', browsed);
+    const pointed = () => Boolean(hovered && hovered.key === 'zone:burnup');
+    zone.addEventListener('pointerleave', () => { if (document.activeElement !== zone) cross.setAttribute('visibility', 'hidden'); });
+    zone.addEventListener('focus', showCross);
+    zone.addEventListener('blur', () => { if (!pointed()) cross.setAttribute('visibility', 'hidden'); });
+    zone.addEventListener('keydown', event => {
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+      event.preventDefault();
+      choose(Math.max(0, Math.min(all.length - 1, index + (event.key === 'ArrowRight' ? 1 : -1))));
+      const at = browsed(); showTip(at.x, at.y, rows(), zone);
+    });
+    svg.append(zone);
+    put(box, svg, legend([['var(--done)', t('page.s_done'), 'line'], ['var(--review)', t('page.s_review'), 'line'], ['var(--planned)', t('page.s_total'), 'line'], ['var(--muted)', t('page.declared_dash'), 'dash']].concat(plan.length > 1 ? [['var(--muted)', t('page.plan_line'), 'line']] : [])),
+      tableView('table:burnup', [t('page.h_moment'), t('page.h_commit'), t('page.s_done'), t('page.s_review'), t('page.s_total')], all.slice().reverse().map(p => [p.live ? t('page.now_row') : stamp(new Date(p.t).toISOString()), p.live ? '—' : p.sha + ' ' + p.name, p.done, p.review, p.scope])));
+  }
+
+  // ---- chart 2: milestones, one stacked bar each, with main's forecast
+  function renderMilestones(box) {
+    const rows = data.milestones;
+    if (!rows.length) { put(box, h('p', {className: 'empty'}, t('page.no_milestones'))); return; }
+    const width = widthOf(box), band = 28, m = {l: Math.min(200, Math.round(width * 0.34)), r: 104, t: 6, b: 26};
+    const height = m.t + rows.length * band + m.b;
+    const top0 = Math.max(...rows.map(row => row.active), 1), step = niceStep(top0, 4), top = Math.ceil(top0 / step) * step;
+    const x = linear(0, top, m.l, width - m.r);
+    const current = rows.find(row => (row.track === 'principal' || row.track === 'main' || !row.track) && count(row.counts, 'done') + count(row.counts, 'dropped') < row.total);
+    const svg = svgRoot(width, height, t('page.milestones'));
+    for (let value = 0; value <= top; value += step) svg.append(s('line', {className: value ? 'grid' : 'axis', x1: x(value), x2: x(value), y1: m.t, y2: height - m.b}), s('text', {x: x(value), y: height - 8, 'text-anchor': 'middle'}, value));
+    rows.forEach((row, i) => {
+      const y0 = m.t + i * band, barY = y0 + (band - 12) / 2;
+      const name = row.title ? row.id + ' · ' + row.title : row.id;
+      svg.append(s('text', {x: 0, y: y0 + band / 2 + 4, className: row === current ? 'strong' : 'ink'}, truncate(name, Math.floor(m.l / 7))));
+      let cursor = 0;
+      const segments = [];
+      for (const status of ORDER) {
+        const total = count(row.counts, status), fresh2 = Math.min(total, count(row.unmerged, status));
+        for (const [n, unmerged] of [[total - fresh2, false], [fresh2, true]]) { if (n > 0) segments.push({status, n, unmerged, from: cursor}); cursor += n; }
+      }
+      for (const segment of segments) {
+        const stop = segment.from + segment.n, x0 = x(segment.from), x1 = Math.max(x0 + 1, x(stop) - (stop < cursor ? 2 : 0));
+        const paint = {className: 'mark', fill: statusVar(segment.status), opacity: segment.unmerged ? .45 : 1};
+        const shape = stop < cursor ? s('rect', {...paint, x: x0, y: barY, width: x1 - x0, height: 12}) : s('path', {...paint, d: endRounded(x0, x1, barY, 12, 4, false)});
+        const declared = segment.unmerged ? tn('page.declared_in_session', segment.n) : '';
+        svg.append(hoverable(shape, () => [h('div', {className: 'tt-head'}, name), tipRow(statusVar(segment.status), label('status', segment.status), segment.n, declared)],
+          t('page.segment_aria', {milestone: row.id, status: label('status', segment.status), n: segment.n}) + (declared ? t('page.not_yet_main', {declared}) : ''),
+          'zone:milestones|' + row.id + '|' + segment.status + '|' + segment.unmerged));
+      }
+      svg.append(s('text', {x: width - m.r + 8, y: barY + 10, className: 'ink'}, count(row.counts, 'done') + '/' + row.active),
+        s('text', {x: width, y: barY + 10, 'text-anchor': 'end', className: typeof row.gap === 'number' && row.gap > 0 ? 'strong' : ''}, row.forecast ? shortDate(row.forecast) : ''));
+    });
+    const statuses = ORDER.filter(status => rows.some(row => count(row.counts, status)));
+    put(box, svg, legend(statuses.map(status => [statusVar(status), label('status', status)]).concat([['var(--done)', t('page.lighter'), 'light']])),
+      tableView('table:milestones', [t('page.h_milestone'), label('status', 'done'), label('status', 'awaiting_review'), label('status', 'in_progress'), label('status', 'blocked'), label('status', 'ready'), label('status', 'planned'), t('page.h_declared'), t('page.h_forecast')],
+        rows.map(row => [row.title ? row.id + ' · ' + row.title : row.id, count(row.counts, 'done'), count(row.counts, 'awaiting_review'), count(row.counts, 'in_progress'), count(row.counts, 'blocked'), count(row.counts, 'ready'), count(row.counts, 'planned'),
+          Object.values(row.unmerged).reduce((a, b) => a + b, 0), row.forecast ? day(row.forecast) + ' (' + gapText(row.gap) + ')' : '—'])));
+  }
+
+  // ---- chart 3: moves per day
+  function renderDaily(box) {
+    const days = data.daily;
+    if (!days.length) { put(box, h('p', {className: 'empty'}, t('page.no_moves'))); return; }
+    const width = widthOf(box), height = 230, m = {l: 32, r: 10, t: 12, b: 28};
+    const parts = [['done_main', 'var(--done)', 1, t('page.d_done_main')], ['review_main', 'var(--review)', 1, t('page.d_review_main')], ['done_live', 'var(--done)', .45, t('page.d_done_live')], ['review_live', 'var(--review)', .45, t('page.d_review_live')]];
+    const totals = days.map(d => parts.reduce((sum, [key]) => sum + (d[key] || 0), 0));
+    const top0 = Math.max(...totals, 1), step = niceStep(top0, 4), top = Math.ceil(top0 / step) * step;
+    const band = (width - m.l - m.r) / days.length, bar = Math.min(24, Math.max(4, band - 6));
+    const y = linear(0, top, height - m.b, m.t);
+    const svg = svgRoot(width, height, t('page.daily'));
+    for (let value = 0; value <= top; value += step) svg.append(s('line', {className: value ? 'grid' : 'axis', x1: m.l, x2: width - m.r, y1: y(value), y2: y(value)}), s('text', {x: m.l - 6, y: y(value) + 4, 'text-anchor': 'end'}, value));
+    days.forEach((d, i) => {
+      const cx = m.l + band * i + band / 2;
+      let base = 0;
+      const filled = parts.filter(([key]) => d[key] > 0);
+      filled.forEach(([key, color, alpha], j) => {
+        const y0 = y(base), y1 = y(base + d[key]);
+        const top1 = j === filled.length - 1;
+        svg.append(top1 ? s('path', {d: endRounded(cx - bar / 2, cx + bar / 2, y1, Math.max(1, y0 - y1 - (j ? 2 : 0)), 4, true), fill: color, opacity: alpha})
+          : s('rect', {x: cx - bar / 2, y: y1, width: bar, height: Math.max(1, y0 - y1 - 2), fill: color, opacity: alpha}));
+        base += d[key];
+      });
+      if ((days.length - 1 - i) % Math.ceil(days.length / Math.max(2, Math.floor((width - m.l) / 64))) === 0) svg.append(s('text', {x: cx, y: height - 9, 'text-anchor': 'middle'}, shortDate(d.day)));
+      svg.append(hoverable(s('rect', {className: 'hit', x: cx - band / 2, y: m.t, width: band, height: height - m.t - m.b}),
+        () => [h('div', {className: 'tt-head'}, day(d.day)), parts.map(([key, color, , name]) => tipRow(color, name, d[key] || 0))],
+        day(d.day) + t('page.colon') + parts.map(([key, , , name]) => name.toLowerCase() + ' ' + (d[key] || 0)).join(', '), 'zone:daily|' + d.day));
+    });
+    put(box, svg, legend(parts.map(([, color, alpha, name]) => [color, name, alpha < 1 ? 'light' : ''])),
+      tableView('table:daily', [t('page.h_day'), t('page.h_done_main'), t('page.h_review_main'), t('page.h_done_live'), t('page.h_review_live')], days.slice().reverse().map(d => [day(d.day), d.done_main, d.review_main, d.done_live, d.review_live])));
+  }
+
+  // ---- footer and the whole page
+  function renderFooter() {
+    const limits = data.limits || {};
+    const notes = [];
+    if (limits.branches_cut) notes.push(tn('page.branches_cut', limits.branches_cut));
+    if (limits.branches_unread) notes.push(t('page.branches_unread'));
+    if (limits.history_unread) notes.push(t('page.history_unread'));
+    else if (limits.history_cut) notes.push(t('page.history_cut', {n: limits.history_max}));
+    put($('footer'), h('p', null, t('page.sources'), data.sources.map((source, i) => [i ? ' · ' : '', source.label + ' ' + label('source', source.state) + (source.detail ? ' (' + source.detail + ')' : '')])),
+      h('p', null, t('page.footer', {version: data.tool ? data.tool.version : ''})),
+      notes.length ? h('p', null, notes.join(' ')) : null);
+  }
+  function draw(id, painter) {
+    const open = Array.from($(id).querySelectorAll('details[data-key]')).filter(node => node.open).map(node => node.getAttribute('data-key'));
+    try { painter($(id)); } catch (error) { put($(id), h('p', {className: 'empty'}, t('page.chart_unavailable'))); }
+    for (const node of $(id).querySelectorAll('details[data-key]')) if (open.includes(node.getAttribute('data-key'))) node.open = true;
+  }
+  // The element that had the focus, or the zone under the pointer, found again after a redraw by what it shows (a task
+  // in a list, a chart zone, a fold), never by its position: cards and events move as the sessions write.
+  const focusKey = node => node.getAttribute('data-focus') || (node.tagName === 'SUMMARY' && node.parentElement && node.parentElement.hasAttribute('data-key') ? 'summary|' + node.parentElement.getAttribute('data-key') : '');
+  const byFocusKey = key => Array.from(document.querySelectorAll('[data-focus], details[data-key] > summary')).find(node => focusKey(node) === key) || null;
+  function focusPlace() {
+    const node = document.activeElement;
+    const key = node && node !== document.body && node.getAttribute ? focusKey(node) : '';
+    return key ? {key, visible: node.matches(':focus-visible')} : null;
+  }
+  // what can take the focus for a node: the node, or the summary of the closed fold it now sits in
+  const reachable = node => { const fold = node.closest('details:not([open])'); return fold ? fold.querySelector(':scope > summary') || node : node; };
+  function refocus(place, withTip) {
+    const found = place ? byFocusKey(place.key) : null;
+    const target = found ? reachable(found) : null;
+    if (!target || target === document.activeElement) return;
+    quietFocus = !(place.visible && withTip);  // a keyboard focus that showed the tooltip shows it again, nothing else
+    try { target.focus({preventScroll: true}); } finally { quietFocus = false; }
+  }
+  // the zone under a resting pointer gets the pointer's move again: its own logic (the burn-up's crosshair and point)
+  // runs, as when the pointer moved
+  function retip(hover) {
+    const node = hover ? byFocusKey(hover.key) : null;
+    if (node && tipRows.has(node) && document.elementFromPoint(hover.x, hover.y) === node) {
+      node.dispatchEvent(new PointerEvent('pointermove', {clientX: hover.x, clientY: hover.y}));
+    } else if (hover) {
+      hovered = null;
+      if (tipOwner === 'hover') hideTip();
+    }
+  }
+  // a redraw replaces every node: put the focus, the tooltip that was on screen and the open folds back
+  function redraw(paint) {
+    const place = focusPlace(), hover = hovered, owner = tipOwner;
+    const open = new Set(Array.from(document.querySelectorAll('details[data-key]')).filter(node => node.open).map(node => node.getAttribute('data-key')));
+    hideTip();
+    paint();
+    for (const node of document.querySelectorAll('details[data-key]')) if (open.has(node.getAttribute('data-key'))) node.open = true;
+    refocus(place, owner !== null && owner !== 'hover');
+    if (owner === 'hover' || owner === null) retip(hover);
+  }
+  const renderCharts = () => { if ($('progress').hidden) return; draw('burnup', renderBurnup); draw('milestones', renderMilestones); draw('daily', renderDaily); };
+  const render = () => redraw(() => { renderStatic(); renderHeader(); renderWaiting(); renderSessions(); renderNext(); renderEvents(); renderKpis(); renderScope(); renderCharts(); renderFooter(); renderLive(); });
+  const keyOf = text => text.replace(/^\{"generated_at":"[^"]*",/, '{');
+
+  // ---- live: read the state again, keep the frame while it loads, say when the server is gone
+  async function refresh() {
+    clearTimeout(timer);
+    if (!document.hidden) {
+      try {
+        const response = await fetch('state.json', {cache: 'no-store', credentials: 'same-origin', redirect: 'error'});
+        if (!response.ok) throw new Error('state ' + response.status);
+        const text = await response.text();
+        const next = JSON.parse(text);
+        lastOk = Date.now();
+        lost = false;
+        if (next.main.state !== 'ok' && data.main.state === 'ok') {
+          failed = next.main.reason_text;  // keep the last good page: one failed reading is not news
+          put($('banner'), h('p', {className: 'banner'}, t('page.failed_at', {when: stamp(next.generated_at), reason: failed})));
+          renderLive();
+        } else {
+          const recovered = Boolean(failed);
+          failed = '';
+          data = next;
+          const key = keyOf(text);
+          if (key !== lastKey) { lastKey = key; render(); } else { if (recovered) renderHeader(); renderLive(); }  // the banner of a failed reading goes with it
+        }
+      } catch (error) {
+        lost = true;
+        renderLive();
+      }
+    }
+    timer = setTimeout(refresh, Math.max(5, Number(data.refresh_seconds) || 10) * 1000);
+  }
+  let resizing = 0;
+  window.addEventListener('resize', () => { cancelAnimationFrame(resizing); resizing = requestAnimationFrame(() => redraw(renderCharts)); });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) remember(); else if (polling) refresh(); });
+  window.addEventListener('pagehide', remember);
+  setInterval(() => {
+    for (const node of document.querySelectorAll('[data-ago]')) node.textContent = t(node.getAttribute('data-message') || 'page.ago', {span: span(node.getAttribute('data-ago')) || '—'});
+    renderLive();
+  }, 1000);
+  render();
+  lastKey = keyOf(JSON.stringify(data));
+  if (polling) timer = setTimeout(refresh, Math.max(5, Number(data.refresh_seconds) || 10) * 1000);
+})();
+</script>
+</body>
+</html>

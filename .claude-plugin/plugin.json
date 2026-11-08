@@ -1,0 +1,11 @@
+{
+  "name": "flightboard",
+  "version": "0.1.0",
+  "description": "A read-only board of your parallel coding-agent sessions: what each one changed in your roadmap, and what waits for you.",
+  "author": {
+    "name": "Technologies CoreXalt Inc."
+  },
+  "repository": "https://github.com/AnathemaOfficial/flightboard",
+  "license": "Apache-2.0",
+  "keywords": ["sessions", "worktrees", "git", "roadmap", "dashboard", "read-only"]
+}
