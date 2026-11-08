@@ -265,6 +265,29 @@ class ListingTest(unittest.TestCase):
         self.assertEqual([proc.poll() is None for proc in starts.processes], [False])  # git was stopped
         self.assertEqual(files.risky_config(section + b"\tk\n" * 5000), "config_unreadable")
 
+    @unittest.skipUnless(os.name == "nt", "Git for Windows' launchers")
+    def test_a_git_started_through_a_launcher_is_refused_at_once_too(self) -> None:
+        launcher = Path(gitreads.executable()).parents[2] / "bin" / "git.exe"  # Git\mingw64\bin\git.exe: Git\bin
+        if not launcher.is_file():
+            self.skipTest("no Git for Windows launcher next to this git")
+        section = b'[a "' + b"x" * 4000 + b'"]\n'
+        start = time.monotonic()
+        with mock.patch.object(gitreads, "executable", return_value=str(launcher)), \
+                mock.patch.object(gitconfig, "GRACE", 30, create=True), \
+                self.assertRaises(gitconfig.ConfigError):  # killing the launcher leaves its git running
+            gitconfig.entries(section + b"\tk\n" * 5000)
+        self.assertLess(time.monotonic() - start, gitreads.GIT_TIMEOUT / 2)  # its output closed, that git ends too
+
+    def test_no_second_deadline_is_spent_once_git_is_stopped(self) -> None:
+        start = time.monotonic()
+        with mock.patch.object(gitreads, "GIT_TIMEOUT", 3), mock.patch.object(gitconfig, "GRACE", 0.5, create=True), \
+                mock.patch.object(gitconfig, "_stop", lambda proc: None), \
+                git_starts("import time; time.sleep(30)") as starts:  # a stop that left both pipes open
+            self.addCleanup(lambda: [proc.kill() for proc in starts.processes])
+            with self.assertRaises(gitreads.GitFailed):
+                gitconfig.entries(b"[core]\n" + b"\tk = v\n" * 150_000)  # more than a pipe holds
+        self.assertLess(time.monotonic() - start, 3 + 2)  # the deadline and two short waits, not three deadlines
+
     def test_the_deadline_holds_while_git_reads_nothing(self) -> None:
         start = time.monotonic()
         with mock.patch.object(gitreads, "GIT_TIMEOUT", 1), git_starts("import time; time.sleep(20)") as starts:

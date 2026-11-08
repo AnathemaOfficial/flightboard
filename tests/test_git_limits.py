@@ -18,6 +18,7 @@ import shutil
 import stat
 import struct
 import subprocess
+import tempfile
 import threading
 import unittest
 from pathlib import Path
@@ -64,6 +65,23 @@ def runs(trace: tuple[str, Path] | None = None):
 
     with mock.patch.object(gitreads.subprocess, "run", side_effect=spy):
         yield calls
+
+
+@unittest.skipUnless(os.name == "nt", "Git for Windows' launchers")
+class LauncherTest(unittest.TestCase):
+    """Killing a launcher leaves its git running, holding the board's pipes: a timeout must stop the real git."""
+
+    def test_a_launcher_is_replaced_by_the_git_it_starts(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            top = Path(folder) / "Git"
+            for part in ("cmd", "bin", "mingw64/bin"):
+                (top / part).mkdir(parents=True)
+                (top / part / "git.exe").write_bytes(b"")
+            real = top / "mingw64" / "bin" / "git.exe"
+            for found in (top / "cmd" / "git.exe", top / "bin" / "git.exe", real):  # bin: what a GitHub runner finds
+                with self.subTest(found=found.relative_to(top).as_posix()), \
+                        mock.patch.object(gitreads, "git_executable", return_value=str(found)):
+                    self.assertEqual(Path(gitreads.executable()), real)
 
 
 @unittest.skipIf(GIT is None, "git absent")

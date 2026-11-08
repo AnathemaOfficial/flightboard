@@ -257,10 +257,10 @@ aussi le tableau. Puis une liste fixe de lectures, chacune avec un `--git-dir` e
   place d'un dossier suivi, un nom suivi qui sort de l'arbre ou qui n'est pas en UTF-8 (le tableau chercherait un
   autre chemin que git), un chemin suivi de 260 caractères ou plus sous Windows, ou plus de 50 000 fichiers suivis
   gardent `git status` hors de cet arbre ;
-- sous Windows, avec le vrai git plutôt que son lanceur `Git\cmd`, pour que le délai de 8 secondes arrête git
-  lui-même, et avec `core.longpaths` coupé : git n'atteint alors aucun chemin de 260 caractères ou plus, que les
-  contrôles du tableau pourraient ne pas voir (le réglage par défaut de Windows) et prendraient pour un fichier
-  supprimé ;
+- sous Windows, avec le vrai git plutôt qu'un de ses lanceurs (`Git\cmd`, `Git\bin`), pour que le délai de 8
+  secondes arrête git lui-même (tuer un lanceur laisserait son git tourner), et avec `core.longpaths` coupé : git
+  n'atteint alors aucun chemin de 260 caractères ou plus, que les contrôles du tableau pourraient ne pas voir (le
+  réglage par défaut de Windows) et prendraient pour un fichier supprimé ;
 - sans verrou optionnel (une lecture ne réécrit jamais l'index d'une session), sans objet de remplacement ni greffe (ni
   une entrée de `refs/replace`, quoi que dise `core.useReplaceRefs`, ni une ligne de `info/grafts` ne change ce que
   contiennent les commits de main), sans fsmonitor ni vérification de signature, avec git trouvé par un chemin absolu et

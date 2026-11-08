@@ -26,6 +26,7 @@ EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"  # git's built-in empty 
 MIN_VERSION = (2, 41)  # git --attr-source=<tree> <command> (RelNotes 2.41.0)
 NO_LAZY_FETCH = (2, 45)  # GIT_NO_LAZY_FETCH: older git may fetch a missing object from a partial clone's remote
 GIT_TIMEOUT = 8  # shorter than the page's refresh
+REAL_GIT_FOLDERS = ("mingw64", "clangarm64", "mingw32")  # where Git for Windows keeps the git its launchers start
 MAX_HISTORY = 300
 MAX_COMMITS = 8
 MAX_ENTRIES = 2000
@@ -117,14 +118,16 @@ def git_executable() -> str | None:
 
 
 def executable() -> str | None:
-    """git by an absolute path. On Windows, the Git\\cmd launcher is replaced by the real git next to it, so that a
-    timeout stops git itself and not only its launcher."""
+    """git by an absolute path. On Windows, a Git for Windows launcher (Git\\cmd\\git.exe or Git\\bin\\git.exe, the
+    one a GitHub runner finds first) is replaced by the real git it starts, so that a timeout stops git itself:
+    killing a launcher leaves its git running, holding the pipes the board reads."""
     found = git_executable()
     if found is None or os.name != "nt":
         return found
     path = Path(found)
-    if path.parent.name.lower() == "cmd":
-        for candidate in (path.parent.parent / "mingw64" / "bin" / "git.exe", path.parent.parent / "bin" / "git.exe"):
+    if path.parent.name.lower() in ("cmd", "bin"):
+        for folder in REAL_GIT_FOLDERS:
+            candidate = path.parent.parent / folder / "bin" / "git.exe"
             if candidate.is_file():
                 return str(candidate)
     return found

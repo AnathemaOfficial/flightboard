@@ -238,9 +238,10 @@ reads, each with an explicit `--git-dir`, runs:
   into a folder or a link, a submodule holding a `.git` or replaced by a link, a link in place of a tracked folder, a
   tracked name that leaves the worktree or is not UTF-8 (the board would look up another path than git), a tracked
   path of 260 characters or more on Windows, or more than 50,000 tracked files keep `git status` out of that worktree;
-- on Windows, with the real git rather than its `Git\cmd` launcher, so that the 8-second timeout stops git itself,
-  and with `core.longpaths` off: git then reaches no path of 260 characters or more, which the board's own checks may
-  not see (Windows' default) and would take for a deleted file;
+- on Windows, with the real git rather than one of its launchers (`Git\cmd`, `Git\bin`), so that the 8-second
+  timeout stops git itself (killing a launcher would leave its git running), and with `core.longpaths` off: git then
+  reaches no path of 260 characters or more, which the board's own checks may not see (Windows' default) and would
+  take for a deleted file;
 - without optional locks (a reading never rewrites a session's index), replacement objects or grafts (neither a
   `refs/replace` entry, whatever `core.useReplaceRefs` says, nor a line in `info/grafts` changes what main's commits
   hold), fsmonitor or signature checks, with git found by an absolute path and an environment cut down to a short

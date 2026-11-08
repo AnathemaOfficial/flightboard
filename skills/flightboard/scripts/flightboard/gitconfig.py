@@ -29,6 +29,7 @@ COMMAND = ("config", "--file", "-", "--no-includes", "--null", "--list")
 # git's listing of a configuration of files.MAX_CONFIG_BYTES, with room to spare: past it, nothing is weighed
 MAX_LISTING_BYTES = 4_000_000
 CHUNK = 65_536
+GRACE = 2.0  # seconds left to the pipes' threads once git is stopped: no second deadline is spent on them
 
 
 class ConfigError(ValueError):
@@ -105,10 +106,11 @@ def _listing(program: str, data: bytes) -> tuple[int, bytes]:
     finally:
         if code is None:
             _stop(proc)
-        feeder.join(GIT.GIT_TIMEOUT)
-        drainer.join(GIT.GIT_TIMEOUT)
+        wait = GIT.GIT_TIMEOUT if code is not None else GRACE  # once git is stopped, its pipes close at once
+        drainer.join(wait)
         if not drainer.is_alive():  # closing a pipe another thread still reads could wait on that read
-            proc.stdout.close()
+            proc.stdout.close()  # git's next write fails, so it ends even where something outlived the kill
+        feeder.join(wait)
     if over.is_set():
         raise ConfigError("its listing is too long")
     if code is None:

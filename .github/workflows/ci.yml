@@ -45,6 +45,8 @@ jobs:
         run: |
           git --version
           python -I -B skills/flightboard/scripts/flightboard.py --version
+          python -I -B -c "import sys; sys.path.insert(0, 'skills/flightboard/scripts')
+          from flightboard.gitreads import executable; print('git used:', executable())"
       - name: Tests
         run: python -I -B -m unittest discover -s tests -t .
 
