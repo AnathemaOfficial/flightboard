@@ -14,14 +14,18 @@ stops the others, and a failed read is never cached. Standard library only, safe
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import threading
+import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
 from . import TOOL
 from . import files as FILES
 from . import gitreads as GIT
+from . import held as HELD
 from . import ledgers as LEDGERS
 from . import messages as M
 from . import overlay as OVERLAY
@@ -31,11 +35,13 @@ from .config import Settings
 from .gitreads import GitFailed, GitRefused
 from .ledgers import Ledger
 from .ledgers.base import MAX_LEDGER_BYTES
-from .text import iso, safe_branch
+from .text import clean, iso, safe_branch
 
 HEADS = "refs/heads/"
 CHECKOUT_ID = "@checkout"  # no admin folder can take it: their names start with a letter or a digit
 MAX_INFERRED = 3
+MAX_REFS = 5000
+MAX_WALK = 200_000
 UNREADABLE = "unreadable"  # a ledger that exists at a commit but cannot be read, unlike an absent one (None)
 # why an index is never handed to git (files.index_state), as the issue a session shows
 INDEX_ISSUES = {"sparse": "sparse_index", "split": "split_index", "too_big": "index_too_big"}
@@ -51,7 +57,8 @@ class Collector:
             raise ValueError("settings refused")
         self.lang = self.settings.lang
         # from a subfolder, the repository holding it; from a session's worktree, the main checkout
-        self.root = FILES.main_checkout(FILES.top_folder(Path(root)), self.settings.worktrees)
+        self.root = FILES.main_checkout(FILES.top_folder(Path(root)), self.settings.worktrees,
+                                        self.settings.external_worktrees)
         self.common = self.root / ".git"
         self.name = self.root.name if FILES.SAFE_NAME.fullmatch(self.root.name) else "repository"
         self.git = git or GIT.Git(self.settings.remote)
@@ -65,13 +72,16 @@ class Collector:
         self._parsed: dict[str, dict | str | None] = {}  # commit -> its ledger, validated (or None, UNREADABLE)
         self._slim: dict[str, dict | str | None] = {}  # commit -> what history and dating need of its ledger
         self._pairs: dict[tuple[str, str], tuple[int, int, list[str]]] = {}
-        self._ranges: dict[tuple[str, str], list[dict]] = {}
+        self._ranges: dict[tuple[str, str, int], list[dict]] = {}
         self._branch_logs: dict[tuple[str, str], list[dict]] = {}
         self._heads: dict[str, dict] = {}
         self._commits: set[str] = set()  # ids known to name a commit
         self._ancestors: dict[tuple[str, str], bool] = {}
+        self._held_by: dict[tuple[str, str], bool] = {}
+        self._lineages: dict[tuple[str, str], dict[str, tuple[str, ...]]] = {}
+        self._refs_key = ""
         self._history: tuple[tuple, list[dict], bool, bool] | None = None
-        self._files: dict[str, tuple] = {}  # session -> (identity of its working ledger, parsed)
+        self._files: dict[str, tuple] = {}  # session -> (SHA-256 of its working ledger's bytes, parsed)
         self._tracked: dict[str, set] = {}  # session -> the names its index tracks, as this reading found them
         self._used: set = set()
         self._used_full: set = set()  # commits whose full ledger this reading needs (main, tips, bases)
@@ -83,12 +93,17 @@ class Collector:
             self._used, self._used_full, self._used_slim = set(), set(), set()
             self.git.blank = ()  # the filter drivers are read again by this reading: none carried over
             self.git.graph = False  # and the commit-graph stays off until this reading finds its chain plain
+            self.git.deadline = time.monotonic() + GIT.READING_BUDGET
             try:
                 view = self._snapshot(now, mode)
+                if time.monotonic() >= self.git.deadline:
+                    raise GIT.ReadingTooLong("the whole reading exceeded its time budget")
             except (GitFailed, GitRefused) as exc:
                 return self._error(now, mode, "git_failed", str(exc))
             except Exception as exc:  # an odd repository must never take the page or the command down
                 return self._error(now, mode, "read_failed", type(exc).__name__)
+            finally:
+                self.git.deadline = None
             self._prune()
             return view
 
@@ -107,7 +122,7 @@ class Collector:
             for key in [key for key in cache if key not in used]:
                 del cache[key]
         for cache in (self._heads, self._pairs, self._ranges, self._branch_logs, self._ancestors, self._files,
-                      self._tracked):
+                      self._tracked, self._held_by, self._lineages):
             for key in [key for key in cache if key not in self._used]:
                 del cache[key]
         self._commits &= self._used
@@ -131,29 +146,40 @@ class Collector:
         return self._pairs[key]
 
     def _range(self, base: str, tip: str) -> list[dict]:
-        key = (base, tip)
+        key = (base, tip, GIT.MAX_SESSION_COMMITS)
         self._use(key)
         if key not in self._ranges:
-            self._ranges[key] = self.git.commits(self.common, base, tip) if base != tip else []
+            self._ranges[key] = self.git.commits(self.common, base, tip, GIT.MAX_SESSION_COMMITS + 1) \
+                if base != tip else []
         return self._ranges[key]
 
-    def _branch_log(self, name: str, tip: str) -> list[dict]:
-        """What a branch's own reflog says it committed, newest first ({sha, via}), even once it is all in main."""
+    def _branch_log(self, name: str, tip: str) -> tuple[list[dict], str]:
+        """A merged branch's whole bounded reflog: a missing, malformed or cut log cannot establish ended."""
         key = (name, tip)
         if not GIT.is_ref(name, self.remote):
-            return []  # an unusual branch name: no reflog is looked for
+            return [], "commit_history_unreadable"
         self._use(key)
-        if key not in self._branch_logs:
-            self._branch_logs[key] = [{"sha": entry["sha"], "via": entry["via"]} for entry in self._reflog(name)
-                                      if entry["via"].startswith("commit")]
-        return self._branch_logs[key]
+        entries = FILES.read_reflog(self.root, name, GIT.MAX_SESSION_COMMITS, whole=True)
+        if not entries:
+            return [], "commit_history_unreadable"
+        if any(len(entry["via"]) > GIT.MAX_COMMIT_SUBJECT for entry in entries):
+            return [], "commit_history_cut"
+        existing = self._existing([entry["sha"] for entry in entries])
+        if any(entry["sha"] not in existing for entry in entries):
+            return [], "commit_history_unreadable"
+        self._branch_logs[key] = [{"sha": entry["sha"], "via": clean(entry["via"], GIT.MAX_COMMIT_SUBJECT)}
+                                  for entry in entries
+                                  if entry["sha"] in existing and entry["via"].startswith("commit")]
+        return self._branch_logs[key], ""
 
-    def _reflog(self, name: str) -> list[dict]:
+    def _reflog(self, name: str) -> list[dict] | None:
         """A branch's reflog, newest first, read by the board itself (files.read_reflog). As git log -g would, it
         keeps only the moves to a commit the repository holds."""
         entries = FILES.read_reflog(self.root, name, GIT.MAX_HISTORY + 1)
+        if entries is None:
+            return None
         held = self._existing([entry["sha"] for entry in entries]) if entries else set()
-        return [entry for entry in entries if entry["sha"] in held]
+        return [{**entry, "via": clean(entry["via"], 160)} for entry in entries if entry["sha"] in held]
 
     def _existing(self, shas: list[str]) -> set[str]:
         """The ids among shas that name a commit, checked once each (a hand-written HEAD may name nothing)."""
@@ -207,12 +233,22 @@ class Collector:
         reflog no longer holds, marked approximate. With a ledger, the first-parent line keeps only the commits that
         changed it. A branch name git may not be given (a guessed main named with "+", say) has no reflog read: its
         first-parent line alone, marked approximate."""
-        key = (main_ref, main, path)
+        read = self._reflog(main_ref) if GIT.is_ref(main_ref, self.remote) else []
+        key = (main_ref, main, path, hashlib.sha256(repr(read).encode("utf-8")).digest())
         if self._history is None or self._history[0] != key:
-            reflog = self._reflog(main_ref) if GIT.is_ref(main_ref, self.remote) else []
+            reflog = read or []
             cut = len(reflog) > GIT.MAX_HISTORY  # a reflog read in part is followed by main's first-parent line
-            reflog = list(reversed(reflog[:GIT.MAX_HISTORY]))
+            ancestry_unread = False
+            if any(entry["sha"] == main for entry in reflog):
+                try:
+                    reflog = main_moves(main, reflog[:GIT.MAX_HISTORY], self.git.ancestry(self.common, main))
+                except GitFailed:
+                    reflog, ancestry_unread = [], True
+            else:
+                reflog = []
+            reflog = list(reversed(reflog))
             older, unread = self._older(reflog[0]["sha"] if reflog else main, path) if not cut else ([], False)
+            unread = unread or ancestry_unread or read is None
             cut = cut or len(older) > GIT.MAX_HISTORY
             entries = [{"sha": commit["sha"], "at": commit["at"], "via": commit["subject"], "approx": True}
                        for commit in reversed(older[:GIT.MAX_HISTORY])
@@ -264,7 +300,8 @@ class Collector:
         state = FILES.folder_state(self.common, self.root)  # lstat only: a .git link is never followed
         if state != "plain":
             return self._error(now, mode, "no_repository" if state == "gone" else "git_dir_link")
-        problem = FILES.git_dir_problem(self.root, self.remote)
+        budget = FILES.Budget(deadline=self.git.deadline)
+        problem = FILES.git_dir_problem(self.root, self.remote, budget)
         if problem and problem != FILES.PROMISOR:  # git would follow it at every command: none runs on the repository
             return self._error(now, mode, "git_trap", problem)
         if not self._version_ok:
@@ -275,10 +312,24 @@ class Collector:
         if problem and not self._no_lazy_fetch:  # this git could fetch a missing object through the remote's program
             return self._error(now, mode, "git_trap", problem)
         self.git.graph = FILES.commit_graph_plain(self.root)  # a long history is then walked as fast as git can
-        trees = FILES.discover(self.root, self.settings.worktrees)
+        try:
+            trees = FILES.discover(self.root, self.settings.worktrees, self.settings.external_worktrees, budget)
+        except FILES.TooManyWorktrees:
+            return self._error(now, mode, "too_many_worktrees", git_ok=True)
+        if trees is None:
+            return self._error(now, mode, "worktrees_unreadable", git_ok=True)
         if not trees:
             return self._error(now, mode, "no_repository")
         refs = self.git.refs(self.common)
+        if len(refs) > MAX_REFS:
+            return self._error(now, mode, "too_many_refs", git_ok=True)
+        mains = tuple(HEADS + name for name in ((self.settings.main,) if self.settings.main else ("main", "master")))
+        guess = trees[0]["head"].get("ref") if not self.settings.main and not any(name in refs for name in mains) \
+            and not any(self.remote_prefix + name[len(HEADS):] in refs for name in mains) else None
+        if HELD.split_names(refs) or HELD.hidden_main(refs, mains, guess):
+            return self._error(now, mode, "ambiguous_refs", git_ok=True)
+        self._refs_key = hashlib.sha256(repr(sorted((name, info["sha"], info.get("symref"))
+                                                   for name, info in refs.items())).encode("utf-8")).hexdigest()
         main_ref, main, note = self._main(refs, trees[0])
         if main is None:
             return self._error(now, mode, "no_main", git_ok=True)
@@ -294,16 +345,21 @@ class Collector:
             if main_ledger is None:  # main's ledger is unreadable: this reading is git's alone, and says so
                 missing, adapter = adapter.path, None
         entries, cut, unread = self._history_entries(main_ref, main, adapter.path if adapter else None)
-        ranges = {item["id"]: self._guarded_range(item["bases"][0], item["tip"]) for item in readable
-                  if len(item["bases"]) == 1 and item["ahead"]}
+        ranges = {}
+        for item in readable:
+            if len(item["bases"]) == 1 and item["ahead"]:
+                ranges[item["id"]], item["history_issue"] = self._guarded_range(item["bases"][0], item["tip"],
+                                                                              item["ahead"])
         if adapter is not None:
             self._read_ledgers(adapter, [entry["sha"] for entry in entries]
-                               + [commit["sha"] for commits in ranges.values() for commit in commits], False)
+                               + [commit["sha"] for commits in ranges.values() for commit in commits[:GIT.MAX_COMMITS]],
+                               False)
         # every filter driver is switched off for the reads to come, whatever attributes appear meanwhile; the
         # repository's own info/attributes stops the reads of modified files altogether
         planted = not self.git.disarm_filters(self.common) or FILES.attributes_planted(self.root)
         sessions = [self._guarded(item, adapter, main_ledger, main, ranges.get(item["id"], []), planted, now)
                     for item in candidates]
+        sessions = HELD.hold_back(candidates, sessions, self._stash(), self._reaches, self.remote_prefix)
         versions = OVERLAY.history_versions(entries, {sha: self._ledger(sha, False) for sha in
                                                       {entry["sha"] for entry in entries}}) if adapter else []
         short = main_ref.split("/", 3)[-1] if main_ref.startswith("refs/remotes/") else main_ref[len(HEADS):]
@@ -317,16 +373,48 @@ class Collector:
                    "repository": self.name}
         return VIEW.build_view(now, mode, context, sessions, versions, self.settings.public())
 
-    def _guarded_range(self, base: str, tip: str) -> list[dict]:
+    def _stash(self) -> dict:
+        return HELD.stashed(FILES.read_reflog(self.root, "refs/stash", HELD.MAX_STASH, whole=True))
+
+    def _moves(self, tree: dict) -> dict | None:
+        if tree["path"] is None:
+            return {}
+        return HELD.head_moves(FILES.read_head_log(tree["git_dir"], self.root, HELD.MAX_MOVES))
+
+    def _contained(self, commit: str) -> bool:
+        key = (commit, self._refs_key)
+        self._use(key)
+        if key not in self._held_by:
+            self._held_by[key] = self.git.contained(self.common, commit)
+        return self._held_by[key]
+
+    def _reaches(self, older: str, newer: str) -> bool:
+        if older == newer:
+            return True
+        key = ("lineage", newer)
+        self._use(key)
+        if key not in self._lineages:
+            try:
+                self._lineages[key] = self.git.ancestry(self.common, newer)
+            except (GitFailed, GitRefused):
+                return True  # an unread ancestry could contain the branch: keep it held
+        lineage = self._lineages[key]
+        return older in lineage or len(lineage) >= GIT.MAX_ANCESTORS
+
+    def _guarded_range(self, base: str, tip: str, expected: int | None = None) -> tuple[list[dict], str]:
         try:
-            return self._range(base, tip)
+            commits = self._range(base, tip)
+            if expected is not None and len(commits) != min(expected, GIT.MAX_SESSION_COMMITS + 1):
+                self._ranges.pop((base, tip, GIT.MAX_SESSION_COMMITS), None)
+                return commits[:GIT.MAX_SESSION_COMMITS], "commit_history_unreadable"
+            return commits[:GIT.MAX_SESSION_COMMITS], "commit_history_cut" \
+                if len(commits) > GIT.MAX_SESSION_COMMITS or any(c.get("_subject_cut") for c in commits) else ""
         except GitFailed:
-            return []
+            return [], "commit_history_unreadable"
 
     def _main(self, refs: dict, main_tree: dict) -> tuple[str | None, str | None, tuple[str, ...]]:
-        """main, or the remote's main when it holds everything main holds and more (a merge pushed from elsewhere) or
-        when there is no local main at all, with the notes the page and --resume both show: the remote's main
-        followed, or diverged, and main guessed from the main checkout's branch when the repository has neither main
+        """Local main, with a remote lead or divergence noted; remote main only when no local main exists.
+        The page and --resume also say when main is guessed from the main checkout's branch because there is neither main
         nor master, locally or on the remote, and --main names none (a session that switches that checkout's branch
         moves the baseline: the note says so, and --main pins it)."""
         names = (self.settings.main,) if self.settings.main else ("main", "master")
@@ -345,7 +433,7 @@ class Collector:
         if remote is None or remote["sha"] == sha or self._ancestor(remote["sha"], sha):
             return local, sha, notes
         if self._ancestor(sha, remote["sha"]):
-            return remote_ref, remote["sha"], notes + ("remote_ahead",)
+            return local, sha, notes + ("remote_ahead",)
         return local, sha, notes + ("diverged",)
 
     def _candidate(self, base: dict, main: str) -> dict:
@@ -353,50 +441,55 @@ class Collector:
         try:
             behind, ahead, bases = self._pair(main, base["tip"])
         except GitFailed:
-            return {**base, "behind": 0, "ahead": 0, "bases": [], "broken": True}
-        return {**base, "behind": behind, "ahead": ahead, "bases": bases, "broken": False}
+            return {**base, "behind": None, "ahead": None, "bases": [], "broken": True,
+                    "known": True, "unread": "distance_unreadable"}
+        return {**base, "behind": behind, "ahead": ahead, "bases": bases, "broken": False, "known": True}
 
     def _candidates(self, trees: list[dict], refs: dict, main_ref: str, main: str,
                     now: datetime) -> tuple[list[dict], dict]:
-        tips = [refs[tree["head"]["ref"]]["sha"] if tree["head"].get("ref") in refs else tree["head"].get("sha")
-                for tree in trees]
+        tips = [HELD.tip(tree, refs) for tree in trees]
         existing = self._existing([tip for tip in tips if tip])
-        items, used = [], {main_ref}
+        items, used, unknown = [], {main_ref}, False
         for tree, tip in zip(trees, tips):
+            held = HELD.held(tree, refs)
+            used.update(held or ())
+            unknown = unknown or held is None
             branch = tree["head"].get("ref") or tree["operation"]["branch"]  # a rebase detaches HEAD: head-name names it
-            if branch:
-                used.add(branch)
-            if not tip:
-                continue
             # a folder that is not read (outside the read folders, gone, odd admin files) still shows, by its branch
             base = {"id": tree["id"] or CHECKOUT_ID, "kind": "checkout" if tree["main"] else "worktree",
-                    "name": tree["name"], "ref": branch, "tip": tip, "path": tree["path"], "git_dir": tree["git_dir"],
+                    "name": tree["name"], "ref": branch, "tip": tip or "", "path": tree["path"], "git_dir": tree["git_dir"],
+                    "boundary": tree.get("boundary", self.root),
                     "created": tree["created"], "operation": tree["operation"]["kind"], "reason": tree["reason"],
-                    "stale": False, "gone": tree["reason"] == FILES.GONE, "remote": self._remote(refs, branch, tip)}
-            items.append(self._candidate(base, main) if tip in existing else {**base, "behind": 0, "ahead": 0,
-                                                                                "bases": [], "broken": True})
+                    "stale": False, "gone": tree["reason"] == FILES.GONE, "remote": self._remote(refs, branch, tip),
+                    "held": held, "moves": self._moves(tree)}
+            items.append(self._candidate(base, main) if tip in existing else {
+                **base, "behind": None, "ahead": None, "bases": [], "broken": True, "known": False,
+                "unread": HELD.unread(tree, refs) if not tip else "unknown_commit"})
         try:
             unmerged, unread = self.git.refs(self.common, unmerged_from=main), False
         except GitFailed:  # git could not tell them in time (a very long history): the folders' sessions still show
             unmerged, unread = {}, True
         others = []
         for name, info in unmerged.items():
-            if name in used or name in (self._remote_main, self.remote_prefix + "HEAD"):
+            if name in used or info.get("symref") or name in (self._remote_main, self.remote_prefix + "HEAD"):
                 continue
             if name.startswith(self.remote_prefix) and HEADS + name[len(self.remote_prefix):] in unmerged:
                 continue  # one session, one card: the local branch shows it, read at the remote's tip when behind
             kind = "branch" if name.startswith(HEADS) else "remote"
             short = name[len(HEADS):] if kind == "branch" else f"{self.remote}/" + name[len(self.remote_prefix):]
-            remote = "pushed" if kind == "remote" else self._remote(refs, name, info["sha"])
-            # a branch the remote has carried further is read, dated and sorted at the remote's tip
-            front = refs[self.remote_prefix + short] if remote == "behind" else info
-            others.append((front["at"], name, kind, short, "pushed" if remote == "behind" else remote, front["sha"]))
+            remote_info = refs.get(self.remote_prefix + short) if kind == "branch" else None
+            others.append((max(info["at"], remote_info["at"]) if remote_info else info["at"],
+                           name, kind, short, info))
         others.sort(key=lambda entry: (entry[0], entry[1]), reverse=True)
         cap = self.settings.max_branches
-        for at, name, kind, short, remote, tip in others[:cap]:
-            base = {"id": "ref:" + name, "kind": kind, "name": safe_branch(short), "ref": name, "tip": tip,
-                    "path": None, "git_dir": None, "created": None, "operation": "", "reason": "",
-                    "stale": now.timestamp() - at > self.settings.stale_days * 86400, "gone": False, "remote": remote}
+        for _, name, kind, short, info in others[:cap]:
+            remote = "pushed" if kind == "remote" else self._remote(refs, name, info["sha"])
+            front = refs[self.remote_prefix + short] if remote == "behind" else info
+            base = {"id": "ref:" + name, "kind": kind, "name": safe_branch(short), "ref": name, "tip": front["sha"],
+                    "path": None, "git_dir": None, "created": None, "operation": "",
+                    "reason": "held_unknown" if unknown else "",
+                    "stale": now.timestamp() - front["at"] > self.settings.stale_days * 86400, "gone": False,
+                    "remote": "pushed" if remote == "behind" else remote}
             item = self._candidate(base, main)
             if item["broken"] or item["ahead"]:
                 items.append(item)
@@ -424,7 +517,7 @@ class Collector:
         since."""
         self._use(item["id"])
         if item.get("broken"):
-            return VIEW.unreadable_session(item, "unknown_commit")
+            return VIEW.unreadable_session(item, item.get("unread") or "unknown_commit")
         try:
             return self._session(item, adapter, main_ledger, main, commits, planted, now)
         except Exception as exc:  # one hostile or broken session must not take the page down
@@ -436,14 +529,15 @@ class Collector:
         the copy cannot be read."""
         if item["operation"] == "merge":
             return tip_ledger, "merging", None  # a merge in progress holds main's changes too: read the last commit
-        data, state, identity = FILES.read_ledger(item["path"], self.root, adapter.parts)
+        data, state, identity = FILES.read_ledger(item["path"], item.get("boundary", self.root), adapter.parts)
         if state == "absent":
             return None, "absent", None
         if state != "ok":
             return tip_ledger, state, None
+        digest = hashlib.sha256(data).digest()
         cached = self._files.get(item["id"])
-        parsed = cached[1] if cached is not None and cached[0] == identity else adapter.parse(data)
-        self._files[item["id"]] = (identity, parsed)
+        parsed = cached[1] if cached is not None and cached[0] == digest else adapter.parse(data)
+        self._files[item["id"]] = (digest, parsed)
         written = identity[1] / 1e9 if identity else None
         return (parsed, "ok", written) if parsed is not None else (tip_ledger, "writing", None)
 
@@ -459,29 +553,30 @@ class Collector:
             self._tracked[item["id"]] = set()
             return [], [], INDEX_ISSUES.get(state, "tracked_unreadable")
         staged = self.git.staged(item["git_dir"], item["path"])
-        names = {name for _, name in staged if FILES.safe_relative(name)}
+        names = {entry[-1] for entry in staged if FILES.safe_relative(entry[-1])}
+        boundary = item.get("boundary", self.root)
         self._tracked[item["id"]] = names
         if planted:
             issue = "planted"
         elif len(staged) > GIT.MAX_STAGED:
             issue = "too_many_tracked"
         else:
-            issue = FILES.tracked_problem(item["path"], self.root, staged)
+            issue = FILES.tracked_problem(item["path"], boundary, staged)
         entries = [] if issue else self.git.status(item["git_dir"], item["path"])
-        candidates = FILES.untracked(item["path"], self.root, names)
+        candidates = FILES.untracked(item["path"], boundary, names)
         if candidates is None:  # a folder holding tracked files cannot be listed: its new files are unknown
             return entries, [], issue or "folder_unlisted"
         if item["kind"] == "checkout":  # the worktree folders, and the folders that hold them, are the sessions' own
             candidates = [name for name in candidates if not _sessions_folder(name, self.settings.worktrees)]
         nested = [name for name in candidates if name.endswith("/") and _holds_git(item["path"] / name)]
-        inside = {name: FILES.children(item["path"], self.root, name) for name in candidates
+        inside = {name: FILES.children(item["path"], boundary, name) for name in candidates
                   if name.endswith("/") and name not in nested}
         asked = [name for name in candidates if name not in nested] \
             + [child for found in inside.values() if found for child in found["folders"] + found["leaves"]]
         # asked again at every reading: an ignore rule can change (a .gitignore rewritten, info/exclude) while the
         # names stay the same
         ignored: set[str] = set()
-        if asked and not FILES.ignore_file_special(item["path"], self.root, asked):  # git would wait on a pipe
+        if asked and not FILES.ignore_file_special(item["path"], boundary, asked):  # git would wait on a pipe
             try:
                 ignored = self.git.ignored(item["git_dir"], item["path"], asked)
             except GitFailed:  # git cannot tell (a path inside a submodule, say): every candidate counts
@@ -499,7 +594,7 @@ class Collector:
         added deep in a kept folder changes no top folder's time, and a stale count could let a worktree look safe to
         remove. The walk is bounded and opens no file."""
         folders = self.settings.kept
-        return FILES.kept_count(item["path"], self.root, tracked, folders) if folders else 0
+        return FILES.kept_count(item["path"], item.get("boundary", self.root), tracked, folders) if folders else 0
 
     def _dated(self, changes: list[dict], commits: list[dict], tip: str, ledger_time: float | None, zone,
                ahead: int) -> list[dict]:
@@ -552,29 +647,37 @@ class Collector:
             "unreadable" if self._parsed.get(item["tip"]) == UNREADABLE else "absent")
         if item["path"] is not None:
             entries, candidates, issue = self._files_of(item, planted)
-            written = FILES.last_write(item["path"], self.root, [entry["path"] for entry in entries
+            issue = issue or ("" if item.get("moves") is not None else "head_log_unreadable")
+            written = FILES.last_write(item["path"], item.get("boundary", self.root), [entry["path"] for entry in entries
                                                                  if not entry["deleted"]] + candidates)
             if adapter is not None:
                 head_ledger, ledger_state, ledger_time = self._working_ledger(item, adapter, tip_ledger)
             if not entries and not candidates and not issue and not item["ahead"] and item["kind"] == "worktree":
                 kept = self._kept_count(item, self._tracked[item["id"]])
+        left = HELD.left_behind(item, self._existing, self._contained) if item["kind"] == "worktree" else 0
         reason, detail = item["reason"], ""
+        if ledger_state not in ("ok", "absent", "none", "merging"):
+            reason = reason or "working_ledger_unreadable"
         if len(item["bases"]) > 1:
             reason = reason or "several_bases"
         if item["stale"]:
             reason, detail = (reason, detail) if reason else ("stale", str(self.settings.stale_days))
         changes, decisions, sections, reason, detail = self._ledger_side(item, adapter, tip_ledger, head_ledger,
                                                                          reason, detail)
-        changes = self._dated(changes, commits, item["tip"], ledger_time, now.tzinfo, item["ahead"])
+        shown_commits = commits[:GIT.MAX_COMMITS]
+        changes = self._dated(changes, shown_commits, item["tip"], ledger_time, now.tzinfo, item["ahead"])
         short = item["ref"][len(HEADS):] if item["ref"] and item["ref"].startswith(HEADS) else ""
-        log = self._branch_log(item["ref"], item["tip"]) if adapter and not commits and short \
-            and item["kind"] == "worktree" else []
-        own = [commit["subject"] for commit in commits] if commits else [entry["via"] for entry in log]
+        log, history_issue = [], item.get("history_issue", "")
+        if adapter and not item["ahead"] and short and item["kind"] == "worktree":
+            log, history_issue = self._branch_log(item["ref"], item["tip"])
+        reason = reason or history_issue
+        own = [commit.get("_inference_subject", commit["subject"]) for commit in commits] if commits \
+            else [entry["via"] for entry in log]
         known = set(main_ledger["tasks"] if main_ledger else {}) | set((head_ledger or {}).get("tasks", {}))
         moved = [change["task"] for change in changes if not change["removed"]]
         named = VIEW.infer_tasks([item["name"], short], known) if known else []
         written_by = VIEW.infer_tasks(own, known) if known else []
-        inferred = [tid for tid in dict.fromkeys(named + written_by) if tid not in moved][:MAX_INFERRED]
+        inferred = [tid for tid in dict.fromkeys(named + written_by) if tid not in moved]
         head = self._heads.get(item["tip"], {})
         times = [moment for moment in (head.get("at"), written.timestamp() if written else None, item["created"])
                  if moment]
@@ -604,12 +707,42 @@ class Collector:
             "reason": reason, "reason_detail": detail, "overlay": bool(changes) and not reason,
             "changes": changes[:VIEW.MAX_CHANGES], "hidden_changes": max(0, len(changes) - VIEW.MAX_CHANGES),
             "decisions": decisions[:VIEW.MAX_CHANGES], "sections": sections,
-            "tasks": list(dict.fromkeys(moved + inferred)), "inferred": inferred,
+            "tasks": list(dict.fromkeys(moved + inferred)), "inferred": inferred[:MAX_INFERRED],
             "commits": [{"sha": commit["sha"][:7], "at": iso(commit["at"], now.tzinfo),
-                         "subject": commit["subject"]} for commit in commits],
+                         "subject": commit["subject"]} for commit in shown_commits],
             "updated_at": (head_ledger or {}).get("updated_at", ""),
-            "_changes": changes, "_head_tasks": (head_ledger or {}).get("tasks", {}),
+            "stash": "", "left_behind": left, "held": "",
+            "_changes": changes, "_head_tasks": (head_ledger or {}).get("tasks", {}), "_inferred": inferred,
         }
+
+
+def main_moves(main: str, reflog: list[dict], parents: dict[str, tuple[str, ...]]) -> list[dict]:
+    """Keep only main's ancestors, starting at the latest line naming its current tip.
+
+    Reflogs are writable data. Existing elsewhere is insufficient evidence a commit was main: commits main lacks,
+    newer forged lines and moves subsequently undone never become main's progress history.
+    """
+    start = next((index for index, entry in enumerate(reflog) if entry["sha"] == main), None)
+    if start is None:
+        return []
+    kept, steps = [reflog[start]], MAX_WALK
+    seen, queue = {main}, deque([main])
+    for entry in reflog[start + 1:]:
+        if entry["sha"] == kept[-1]["sha"]:
+            kept[-1] = entry
+            continue
+        while entry["sha"] not in seen and queue and steps > 0:
+            steps -= 1
+            for parent in parents.get(queue.popleft(), ()):
+                if parent not in seen:
+                    seen.add(parent)
+                    queue.append(parent)
+        if entry["sha"] in seen:
+            kept.append(entry)
+            seen, queue = {entry["sha"]}, deque([entry["sha"]])
+        elif queue:
+            break
+    return kept
 
 
 def _sessions_folder(name: str, folders: tuple[tuple[str, ...], ...]) -> bool:

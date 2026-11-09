@@ -149,9 +149,9 @@ class OverlayTest(unittest.TestCase):
     def test_a_change_applies_when_main_still_holds_the_base(self) -> None:
         live = self.live(session("a", [change("FB-001", "planned", "in_progress", uncommitted=True)]))
         self.assertEqual((live["FB-001"]["status"], live["FB-001"]["status_main"]), ("in_progress", "planned"))
-        self.assertEqual(live["FB-001"]["sources"], [{"session": "a", "from": "planned", "to": "in_progress",
+        self.assertEqual(live["FB-001"]["sources"], [{"session": "a", "session_id": "a", "from": "planned", "to": "in_progress",
                                                       "uncommitted": True, "applied": True, "reason": "", "other": "",
-                                                      "governed": ""}])
+                                                      "other_id": "", "governed": ""}])
 
     def test_a_change_main_already_holds_is_clean(self) -> None:
         live = self.live(session("a", [change("FB-002", "in_progress", "awaiting_review")]))
@@ -393,10 +393,10 @@ class ViewTest(unittest.TestCase):
 
 class ParsersTest(unittest.TestCase):
     def test_staged_entries_are_never_cut_silently(self) -> None:
-        raw = "".join(f"100644 {'a' * 40} 0\tf{index}.txt\0" for index in range(5)).encode("utf-8")
+        raw = "".join(f"H 100644 {'a' * 40} 0\tf{index}.txt\0" for index in range(5)).encode("utf-8")
         self.assertEqual(len(gitreads.parse_staged(raw, 3)), 4)  # one more than the limit: the caller sees the cut
         self.assertEqual(len(gitreads.parse_staged(raw, 10)), 5)
-        self.assertEqual(gitreads.parse_staged(b"160000 " + b"b" * 40 + b" 0\tsub\0", 3), [("160000", "sub")])
+        self.assertEqual(gitreads.parse_staged(b"H 160000 " + b"b" * 40 + b" 0\tsub\0", 3), [("H", "160000", "sub")])
 
     def test_status_porcelain_v2(self) -> None:
         raw = ("1 .M N... 100644 100644 100644 " + "a" * 40 + " " + "b" * 40 + " data/roadmap.json\0"

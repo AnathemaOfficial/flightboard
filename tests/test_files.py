@@ -175,10 +175,14 @@ class DiscoverTest(unittest.TestCase):
         self.unc = BACKSLASHES + "host" + "\\" + "share" + "\\" + "x" + "\\.git"
         self.admin("a", (self.root / ".claude" / "worktrees" / "a" / ".git").as_posix(), "ref: refs/heads/claude/a")
         (self.root / ".claude" / "worktrees" / "a").mkdir(parents=True)
+        (self.root / ".claude" / "worktrees" / "a" / ".git").write_text(
+            "gitdir: " + (self.admins / "a").as_posix() + "\n", encoding="utf-8")
         self.admin("b", self.unc, "b" * 40)
         self.admin("c", (self.root / ".claude" / "worktrees" / "c" / ".git").as_posix(), "ref: refs/heads/claude/c")
         self.admin("d", "../../../.claude/worktrees/d/.git", "d" * 40)
         (self.root / ".claude" / "worktrees" / "d").mkdir(parents=True)
+        (self.root / ".claude" / "worktrees" / "d" / ".git").write_text(
+            "gitdir: " + (self.admins / "d").as_posix() + "\n", encoding="utf-8")
         (self.admins / "d" / "rebase-merge").mkdir()
         (self.admins / "d" / "rebase-merge" / "head-name").write_text("refs/heads/claude/d\n", encoding="utf-8")
         (self.admins / "not a name!").mkdir()
@@ -192,7 +196,8 @@ class DiscoverTest(unittest.TestCase):
 
     def test_worktrees_from_the_admin_folders(self) -> None:
         found = {item["id"]: item for item in files.discover(self.root)}
-        self.assertEqual(set(found), {"", "a", "b", "c", "d"})
+        self.assertEqual(set(found), {"", "a", "b", "c", "d", "unknown:5"})
+        self.assertTrue(found["unknown:5"]["unknown"])
         self.assertEqual((found[""]["path"], found[""]["head"], found[""]["main"]), (self.root, {"ref": "refs/heads/main"},
                                                                                      True))
         self.assertEqual((found["a"]["path"], found["a"]["head"]), (self.root / ".claude" / "worktrees" / "a",
@@ -321,7 +326,7 @@ class UntrackedTest(unittest.TestCase):
             found = files.untracked(self.root, self.root, self.tracked)
         self.assertEqual(sorted(found), ["docs/c.md", "docs/nested/", "module/", "new.py"])
         self.assertFalse([path for path in seen if "nested" in path or "module" in path])
-        self.assertEqual(files.untracked(self.root, self.root, self.tracked, limit=2)[:2], found[:2])
+        self.assertIsNone(files.untracked(self.root, self.root, self.tracked, limit=2))
 
     def test_odd_tracked_names_never_lead_the_walk_outside(self) -> None:
         seen: list[str] = []

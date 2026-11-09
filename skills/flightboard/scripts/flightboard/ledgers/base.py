@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+from hashlib import sha256
 from collections import Counter
 from typing import Any
 
@@ -22,6 +23,7 @@ STATUSES = ("planned", "ready", "in_progress", "awaiting_review", "done", "block
 SATISFIED = ("done", "awaiting_review")
 PROGRESS = {"planned": 0, "ready": 1, "in_progress": 2, "awaiting_review": 3, "done": 4}
 GOVERNED = ("owner", "reviewer")  # their tasks move only in main: a branch never decides for them
+OWNER = re.compile(r"[a-z][a-z0-9_-]{0,30}")
 PATH = re.compile(r"[A-Za-z0-9._-]{1,100}(?:/[A-Za-z0-9._-]{1,100}){0,9}")
 
 
@@ -52,6 +54,22 @@ def read_json(data: bytes) -> Any:
 
 def texts(value: object, count: int, limit: int) -> list[str]:
     return [clean(item, limit) for item in value[:count] if isinstance(item, str)] if isinstance(value, list) else []
+
+
+def dependencies(value: object) -> list[str]:
+    """Dependency ids are decision inputs: preserve every id, without display truncation."""
+    return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
+
+def task_identity(values: dict) -> str:
+    """The complete declaration behind a task's displayed metadata, independent of its status."""
+    encoded = json.dumps(values, ensure_ascii=True, sort_keys=True, separators=(",", ":"), default=str)
+    return sha256(encoded.encode("ascii")).hexdigest()
+
+
+def countable(task: dict) -> bool:
+    """Keep main's own task, but never count an unresolved task introduced only by sessions."""
+    return task.get("status_main") is not None or not (task.get("conflict") or task.get("collision"))
 
 
 def safe_path(text: object) -> str | None:
@@ -94,14 +112,14 @@ class Ledger:
 
     def agent_task(self, owner: str) -> bool:
         """Whether a task with this owner is one a coding-agent session could pick up."""
-        return owner in ("claude", "")
+        return owner not in GOVERNED and (owner == "" or bool(OWNER.fullmatch(owner)))
 
     def milestones(self, raw: dict, live: dict[str, dict], main: dict[str, dict]) -> list[dict]:
         """One row per milestone: counts in the live view and in main; no forecast unless the format has one."""
         rows = []
         for mid, title in self.milestone_titles(raw):
             own = [entry for entry in live.values() if entry["milestone"] == mid
-                   and (not entry["collision"] or entry["status_main"])]
+                   and countable(entry)]
             rows.append(milestone_row(mid, title, "", own, [t for t in main.values() if t["milestone"] == mid]))
         return rows
 
@@ -128,6 +146,7 @@ def milestone_row(mid: str, title: str, track: str, own: list[dict], own_main: l
                   starts: tuple[str, str] = ("", "")) -> dict:
     """A milestone as the page draws it: the live view's counts, main's counts, what is declared and not yet in main,
     and the forecast when the format has one."""
+    own = [entry for entry in own if countable(entry)]
     return {
         "id": mid, "title": title, "track": track,
         "total": len(own), "active": sum(1 for entry in own if entry["status"] != "dropped"),

@@ -54,16 +54,16 @@ def runs(trace: tuple[str, Path] | None = None):
     """Every git run of the board, as (command, completed process); with trace, each run also asks git for that trace
     (GIT_TRACE_REFS, GIT_TRACE2_PERF) in that file."""
     calls: list[tuple[list[str], subprocess.CompletedProcess]] = []
-    real = subprocess.run
+    real = gitreads._spawn
 
-    def spy(command, *args, **kwargs):
+    def spy(command, env, cwd, stdin, timeout=None, limit=gitreads.MAX_OUTPUT_BYTES):
         if trace:
-            kwargs["env"] = {**(kwargs.get("env") or {}), trace[0]: str(trace[1])}
-        proc = real(command, *args, **kwargs)
+            env = {**env, trace[0]: str(trace[1])}
+        proc = real(command, env, cwd, stdin, timeout, limit)
         calls.append((list(command), proc))
         return proc
 
-    with mock.patch.object(gitreads.subprocess, "run", side_effect=spy):
+    with mock.patch.object(gitreads, "_spawn", side_effect=spy):
         yield calls
 
 
@@ -89,7 +89,7 @@ class OldGitTest(unittest.TestCase):
     def test_a_git_too_old_for_the_board_is_told_so(self) -> None:
         repo = Plain()
         self.addCleanup(repo.close)
-        real = subprocess.run
+        real = gitreads._spawn
 
         def older(command, *args, **kwargs):  # what git 2.40 does: --attr-source is an unknown option to it
             if any(str(part).startswith("--attr-source") for part in command):
@@ -98,7 +98,7 @@ class OldGitTest(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 0, b"git version 2.40.4\n", b"")
             return real(command, *args, **kwargs)
 
-        with mock.patch.object(gitreads.subprocess, "run", side_effect=older):
+        with mock.patch.object(gitreads, "_spawn", side_effect=older):
             found = read(repo.root)
         self.assertEqual((found["main"]["state"], found["main"]["reason"]), ("unreadable", "git_too_old"))
         self.assertIn("git 2.41 or newer", found["main"]["reason_text"])
@@ -249,7 +249,7 @@ class NamedFilesTest(unittest.TestCase):
         heads.mkdir(parents=True)
         if not make_link(elsewhere, heads / "sub"):
             self.skipTest("this system does not let the test make a link")
-        self.assertEqual(files.read_reflog(self.repo.root, "refs/heads/claude/sub/x", 10), [])
+        self.assertIsNone(files.read_reflog(self.repo.root, "refs/heads/claude/sub/x", 10))
         entries = files.read_reflog(self.repo.root, "refs/heads/main", 10)
         self.assertEqual(entries[0]["sha"], tip)
         self.assertTrue(entries[0]["via"].startswith("commit"))
@@ -320,16 +320,16 @@ class SparseCheckoutTest(unittest.TestCase):
     def test_git_looks_up_no_index_name_the_board_has_not_checked(self) -> None:
         self.sparse("--cone")
         (self.tree / "a" / "new.txt").write_text("new\n", encoding="utf-8")  # an untracked file: check-ignore runs
-        real = subprocess.run
+        real = gitreads._spawn
         calls: list[tuple[str, Path]] = []
 
-        def spy(command, *args, **kwargs):
+        def spy(command, env, cwd, stdin, timeout=None, limit=gitreads.MAX_OUTPUT_BYTES):
             trace = self.base / f"trace2-{len(calls)}.txt"
-            kwargs["env"] = {**(kwargs.get("env") or {}), "GIT_TRACE2_PERF": str(trace)}
+            env = {**env, "GIT_TRACE2_PERF": str(trace)}
             calls.append((next(part for part in command if part in gitreads.VERBS), trace))
-            return real(command, *args, **kwargs)
+            return real(command, env, cwd, stdin, timeout, limit)
 
-        with mock.patch.object(gitreads.subprocess, "run", side_effect=spy):
+        with mock.patch.object(gitreads, "_spawn", side_effect=spy):
             session = by_name(read(self.repo.root))["w"]
         self.assertEqual((session["reason"], session["files_read"], session["untracked"]), ("", True, 1))
         verbs = {verb for verb, _ in calls}
@@ -338,12 +338,13 @@ class SparseCheckoutTest(unittest.TestCase):
                   in trace.read_text(encoding="utf-8", errors="replace")}
         self.assertEqual(looked - {"status"}, set())  # git status alone, once every name has passed the checks
 
-    def test_a_file_written_outside_the_sparse_patterns_counts_as_modified(self) -> None:
+    def test_a_skip_worktree_file_present_on_disk_keeps_the_session_unknown(self) -> None:
         self.sparse("--cone")
         (self.tree / "c").mkdir()
         (self.tree / "c" / "f.txt").write_text("written outside the patterns\n", encoding="utf-8")
         session = by_name(read(self.repo.root))["w"]
-        self.assertEqual((session["reason"], session["files_read"], session["modified"]), ("", True, 1))
+        self.assertEqual((session["reason"], session["files_read"], session["files_issue"]),
+                         ("", False, "skipped_tracked"))
 
     def test_a_sparse_index_is_never_handed_to_git(self) -> None:
         self.sparse("--cone", "--sparse-index")

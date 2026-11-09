@@ -13,7 +13,7 @@ from datetime import timedelta
 
 from ..text import clean
 from . import roadmap_rules as RULES
-from .base import MAX_LEDGER_BYTES, Ledger, NotALedger, milestone_row, read_json, texts
+from .base import MAX_LEDGER_BYTES, Ledger, NotALedger, countable, dependencies, milestone_row, read_json, task_identity, texts
 
 # What the validator iterates over: its time grows with tasks times dependencies, exit-criteria citations times
 # dependencies and external dependencies times tasks. A ledger past any of these is read but not validated, so never
@@ -25,10 +25,15 @@ MAX_READ_TASKS = 2 * MAX_VALIDATED["tasks"]  # an oversized ledger is read in pa
 
 def _task(item: dict) -> dict:
     return {"status": item["status"], "title": clean(item.get("title_fr"), 200),
-            "milestone": clean(item.get("milestone"), 12), "owner": clean(item.get("owner"), 20),
+            "milestone": clean(item.get("milestone"), 12), "owner": clean(item.get("owner"), 31),
             "size": clean(item.get("size"), 4), "priority": clean(item.get("priority"), 4),
-            "release": clean(item.get("release"), 10), "dependencies": texts(item.get("dependencies"), 30, 40),
-            "acceptance": texts(item.get("acceptance_fr"), 5, 300)}
+            "release": clean(item.get("release"), 10), "dependencies": dependencies(item.get("dependencies")),
+            "acceptance": texts(item.get("acceptance_fr"), 5, 300),
+            "_identity": task_identity({key: item.get(key, default) for key, default in
+                                        (("title_fr", ""), ("milestone", ""), ("owner", ""), ("size", ""),
+                                         ("priority", ""), ("release", ""), ("dependencies", []),
+                                         ("acceptance_fr", []), ("epic", ""), ("evidence_expected", []),
+                                         ("start_early", ""), ("notes_fr", ""))})}
 
 
 def _decision(item: dict) -> dict:
@@ -104,9 +109,6 @@ class RoadmapLedger(Ledger):
                 "updated_at": updated if isinstance(updated, str) and RULES.DATE.fullmatch(updated) else "",
                 "tasks": tasks, "decisions": decisions, "raw": raw}
 
-    def agent_task(self, owner: str) -> bool:
-        return owner == "claude"
-
     def _forecast(self, raw: dict) -> dict[str, dict]:
         """main's forecast; empty when it cannot be computed (an odd ledger never breaks the page)."""
         try:
@@ -122,9 +124,9 @@ class RoadmapLedger(Ledger):
                     or not RULES.MILESTONE_ID.fullmatch(milestone["id"]):
                 continue
             mid, row = milestone["id"], rows.get(milestone["id"])
-            # a collision keeps main's own task (its status_main is set), as the figures do
+            # A contested new declaration has no baseline to count; main's own task remains main's.
             own = [entry for entry in live.values() if entry["milestone"] == mid
-                   and (not entry["collision"] or entry["status_main"])]
+                   and countable(entry)]
             own_main = [task for task in main.values() if task["milestone"] == mid]
             weeks = milestone.get("timebox_weeks") if isinstance(milestone.get("timebox_weeks"), int) else 0
             try:
@@ -155,6 +157,8 @@ class RoadmapLedger(Ledger):
 
     def launch(self, raw: dict, live: dict[str, dict], milestones: list[dict]) -> dict | None:
         gate = live.get(raw.get("launch_gate"), {}) if isinstance(raw.get("launch_gate"), str) else {}
+        if not countable(gate):
+            return None
         found = next((m for m in milestones if m["id"] == gate.get("milestone") and m["forecast"]), None)
         return {key: found[key] for key in ("id", "planned", "forecast", "gap")} if found else None
 

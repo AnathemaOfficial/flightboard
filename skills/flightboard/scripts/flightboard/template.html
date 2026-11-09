@@ -20,7 +20,7 @@ header{background:linear-gradient(120deg,#07090d,#141b26);color:#fff;padding:20p
 .resume{color:#f2f5fa;margin:0 0 4px;line-height:1.5;font-size:16px}.snapshot{color:#aeb8c8;margin:0;line-height:1.5;font-size:13px;overflow-wrap:anywhere}
 .live{display:flex;align-items:center;gap:9px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.2);border-radius:999px;padding:8px 15px;font-size:14px;color:#eef2f8;white-space:nowrap}
 .live .beacon{width:10px;height:10px;border-radius:50%;background:#3ddc84;flex:none}
-.live.on .beacon{animation:pulse 2s infinite}.live.snapshot .beacon{background:#9aa1ad}.live.lost .beacon{background:#ff6b6b}
+.live.on .beacon{animation:pulse 2s infinite}.live.snapshot .beacon{background:#9aa1ad}.live.lost .beacon,.live.failed .beacon{background:#ff6b6b}
 @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(61,220,132,.6)}70%{box-shadow:0 0 0 9px rgba(61,220,132,0)}100%{box-shadow:0 0 0 0 rgba(61,220,132,0)}}
 @media(prefers-reduced-motion:reduce){.live.on .beacon{animation:none}*{transition:none!important}}
 main{max-width:1308px;margin:auto;padding:18px 24px 60px}h2{font-size:19px;margin:28px 0 10px}h3{margin:0;font-size:15px}
@@ -140,7 +140,10 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
   let lastOk = Date.now();
   let lost = false;
   let timer = 0;
-  let failed = '';
+  let failed = data.main.state === 'ok' ? '' : data.main.reason_text;
+  let refreshController = null;
+  let refreshVersion = 0;
+  const REQUEST_TIMEOUT_MS = 20000;
   let scope = '1.0';
   let burnupPick = null;  // {live, t}: the burn-up point the owner browses, kept across redraws
   const polling = data.mode === 'live' && (location.protocol === 'http:' || location.protocol === 'https:');
@@ -227,15 +230,25 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
     return task.status_main !== task.status ? t('page.in_main', {status: statusName(task.status_main)}) : '';
   }
   let opener = '';  // the focus key of the button that opened the dialog: it may be redrawn while the dialog is open
-  function openTask(id) {
+  let openedTask = null;
+  function renderTask(id) {
     const task = own(data.tasks, id);
-    if (!task) return;
+    if (!task) {
+      put($('task-body'), h('h3', {id: 'task-title'}, id), h('p', {className: 'warn-text'}, t('page.task_unavailable')));
+      return;
+    }
     const facts = [task.milestone, task.owner ? label('owner', task.owner) : '', task.priority, task.release ? label('release', task.release) : ''].filter(Boolean);
     put($('task-body'), h('h3', {id: 'task-title'}, id + (task.title ? ' · ' + task.title : '')),
       facts.length ? h('p', {className: 'quiet'}, facts.join(' · ')) : null,
-      h('p', null, statusDot(task.status), ' ', statusName(task.status), mainSide(task)),
+      !task.status_main && (task.conflict || task.collision) ? null : h('p', null, statusDot(task.status), ' ', statusName(task.status), mainSide(task)),
+      task.conflict || task.collision ? h('p', {className: 'warn-text'}, t('page.task_conflict')) : null,
       task.acceptance.length ? [h('h4', null, t('page.acceptance')), h('ul', null, task.acceptance.map(text => h('li', null, text)))] : null,
       task.dependencies.length ? [h('h4', null, t('page.dependencies')), h('p', null, task.dependencies.map((dep, i) => [i ? ', ' : '', dep + (task.waiting_on.includes(dep) ? t('page.awaited') : '')]))] : null);
+  }
+  function openTask(id) {
+    if (!own(data.tasks, id)) return;
+    openedTask = id;
+    renderTask(id);
     const from = document.activeElement;
     opener = from && from !== document.body && from.getAttribute ? focusKey(from) : '';
     if (typeof $('task').showModal === 'function') $('task').showModal();
@@ -244,6 +257,7 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
   // the browser gives the focus back to the opener; if a redraw replaced it, the focus is left nowhere (on the page,
   // or still on the closed dialog's button), and the opener's new self takes it
   $('task').addEventListener('close', () => {
+    openedTask = null;
     const active = document.activeElement;
     const gone = !active || active === document.body || !active.isConnected || $('task').contains(active);
     const back = opener && gone ? byFocusKey(opener) : null;
@@ -342,11 +356,12 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
     let state, text;
     if (!polling) { state = 'snapshot'; text = t('page.snapshot_of', {when: stamp(data.generated_at)}); }
     else if (lost) { state = 'lost'; text = t('page.lost', {ago: ago(new Date(lastOk).toISOString())}); }
+    else if (failed || data.main.state !== 'ok') { state = 'failed'; text = t('page.read_failed'); }
     else { state = 'on'; text = t('page.live_read', {n: Math.max(0, Math.round((Date.now() - (when(data.generated_at) || Date.now())) / 1000))}); }
     $('live').className = 'live ' + state;
-    $('mode').textContent = t(state === 'on' ? 'page.mode_live' : state === 'lost' ? 'page.mode_lost' : 'page.mode_snapshot');
+    $('mode').textContent = t(state === 'on' ? 'page.mode_live' : state === 'failed' ? 'page.mode_failed' : state === 'lost' ? 'page.mode_lost' : 'page.mode_snapshot');
     $('live-text').textContent = text;
-    const spoken = t(state === 'on' ? 'page.spoken_live' : state === 'lost' ? 'page.spoken_lost' : 'page.spoken_snapshot');
+    const spoken = t(state === 'on' ? 'page.spoken_live' : state === 'failed' ? 'page.spoken_failed' : state === 'lost' ? 'page.spoken_lost' : 'page.spoken_snapshot');
     if ($('live-state').textContent !== spoken) $('live-state').textContent = spoken;
     document.body.classList.toggle('stale', lost || Boolean(failed));
   }
@@ -416,6 +431,8 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
       tracked() ? cardLedger(c) : null,
       c.files_read === false && c.files_issue && !c.gone && c.kind !== 'branch' && c.kind !== 'remote' ? h('p', {className: 'warn-text'}, t('page.files_not_read', {issue: c.files_issue_text})) : null,
       c.reason ? h('p', {className: 'warn-text'}, t(tracked() ? 'page.not_applied' : 'page.note_reason', {reason: c.reason_text})) : null,
+      c.stash ? h('p', {className: 'warn-text'}, label('stash', c.stash)) : null,
+      c.left_behind ? h('p', {className: 'warn-text'}, tn('page.left_behind', c.left_behind)) : null,
       c.subject && c.kind !== 'checkout' ? h('p', {className: 'c-last'}, t('page.last_commit'), h('code', null, c.head), ' ', live(c.head_date), t('page.colon'), c.subject, c.pushed ? t('page.pushed_tag') : '') : null,
       c.commits.length > 1 ? h('details', {className: 'more', 'data-key': 'commits:' + c.id}, h('summary', null, tn('page.commits_out', c.commits.length)),
         h('ul', null, c.commits.map(commit => h('li', null, h('code', null, commit.sha), ' ', commit.subject, ' · ', live(commit.at))))) : null);
@@ -693,41 +710,59 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
     if (owner === 'hover' || owner === null) retip(hover);
   }
   const renderCharts = () => { if ($('progress').hidden) return; draw('burnup', renderBurnup); draw('milestones', renderMilestones); draw('daily', renderDaily); };
-  const render = () => redraw(() => { renderStatic(); renderHeader(); renderWaiting(); renderSessions(); renderNext(); renderEvents(); renderKpis(); renderScope(); renderCharts(); renderFooter(); renderLive(); });
+  const render = () => redraw(() => { renderStatic(); renderHeader(); renderWaiting(); renderSessions(); renderNext(); renderEvents(); renderKpis(); renderScope(); renderCharts(); renderFooter(); renderLive(); if (openedTask !== null) renderTask(openedTask); });
   const keyOf = text => text.replace(/^\{"generated_at":"[^"]*",/, '{');
 
-  // ---- live: read the state again, keep the frame while it loads, say when the server is gone
+  // ---- live: read again; an error or timeout cannot leave old session verdicts looking current
   async function refresh() {
     clearTimeout(timer);
+    const version = ++refreshVersion;
+    if (refreshController) refreshController.abort();
+    if (document.hidden) return;
+    const controller = new AbortController();
+    refreshController = controller;
+    const deadline = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     if (!document.hidden) {
       try {
-        const response = await fetch('state.json', {cache: 'no-store', credentials: 'same-origin', redirect: 'error'});
+        const response = await fetch('state.json', {cache: 'no-store', credentials: 'same-origin', redirect: 'error', signal: controller.signal});
         if (!response.ok) throw new Error('state ' + response.status);
         const text = await response.text();
         const next = JSON.parse(text);
-        lastOk = Date.now();
+        if (version !== refreshVersion) return;
+        if (!next || !next.main || !Array.isArray(next.sessions) || !Array.isArray(next.waiting)) throw new Error('invalid state');
+        if (next.main.state === 'ok') lastOk = Date.now();
+        const recovered = Boolean(failed) || lost;
         lost = false;
-        if (next.main.state !== 'ok' && data.main.state === 'ok') {
-          failed = next.main.reason_text;  // keep the last good page: one failed reading is not news
-          put($('banner'), h('p', {className: 'banner'}, t('page.failed_at', {when: stamp(next.generated_at), reason: failed})));
-          renderLive();
-        } else {
-          const recovered = Boolean(failed);
-          failed = '';
-          data = next;
-          const key = keyOf(text);
-          if (key !== lastKey) { lastKey = key; render(); } else { if (recovered) renderHeader(); renderLive(); }  // the banner of a failed reading goes with it
-        }
+        failed = next.main.state === 'ok' ? '' : next.main.reason_text;
+        data = next;  // failed readings replace old verdicts too: they are not evidence of a session's current state
+        const key = keyOf(text);
+        if (key !== lastKey || recovered) { lastKey = key; render(); } else renderLive();
       } catch (error) {
+        if (version !== refreshVersion) return;
         lost = true;
+        $('resume').textContent = t('page.figures_unreadable');
+        put($('waiting'), h('li', {className: 'empty'}, t('page.nothing_readable')));
+        put($('sessions'), h('p', {className: 'empty'}, t('page.sessions_unreadable')));
+        put($('ended'));
+        put($('next'), h('p', {className: 'empty'}, t('page.next_unreadable')));
+        put($('events'), h('li', {className: 'empty'}, t('page.nothing_readable')));
+        put($('pointer'));
+        $('progress').hidden = true;
+        if (openedTask !== null) {
+          put($('task-body'), h('h3', {id: 'task-title'}, openedTask), h('p', {className: 'warn-text'}, t('page.task_unavailable')));
+        }
+        put($('banner'), h('p', {className: 'banner'}, t('page.failed_at', {when: stamp(new Date(lastOk).toISOString()), reason: t('page.spoken_lost')})));
         renderLive();
+      } finally {
+        clearTimeout(deadline);
+        if (version === refreshVersion) refreshController = null;
       }
     }
-    timer = setTimeout(refresh, Math.max(5, Number(data.refresh_seconds) || 10) * 1000);
+    if (version === refreshVersion) timer = setTimeout(refresh, Math.max(5, Number(data.refresh_seconds) || 10) * 1000);
   }
   let resizing = 0;
   window.addEventListener('resize', () => { cancelAnimationFrame(resizing); resizing = requestAnimationFrame(() => redraw(renderCharts)); });
-  document.addEventListener('visibilitychange', () => { if (document.hidden) remember(); else if (polling) refresh(); });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) { remember(); clearTimeout(timer); ++refreshVersion; if (refreshController) refreshController.abort(); } else if (polling) refresh(); });
   window.addEventListener('pagehide', remember);
   setInterval(() => {
     for (const node of document.querySelectorAll('[data-ago]')) node.textContent = t(node.getAttribute('data-message') || 'page.ago', {span: span(node.getAttribute('data-ago')) || '—'});

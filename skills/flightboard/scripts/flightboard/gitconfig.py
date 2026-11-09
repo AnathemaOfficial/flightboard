@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import os
 import subprocess
-import threading
 import time
 
 from . import gitreads as GIT
+from . import processes
 
 PROMISOR = "promisor"  # a partial clone's remote: git older than gitreads.NO_LAZY_FETCH may fetch from it
 FALSE_WORDS = (b"false", b"no", b"off", b"0", b"")  # git reads these as false; any other spelling counts as true
@@ -36,89 +36,37 @@ class ConfigError(ValueError):
     """A configuration git itself refuses to read ("bad config line"), or one it lists past MAX_LISTING_BYTES."""
 
 
-def _feed(proc: subprocess.Popen, data: bytes) -> None:
-    """Write the configuration's bytes to git, then close its input."""
-    try:
-        proc.stdin.write(data)
-    except (OSError, ValueError):
-        pass  # git stopped reading: its exit code, or the deadline, says why
-    finally:
-        try:
-            proc.stdin.close()
-        except (OSError, ValueError):
-            pass
-
-
-def _drain(proc: subprocess.Popen, chunks: list[bytes], over: threading.Event, done: threading.Event) -> None:
-    """Read git's listing into chunks until it ends, or until it passes MAX_LISTING_BYTES (then over is set)."""
-    size = 0
-    try:
-        while chunk := proc.stdout.read1(CHUNK):
-            size += len(chunk)
-            if size > MAX_LISTING_BYTES:
-                over.set()
-                return
-            chunks.append(chunk)
-    except (OSError, ValueError):
-        pass
-    finally:
-        done.set()
-
-
 def _stop(proc: subprocess.Popen) -> None:
-    """Stop git: its pipes close, and both threads end."""
+    """Request termination; the pipe runner owns the shared cleanup deadline."""
     try:
         proc.kill()
     except OSError:
         pass
-    try:
-        proc.wait(GIT.GIT_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        pass
 
 
-def _listing(program: str, data: bytes) -> tuple[int, bytes]:
+def _listing(program: str, data: bytes, deadline: float | None = None) -> tuple[int, bytes]:
     """(exit code, listing) of git reading these bytes. One thread writes them and another reads git's output, so the
     deadline holds whatever git does with its pipes (subprocess.run, on Windows, writes all of its input before it
     counts time), and no more than MAX_LISTING_BYTES is ever kept. GitFailed when git cannot start or misses
     GIT_TIMEOUT, ConfigError when its listing passes MAX_LISTING_BYTES; git is stopped in both cases. GIT_DIR names the
     null device, so no repository is looked for anywhere, and the system and global configurations are left out."""
     env = {**GIT.environment(), "GIT_DIR": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
+    timeout = GIT.GIT_TIMEOUT if deadline is None else min(GIT.GIT_TIMEOUT, deadline - time.monotonic())
+    if timeout <= 0:
+        raise GIT.ReadingTooLong("the whole reading exceeded its time budget")
     try:
-        proc = subprocess.Popen([program, *COMMAND], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL, env=env, cwd=os.path.dirname(program),
-                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        code, output, _, over = processes.run([program, *COMMAND], env=env, cwd=os.path.dirname(program), stdin=data,
+                                              timeout=timeout, limit=MAX_LISTING_BYTES, grace=GRACE, stop=_stop)
     except (OSError, ValueError) as exc:
         raise GIT.GitFailed(type(exc).__name__) from exc
-    chunks: list[bytes] = []
-    over, done = threading.Event(), threading.Event()
-    feeder = threading.Thread(target=_feed, args=(proc, data), daemon=True)
-    drainer = threading.Thread(target=_drain, args=(proc, chunks, over, done), daemon=True)
-    feeder.start()
-    drainer.start()
-    deadline = time.monotonic() + GIT.GIT_TIMEOUT
-    code = None
-    try:
-        if done.wait(GIT.GIT_TIMEOUT) and not over.is_set():
-            code = proc.wait(max(0.0, deadline - time.monotonic()))
-    except subprocess.TimeoutExpired:
-        pass
-    finally:
-        if code is None:
-            _stop(proc)
-        wait = GIT.GIT_TIMEOUT if code is not None else GRACE  # once git is stopped, its pipes close at once
-        drainer.join(wait)
-        if not drainer.is_alive():  # closing a pipe another thread still reads could wait on that read
-            proc.stdout.close()  # git's next write fails, so it ends even where something outlived the kill
-        feeder.join(wait)
-    if over.is_set():
+    if over:
         raise ConfigError("its listing is too long")
     if code is None:
         raise GIT.GitFailed("TimeoutExpired")
-    return code, b"".join(chunks)
+    return code, output
 
 
-def entries(data: bytes) -> list[tuple[bytes, bytes | None]]:
+def entries(data: bytes, deadline: float | None = None) -> list[tuple[bytes, bytes | None]]:
     """Every key git reads in this configuration, in order: (name, value), name being section[.subsection].key with
     the section and the key in lower case, as git gives them, and value None for a key with no "=". ConfigError where
     git refuses it (or lists it past MAX_LISTING_BYTES); GitFailed when git cannot be run, misses GIT_TIMEOUT, or
@@ -127,11 +75,13 @@ def entries(data: bytes) -> list[tuple[bytes, bytes | None]]:
     program = GIT.executable()
     if program is None:
         raise GIT.GitFailed("git not found")
-    code, listing = _listing(program, data)
+    code, listing = _listing(program, data, deadline)
     if code != 0:
-        if _listing(program, b"")[0] != 0:
+        if _listing(program, b"", deadline)[0] != 0:
             raise GIT.GitFailed(f"git config failed ({code})")
         raise ConfigError("git refuses it")
+    if listing and not listing.endswith(b"\0"):
+        raise ConfigError("its listing is incomplete")
     found = []
     for record in listing.split(b"\0")[:-1]:
         name, newline, value = record.partition(b"\n")  # with --null, a value follows its name after a line end
@@ -150,7 +100,7 @@ def _false(value: bytes | None) -> bool:
     return value is not None and value.lower() in FALSE_WORDS
 
 
-def risky(data: bytes) -> str:
+def risky(data: bytes, deadline: float | None = None) -> str:
     """What in a repository configuration makes every git command read elsewhere (a code), or "": an include
     (include, includeIf), or core.worktree, which git resolves at each command on the repository folder; a reftable
     ref store (ref_storage), whose tables.list names the files git opens; a SHA-256 object store (object_format);
@@ -159,7 +109,7 @@ def risky(data: bytes) -> str:
     nothing worse is found: git may fetch a missing object from it through a program the configuration names, which
     the board allows only where git can be kept from fetching at all."""
     try:
-        found = entries(data)
+        found = entries(data, deadline)
     except ConfigError:
         return "config_unreadable"
     return weigh(found)
@@ -186,12 +136,12 @@ def weigh(found: list[tuple[bytes, bytes | None]]) -> str:
     return PROMISOR if promisor else ""
 
 
-def plain_worktree(data: bytes) -> bool:
+def plain_worktree(data: bytes, deadline: float | None = None) -> bool:
     """A config.worktree that only sets core.longpaths, core.sparseCheckout, core.sparseCheckoutCone or index.sparse
     to true or false: nothing that could point git at a file, a program or a network share. GitFailed when git cannot
     tell (the caller decides what is left unread)."""
     try:
-        found = entries(data)
+        found = entries(data, deadline)
     except ConfigError:
         return False
     return all(name in WORKTREE_KEYS and value is not None and value.lower() in (b"true", b"false")

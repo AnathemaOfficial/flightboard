@@ -17,18 +17,27 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import time
 from collections.abc import Mapping
 from pathlib import Path
 
 from .text import clean
+from . import processes
 
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"  # git's built-in empty tree: no .gitattributes at all
 MIN_VERSION = (2, 41)  # git --attr-source=<tree> <command> (RelNotes 2.41.0)
 NO_LAZY_FETCH = (2, 45)  # GIT_NO_LAZY_FETCH: older git may fetch a missing object from a partial clone's remote
 GIT_TIMEOUT = 8  # shorter than the page's refresh
+READING_BUDGET = 12.0  # one whole snapshot, shared by every git run through Git.deadline
+GRACE = 0.25  # one cleanup allowance shared by the process and all its pipe threads
 REAL_GIT_FOLDERS = ("mingw64", "clangarm64", "mingw32")  # where Git for Windows keeps the git its launchers start
 MAX_HISTORY = 300
+MAX_ANCESTORS = 10_000
+MAX_REFS = 50_000
+MAX_OUTPUT_BYTES = 64_000_000
 MAX_COMMITS = 8
+MAX_SESSION_COMMITS = 1000  # inference needs the whole bounded range, independently of the eight displayed commits
+MAX_COMMIT_SUBJECT = 4000  # a longer subject leaves inference incomplete, never silently ready
 MAX_ENTRIES = 2000
 MAX_STAGED = 50_000  # index entries checked before git status; a bigger index is not read at all
 MAX_FILTERS = 40  # filter drivers blanked on every command line; more, and the worktrees' files are not read
@@ -56,6 +65,7 @@ SETTINGS = ("-c", "core.fsmonitor=false", "-c", "log.showSignature=false", "-c",
             "-c", "log.follow=false", "-c", "core.multiPackIndex=false", "-c", "core.warnAmbiguousRefs=false",
             "-c", "status.showStash=false", "-c", "index.sparse=false", "-c", "index.threads=1",
             "-c", "core.longpaths=false")
+SETTINGS += ("-c", "i18n.logOutputEncoding=UTF-8")
 # The commit-graph is read only when the board found its chain of graphs absent or plain (files.commit_graph_plain):
 # a line of the chain is a file name git opens as written, ".." included.
 GRAPH_OFF = ("-c", "core.commitGraph=false")
@@ -81,6 +91,25 @@ class GitRefused(RuntimeError):
 
 class GitFailed(RuntimeError):
     """git is missing, timed out or failed."""
+
+
+class ReadingTooLong(GitFailed):
+    """The reading's shared deadline is spent; no more git process may start."""
+
+
+def _spawn(command: list[str], env: dict[str, str], cwd: str, stdin: bytes | None,
+           timeout: float | None = None, limit: int = MAX_OUTPUT_BYTES) -> subprocess.CompletedProcess:
+    try:
+        code, output, errors, over = processes.run(command, env=env, cwd=cwd, stdin=stdin,
+                                                  timeout=GIT_TIMEOUT if timeout is None else timeout,
+                                                  limit=limit, grace=GRACE)
+    except (OSError, ValueError) as exc:
+        raise GitFailed(type(exc).__name__) from exc
+    if over:
+        raise GitFailed("git output exceeds its byte limit")
+    if code is None:
+        raise GitFailed("TimeoutExpired")
+    return subprocess.CompletedProcess(command, code, output, errors)
 
 
 def git_env(base: Mapping[str, str]) -> dict[str, str]:
@@ -175,18 +204,26 @@ def parse_refs(raw: bytes, remote: str = "origin") -> dict[str, dict]:
     refs = {}
     for line in raw.decode("utf-8", errors="replace").split("\n"):
         parts = line.split("\0")
-        if len(parts) == 3 and parts[0].startswith(prefixes) and FULL_SHA.fullmatch(parts[1]):
+        if len(parts) in (3, 4) and parts[0].startswith(prefixes) and FULL_SHA.fullmatch(parts[1]):
             refs[parts[0]] = {"sha": parts[1], "at": int(parts[2]) if parts[2].isdigit() else 0}
+            if len(parts) == 4 and parts[3]:
+                refs[parts[0]]["symref"] = parts[3]
+            if len(refs) > MAX_REFS:
+                raise GitFailed("too many branch refs")
     return refs
 
 
-def parse_log(raw: bytes) -> list[dict]:
+def parse_log(raw: bytes, inference: bool = False) -> list[dict]:
     """Commits as "%H%x00%ct%x00%s" lines: {sha, at, subject}."""
     commits = []
     for line in raw.decode("utf-8", errors="replace").split("\n"):
         parts = line.split("\0")
         if len(parts) == 3 and FULL_SHA.fullmatch(parts[0]) and parts[1].isdigit():
-            commits.append({"sha": parts[0], "at": int(parts[1]), "subject": clean(parts[2], 160)})
+            commit = {"sha": parts[0], "at": int(parts[1]), "subject": clean(parts[2], 160)}
+            if inference:
+                commit.update(_inference_subject=clean(parts[2], MAX_COMMIT_SUBJECT),
+                              _subject_cut=len(parts[2]) > MAX_COMMIT_SUBJECT)
+            commits.append(commit)
     return commits
 
 
@@ -229,8 +266,6 @@ def parse_status(raw: bytes) -> list[dict]:
             parts = field.split(" ", 10)
             if len(parts) == 11:
                 entries.append({"kind": "conflict", "path": parts[10], "deleted": False})
-        if len(entries) >= MAX_ENTRIES:
-            break
     return entries
 
 
@@ -254,16 +289,17 @@ def parse_filters(raw: bytes) -> tuple[set[str], bool]:
     return names, odd
 
 
-def parse_staged(raw: bytes, limit: int = MAX_STAGED) -> list[tuple[str, str]]:
-    """`git ls-files -s -z`: (mode, path) of the index entries, one more than limit at most: the caller tells a cut
+def parse_staged(raw: bytes, limit: int = MAX_STAGED) -> list[tuple[str, str, str]]:
+    """`git ls-files -s -v -z`: (tag, mode, path), one more than limit at most: the caller tells a cut
     list by its length, and never checks only part of the index. A name that is not UTF-8 keeps its bytes as lone
     surrogates, never a replacement character: the caller then refuses it rather than check another path than git's."""
     entries = []
     for field in raw.decode("utf-8", errors="surrogateescape").split("\0"):
         head, tab, path = field.partition("\t")
         parts = head.split(" ")
-        if tab and len(parts) == 3 and parts[0].isdigit():
-            entries.append((parts[0], path))
+        if tab and len(parts) == 4 and len(parts[0]) == 1 and parts[0].isascii() and parts[0].isalpha() \
+                and parts[1].isdigit():
+            entries.append((parts[0], parts[1], path))
             if len(entries) > limit:
                 break
     return entries
@@ -280,12 +316,22 @@ class Git:
         self.remote = remote
         self.blank: tuple[str, ...] = ()  # every filter driver the configuration defines, switched off
         self.graph = False  # whether git may read the commit-graph: only once a reading found its chain plain
+        self.deadline: float | None = None
+
+    def time_left(self) -> float:
+        if self.deadline is None:
+            return GIT_TIMEOUT
+        left = self.deadline - time.monotonic()
+        if left <= 0:
+            raise ReadingTooLong("the whole reading exceeded its time budget")
+        return min(GIT_TIMEOUT, left)
 
     def execute(self, git_dir: Path, args: tuple[str, ...], work_tree: Path | None = None,
                 stdin: bytes | None = None, codes: tuple[int, ...] = (0,), literal: bool = True) -> tuple[int, bytes]:
         """(exit code, output) of one of the reads; a command outside VERBS is refused before git starts."""
         if not args or args[0] not in VERBS:
             raise GitRefused(f"git command refused: {list(args[:1])}")
+        timeout = self.time_left()
         program = executable()
         if program is None:
             raise GitFailed("git not found")
@@ -294,13 +340,10 @@ class Git:
         command = [program, f"--git-dir={git_dir}", *([f"--work-tree={work_tree}"] if work_tree else []),
                    *attributes, *SETTINGS, *(() if self.graph else GRAPH_OFF),
                    *(SPARSE_OFF if args[0] in UNCHECKED_NAMES else ()), *self.blank, *args]
-        feed = {"input": stdin} if stdin is not None else {"stdin": subprocess.DEVNULL}
         env = environment() if literal else {**environment(), "GIT_LITERAL_PATHSPECS": "0"}
-        try:
-            proc = subprocess.run(command, env=env, cwd=str(work_tree or git_dir), capture_output=True,
-                                  timeout=GIT_TIMEOUT, creationflags=_NO_WINDOW, check=False, **feed)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise GitFailed(type(exc).__name__) from exc
+        # Blob batches hold at most BATCH ledgers, whose individual sizes the caller has checked first.
+        limit = BATCH * 5_000_000 + 100_000 if args[:2] == ("cat-file", "--batch") else MAX_OUTPUT_BYTES
+        proc = _spawn(command, env, str(work_tree or git_dir), stdin, timeout, limit)
         if proc.returncode not in codes:
             raise GitFailed(f"git {args[0]} failed ({proc.returncode})")
         return proc.returncode, proc.stdout
@@ -326,16 +369,17 @@ class Git:
             "-c", f"filter.{name}.required=false"))
         return True
 
-    def staged(self, git_dir: Path, work_tree: Path) -> list[tuple[str, str]]:
+    def staged(self, git_dir: Path, work_tree: Path) -> list[tuple[str, str, str]]:
         """The index entries with their modes, read from the index alone (nothing on disk is walked); one more than
         MAX_STAGED when the index holds more."""
-        return parse_staged(self.run(git_dir, ("ls-files", "-s", "-z"), work_tree=work_tree), MAX_STAGED)
+        return parse_staged(self.run(git_dir, ("ls-files", "-s", "-v", "-z"), work_tree=work_tree), MAX_STAGED)
 
     def refs(self, common: Path, unmerged_from: str | None = None) -> dict[str, dict]:
         """Every branch and every branch of the remote; with unmerged_from, only those holding a commit it lacks."""
         only = (f"--no-merged={sha(unmerged_from)}",) if unmerged_from else ()
         return parse_refs(self.run(common, ("for-each-ref", *only,
-                                            "--format=%(refname)%00%(objectname)%00%(committerdate:unix)",
+                                            f"--count={MAX_REFS + 1}",
+                                            "--format=%(refname)%00%(objectname)%00%(committerdate:unix)%00%(symref)",
                                             "refs/heads/", f"refs/remotes/{self.remote}/")), self.remote)
 
     def commits_exist(self, common: Path, shas: list[str]) -> list[bool]:
@@ -359,9 +403,25 @@ class Git:
         code, _ = self.execute(common, ("merge-base", "--is-ancestor", sha(older), sha(newer)), codes=(0, 1))
         return code == 0
 
-    def commits(self, common: Path, base: str, tip: str) -> list[dict]:
-        return parse_log(self.run(common, ("log", "--no-color", f"-n{MAX_COMMITS}", "--format=%H%x00%ct%x00%s",
-                                           f"{sha(base)}..{sha(tip)}", "--")))
+    def contained(self, common: Path, commit: str) -> bool:
+        return bool(self.run(common, ("for-each-ref", f"--contains={sha(commit)}", "--count=1",
+                                      "--format=%(refname)", "refs/heads/", f"refs/remotes/{self.remote}/")).strip())
+
+    def ancestry(self, common: Path, tip: str) -> dict[str, tuple[str, ...]]:
+        raw = self.run(common, ("rev-list", "--parents", f"-n{MAX_ANCESTORS}", sha(tip), "--"))
+        found = {}
+        for line in raw.decode("ascii", errors="replace").splitlines():
+            parts = line.split()
+            if parts and all(FULL_SHA.fullmatch(part) for part in parts):
+                found[parts[0]] = tuple(parts[1:])
+        return found
+
+    def commits(self, common: Path, base: str, tip: str, limit: int = MAX_COMMITS) -> list[dict]:
+        """A bounded range, newest first. A caller needing completeness reads one beyond its own cap."""
+        if not isinstance(limit, int) or not 1 <= limit <= MAX_SESSION_COMMITS + 1:
+            raise GitRefused("commit count refused")
+        return parse_log(self.run(common, ("log", "--no-color", f"-n{limit}", "--format=%H%x00%ct%x00%s",
+                                           f"{sha(base)}..{sha(tip)}", "--")), inference=True)
 
     def heads(self, common: Path, shas: list[str]) -> list[dict]:
         return parse_log(self.run(common, ("log", "--no-walk=unsorted", "--no-color", "--format=%H%x00%ct%x00%s",

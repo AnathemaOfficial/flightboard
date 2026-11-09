@@ -7,7 +7,7 @@
     flightboard.py --snapshot [--output FILE]    write the page once, outside the repository
 
 and, for any of them: --repo DIR, --lang en|fr, --ledger auto|none|tasks|roadmap, --ledger-path PATH, --main BRANCH,
---remote NAME, --worktrees DIR (more than once), --kept DIR (more than once), --active-minutes N, --recent-minutes N,
+--remote NAME, --worktrees DIR, --worktrees-root DIR, --kept DIR (repeatable), --active-minutes N, --recent-minutes N,
 --stale-days N, --max-branches N. It prints one JSON line (except --resume); a usage error exits with code 2, a busy
 port or a write error with code 1. It reads; it never approves nor authorizes anything. Nothing is written but the
 snapshot, in the user's cache folder or the --output file, never inside the observed repository.
@@ -40,11 +40,12 @@ PORT = re.compile(r"[0-9]{4,5}")
 USAGE = ("usage: flightboard.py [--port N] | --resume | --snapshot [--output FILE]\n"
          "       [--repo DIR] [--lang en|fr] [--ledger auto|none|tasks|roadmap] [--ledger-path PATH]\n"
          "       [--main BRANCH] [--remote NAME] [--worktrees DIR]... [--kept DIR]...\n"
+         "       [--worktrees-root DIR]... (explicit absolute local roots for external worktrees)\n"
          "       [--active-minutes N] [--recent-minutes N] [--stale-days N] [--max-branches N]")
 SWITCHES = ("--resume", "--snapshot", "--help", "-h", "--version")
 VALUES = ("--port", "--output", "--repo", "--lang", "--ledger", "--ledger-path", "--main", "--remote",
           "--active-minutes", "--recent-minutes", "--stale-days", "--max-branches")
-REPEATED = ("--worktrees", "--kept")
+REPEATED = ("--worktrees", "--kept", "--worktrees-root")
 NUMBERS = {"--active-minutes": "active_minutes", "--recent-minutes": "recent_minutes", "--stale-days": "stale_days",
            "--max-branches": "max_branches"}
 RESUME_NOTES = ("guessed", "remote_ahead", "diverged", "remote_only")  # the notes on main --resume says, in fixed words
@@ -115,12 +116,22 @@ def check_settings(options: dict) -> tuple[Settings | None, str]:
         if CONFIG.remote(options["--remote"]) is None:
             return None, "--remote takes a remote name made of letters, digits and . _ -"
         values["remote"] = options["--remote"]
-    for flag in REPEATED:
+    for flag in ("--worktrees", "--kept"):
         if any(CONFIG.folder(text) is None for text in options[flag]):
             return None, f"{flag} takes a plain folder inside the repository (no .., drive, .git or device)"
     folders = [CONFIG.folder(text) for text in options["--worktrees"]]
     values["worktrees"] = tuple(dict.fromkeys([*Settings().worktrees, *folders]))
     values["kept"] = tuple(dict.fromkeys("/".join(CONFIG.folder(text)) for text in options["--kept"]))
+    roots = []
+    for text in options.get("--worktrees-root", []):
+        try:
+            root = CONFIG.external_root(Path(text).expanduser())
+        except (OSError, RuntimeError, ValueError):
+            root = None
+        if root is None:
+            return None, "--worktrees-root takes an absolute local folder (no network, device, .. or .git)"
+        roots.append(root)
+    values["external_worktrees"] = tuple(dict.fromkeys(roots))
     for flag, name in NUMBERS.items():
         if flag in options:
             found = CONFIG.number(name, options[flag])
@@ -193,13 +204,13 @@ def _inside(path: Path, root: Path) -> bool:
         return True
 
 
-def guarded_roots(checkout: Path) -> tuple[Path, ...] | None:
+def guarded_roots(checkout: Path, external_roots: tuple[Path, ...] = ()) -> tuple[Path, ...] | None:
     """The folders the snapshot never goes into: the checkout the page reads (resolved: looking at it follows
     nothing), when it holds its own git folder, so that the repository is that checkout and nothing else. None
     otherwise (a worktree the board does not read, a submodule, a checkout whose git folder lives elsewhere, an odd or
     empty .git, none at all): the board then reads nothing, cannot tell where the repository ends, and the page, an
     error page, may go only to the cache folder. Whatever a .git file names is never looked at."""
-    return (checkout,) if FILES.git_folder(checkout) else None
+    return (checkout, *external_roots) if FILES.git_folder(checkout) else None
 
 
 def target(wanted: Path, roots: tuple[Path, ...], create: bool) -> Path | None:
@@ -287,7 +298,7 @@ def _snapshot(root: Path, settings: Settings, options: dict, now: datetime) -> i
     except Exception as exc:  # the last guard of the command
         print(f"snapshot impossible: {type(exc).__name__}", file=sys.stderr)
         return 1
-    roots = guarded_roots(collector.root)
+    roots = guarded_roots(collector.root, settings.external_worktrees)
     wanted = Path(options["--output"]).expanduser() if "--output" in options else default_output(collector.root)
     if "--output" in options and not wanted.is_absolute():
         wanted = Path.cwd() / wanted
@@ -295,7 +306,7 @@ def _snapshot(root: Path, settings: Settings, options: dict, now: datetime) -> i
         print("flightboard: --output needs a repository the board can read (its main checkout, or a worktree it "
               "reads); from here the snapshot goes only to the cache folder\n" + USAGE, file=sys.stderr)
         return 2
-    roots = roots or (collector.root,)  # the cache lies outside any repository: it stays allowed
+    roots = roots or (collector.root, *settings.external_worktrees)
     output = target(wanted, roots, create="--output" not in options)
     if output is None:
         print("flightboard: the snapshot is an .html file in an existing folder outside the repository (the cache "
@@ -357,6 +368,10 @@ def main(argv: list[str], root: Path | None = None, now: datetime | None = None)
     if "--version" in options:
         print(f"flightboard {__version__}")
         return 0
+    if any(not FILES.local_root(path) for path in settings.external_worktrees):
+        print("flightboard: --worktrees-root needs an existing plain local folder, without links or junctions\n"
+              + USAGE, file=sys.stderr)
+        return 2
     folder = Path(options["--repo"]).expanduser() if "--repo" in options else (root or Path.cwd())
     try:  # a folder inside the repository stands for the repository, for every check to come
         repo = FILES.top_folder(folder.resolve(strict=True))

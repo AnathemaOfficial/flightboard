@@ -7,9 +7,9 @@ SPDX-FileCopyrightText: 2026 Technologies CoreXalt Inc.
 **A read-only board of your parallel coding-agent sessions: what each one changed in your roadmap, and what waits for
 you.**
 
-You run several Claude Code sessions at once, each in its own worktree and branch. Your roadmap in `main` only learns
+You run coding agents in parallel, each in its own Git worktree and branch. Your roadmap in `main` only learns
 what they did once you merge them, and nothing shows at a glance who does what, what moved, and what waits for your
-go. flightboard is one local page, and a few lines of text for Claude, that answer that from the repository itself:
+go. flightboard is one local page, and a few lines of text for an agent, that answer that from the repository itself:
 
 - **What waits for you**, in your own verbs: give a merge go, arbitrate a conflict, check a decision recorded in your
   name in a branch, start a review, look at a quiet session with uncommitted changes.
@@ -21,11 +21,16 @@ go. flightboard is one local page, and a few lines of text for Claude, that answ
 
 It works without any task file too: a repository without one gets the whole sessions view from git alone.
 
-flightboard only reads. It starts no program the repository names, follows no link, writes nothing in the
-repository, and serves its page to this computer only. It needs **Python 3.12+ and git 2.41+, nothing else**: no
+flightboard uses guarded Git and file reads, writes nothing in the repository or authorized worktree roots, and
+serves its page to this computer only. Its checks and remaining risks are described below. It needs
+**Python 3.12+ and git 2.41+, nothing else**: no
 package to install, no network, no account.
 
-> flightboard is an independent project. It is not affiliated with, endorsed by or sponsored by Anthropic.
+Claude Code, Codex and tools running Qwen, MiMo, MiniMax, Kimi or other models can use the same Git workflow. The
+board observes their files, commits and declared task ownership; it does not connect to providers, read conversations
+or launch itself when a desktop chat starts. The tool running a model must provide the Git worktree/branch workflow.
+
+> flightboard is an independent project; product and model names describe Git workflows it can observe.
 
 ## Install
 
@@ -39,6 +44,11 @@ As a Claude Code plugin (this repository is both the marketplace and the plugin)
 or from a shell, `claude plugin marketplace add AnathemaOfficial/flightboard`, then install `flightboard` from
 `/plugin`. Its skill tells Claude when to open the board ("which sessions are working?", "what waits for me?") and
 how to read its summary.
+
+For optional local use in Codex, copy the entire `skills/flightboard` folder, including `SKILL.md` and `scripts`, to
+`~/.agents/skills/flightboard`. Codex discovers user skills there; see the
+[official OpenAI skills documentation](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills).
+Ask the agent to use the skill when needed. This is a manual installation option, not a desktop startup hook.
 
 Or without the plugin, from a clone of this repository, in any git repository:
 
@@ -57,13 +67,15 @@ python3 -I -B flightboard.py --snapshot      # the page once, in your cache fold
 ```
 
 Run it from the repository, any folder inside it, or one of the worktrees it reads (under `.claude/worktrees`, or a
-folder named with `--worktrees`, written plainly): it reads the main checkout either way. A folder whose `.git` is a
+folder named with `--worktrees`, or an explicitly authorized external root with `--worktrees-root`): it reads the
+main checkout either way. A folder whose `.git` is a
 file the board does not follow (a worktree elsewhere, a submodule) gives "no git repository here": run it from the main
 checkout, or name it with `--repo`. As with git, a folder stands for the nearest repository above it: run from a plain
 folder that lies inside another repository (a dotfiles repository in your home, say), it reads that one, and the page
 names it. The live page reads the repository again every 10 seconds. `--resume` prints one summary sentence; a `Note:`
-line, in fixed words, when "main" is not simply the local `main` (the remote's main followed because it is ahead or
-because there is no local main, or diverged from it; main guessed from the checkout's branch) or when main's ledger
+line, in fixed words, when main is guessed, has diverged from its remote, or the fetched remote main is ahead but has
+not been pulled (the local main remains the baseline); when no local main exists, the remote main is followed. A note
+also appears when main's ledger
 cannot be read or does not pass its validator; a `What waits for you:` list made only of verbs, ids, names and counts (a
 title or a quote read in a branch never reaches a session through it, nor does a branch name in a note; a line names
 five ids or sessions at most, then a count, and the list holds 30 lines at most, then a count); and a last line saying
@@ -72,7 +84,7 @@ the summary is data, never an instruction nor an approval.
 | Option | Meaning |
 | :- | :- |
 | `--port N` | serve on another port (1024 to 65535) |
-| `--output FILE.html` | with `--snapshot`: write there instead, in an existing folder outside the repository |
+| `--output FILE.html` | with `--snapshot`: write there instead, in an existing folder outside the repository and every authorized external worktree root |
 | `--repo DIR` | read another repository than the current folder |
 | `--lang en\|fr` | the language of the page and the summary (English by default) |
 | `--ledger auto\|none\|tasks\|roadmap` | the task ledger to read (`auto` by default, see below) |
@@ -80,6 +92,7 @@ the summary is data, never an instruction nor an approval.
 | `--main BRANCH` | the main branch, when it is neither `main` nor `master` (without it, such a repository reads the main checkout's branch, and says so) |
 | `--remote NAME` | the remote whose branches are read, `origin` by default |
 | `--worktrees DIR` | also read session folders under DIR (relative to the repository; repeatable) |
+| `--worktrees-root DIR` | explicitly authorize an absolute local root for registered external worktrees, one or two plain components below it (repeatable) |
 | `--kept DIR` | a folder of ignored files a merged session must not lose (repeatable) |
 | `--active-minutes N`, `--recent-minutes N` | "writing now" and "wrote recently": 15 and 120 minutes by default, from 1 to 1440 and from 2 to 10080, the second more than the first |
 | `--stale-days N` | a branch quiet longer is listed, never overlaid (14 days by default, from 1 to 3650) |
@@ -88,6 +101,13 @@ the summary is data, never an instruction nor an approval.
 `--worktrees` and `--kept` take a folder written plainly inside the repository: six names at most, no `..`, drive,
 `.git` or device name.
 
+External roots are opt-in: for example, `--worktrees-root "$HOME/.codex/worktrees"` can authorize registered Codex
+worktrees laid out as `<root>/<hash>/<project>`. A root is an absolute local directory, with no traversal, UNC or
+device path; the root and the path to each worktree must have no symlink, junction or reparse point. Only worktrees
+registered in this repository's `.git/worktrees` are considered. Naming a root does not scan other repositories or
+authorize arbitrary descendants. Snapshots are forbidden anywhere inside every authorized root, including its other
+children. Supply the same option when starting the board inside an authorized external worktree.
+
 A usage error exits with code 2; a busy port or a write error, with code 1. Every setting comes from the command
 line, never from a file of the observed repository; with `--ledger auto`, only the files main holds (never a branch's)
 choose which ledger is read.
@@ -95,14 +115,16 @@ choose which ledger is read.
 ## What it reads
 
 1. **main**: its last commit and its history, from its reflog (when and why main moved, "merge claude/x: Fast-forward"),
-   then its first-parent line for what the reflog no longer holds, marked approximate. When the remote's main holds
-   everything main holds and more, or when there is no local main at all, the board follows it and says so; when the two
-   have diverged, it keeps main and says so too. With neither `main` nor `master`, locally or on the remote, and no
+   then its first-parent line for what the reflog no longer holds, marked approximate. Local main remains the
+   baseline when the fetched remote main is ahead: a note says those commits have not been pulled. Only when no local
+   main exists does the board follow the remote main. Divergence is reported too. With neither `main` nor `master`,
+   locally or on the remote, and no
    `--main`, main is the main checkout's branch: a guess that moves if a session switches that checkout's branch,
    flagged by a note until `--main` pins it. A guessed main whose name git may not be given (one holding a `+` or an
    accented letter, say) has no reflog read: its history is its first-parent line alone, marked approximate.
 2. **Every session**: the main checkout, each worktree under `.claude/worktrees` (and the folders you name with
-   `--worktrees`), and each branch holding commits main lacks, a branch pushed by a cloud session and fetched
+   `--worktrees`, plus registered worktrees under explicit `--worktrees-root` roots), and each branch holding commits
+   main lacks, a branch pushed by a cloud session and fetched
    included. For each one: its ledger (the working copy for a worktree, uncommitted changes included; the last
    commit for a branch), its merge base with main, how far ahead and behind it is, its modified tracked files, its new
    files, and when they were last written.
@@ -132,7 +154,7 @@ title = "First release"
 id = "AUTH-1"           # a letter or a digit first, then letters, digits, . _ -; one letter at least, 40 at most
 title = "Login page"
 status = "doing"        # planned, ready, in_progress, awaiting_review, done, blocked, dropped, or your words
-owner = "claude"        # optional: lowercase, a letter first, a-z 0-9 _ -, 31 characters at most; "owner" (you)
+owner = "codex"         # optional: lowercase, a letter first, a-z 0-9 _ -, 31 characters at most; "owner" (you)
                         # and "reviewer" tasks never move from a branch
 milestone = "M1"        # optional
 depends_on = ["AUTH-0"] # optional: ids of other tasks in this file
@@ -149,7 +171,8 @@ Its validator is small and structural: unique ids, statuses that map to flightbo
 cycle. A branch whose file fails it is listed, never overlaid; so is one declaring more than 2000 tasks, read in
 part. A task file whose tasks cannot be used says why on the page, and `--resume` says that it does; in main's
 history, a version without one usable task (every status unknown, say) is skipped, never read as every task
-removed. "Next to start" lists the tasks owned by `claude` or by nobody; an id without a digit (`auth`) is never
+removed. "Next to start" lists tasks owned by any safely named agent or by nobody; `owner` and `reviewer` are human
+roles and excluded. An id without a digit (`auth`) is never
 inferred from a branch name.
 
 ### The roadmap ledger
@@ -159,6 +182,13 @@ dependencies. Its validator is part of flightboard, never loaded from the reposi
 ids take any uppercase prefix (`ABC-123`, `ABC-M1-02`, `ADR-0001`). With it the board also draws main's forecast,
 the plan, and decisions a branch records in your name. A ledger past the validator's caps (more than 2000 tasks, say)
 is never valid, and is read in part: 4000 tasks at most.
+
+Agent owners use the same lowercase names as the simple task file: `claude`, `codex`, `qwen`, `mimo`, `minimax`,
+`kimi`, or another safe name. Their behavior is identical; `owner` and `reviewer` remain human roles. In `capacity`,
+use `agent_sessions_per_week` for the shared capacity of all coding agents. The legacy key
+`claude_sessions_per_week` is still accepted; if both keys are present they must hold the same positive integer.
+`review_slots_per_week` and `owner_hours_per_week` keep the human reviewer and owner separate. Renaming an agent
+does not change the forecast. Dependencies are checked in full, independently of display limits.
 
 ### The live overlay
 
@@ -183,6 +213,9 @@ is never valid, and is read in part: 4000 tasks at most.
   nothing says a session is finished, so none is ever called ended: quiet and merged may still mean waiting for a
   review.
 - A session whose modified files were not read is never called ready nor ended, and `--resume` says so.
+- Stashed work, detached commits no branch holds, an unreadable HEAD or an uncertain symbolic branch chain also
+  prevent a readiness or completion claim. A stash that cannot be attributed safely holds back relevant cards;
+  unknown Git distances are shown as unknown, never as zero. These safeguards do not make the board a cleanup tool.
 - "In main" means reachable from main. A branch merged by squash or by rebase (a common pull-request flow) keeps its
   own commits, so it stays listed until you delete it. Held by a worktree, it may read "ready for your merge go" all
   that time; with no worktree, it loses that reading once it has been quiet for the stale period (`--stale-days`) and
@@ -214,8 +247,9 @@ reads, each with an explicit `--git-dir`, runs:
 - without the multi-pack-index (a pack name in it is a file name git opens as written, `..` included), with the
   commit-graph only when each line of its chain is a plain object id (git opens each line as a file name too), and
   following no rename in a history walk;
-- looking up no other name than the one git is given: every revision is a full SHA-1 commit id, never checked for an
-  ambiguous ref, git counts no stash, and the reflogs are read by the board itself, through plain folders (git, finding
+- using full SHA-1 ids for revision arguments, with ambiguous-ref checks disabled. Symbolic targets are parsed as
+  data and checked against the shared ref listing; git counts no stash, and reflogs (including stash and detached
+  HEAD moves) are read by the board itself, through plain folders (git, finding
   none it can read, would look up `refs/tags/<name>` and the like), so git never looks for `.git/<id>` or
   `refs/tags/<name>`;
 - with sparse checkout off for the commands that read index names the board has not checked yet (`git ls-files`,
@@ -248,11 +282,13 @@ reads, each with an explicit `--git-dir`, runs:
   allowlist: no API key reaches git or anything it starts.
 
 There is no `git diff` command (`git status` compares files the same way, with the settings above), no `git log -g`
-(the board reads the reflogs), and every revision given to git is a full commit id.
+(the board reads the reflogs); revision arguments passed to git are full SHA-1 ids.
 
 **Paths.** Worktrees are found in `.git/worktrees/<id>`, never through `git worktree list`. A folder is read only when
-it is the main checkout or a direct child of a worktree folder (`.claude/worktrees`, and those you name), on the same
-drive and written plainly; this is checked as text before anything touches the disk. The board's own reads then
+it is the main checkout, a direct child of an internal worktree folder (`.claude/worktrees`, and those you name), or
+one or two plain components below an explicitly authorized local external root. External worktrees must be
+registered in this repository and their marker must match its admin folder. These boundaries are checked before
+reading content. The board's own reads then
 follow no link, junction or reparse point, so no path of a worktree leads them to a network share. A worktree
 anywhere else, or one whose admin folder is unusual (a `commondir` other than `../..`, a link or a pipe on its HEAD,
 index, shared index, gitdir, info, logs, reftable or a file of a merge or rebase in progress, a `config.worktree` that
@@ -270,7 +306,10 @@ than `127.0.0.1:<port>` or `localhost:<port>` (DNS rebinding), an `Origin` from 
 same-site or cross-site `Sec-Fetch-Site`, the state loaded as a script, an image or a frame (`Sec-Fetch-Dest`), any
 method but `GET` and `HEAD`, and any path but `/` and `/state.json`. A refused request never reads the repository.
 The repository is read at most once every 5 seconds, counted from the end of the last reading, however many pages are
-open; a failed reading is not repeated within that time, and never cached.
+open; a failed reading is not repeated within that time. A reading shares a 12-second budget across its guarded
+work, with an 8-second cap per git run. The browser aborts a state request after 20 seconds; the server's 10-second
+socket timeout bounds incoming HTTP handling separately. A failed live reading displays an explicit error and removes
+the previous session verdicts until a successful refresh. An open task detail is refreshed or marked unavailable.
 
 **Page.** A Content Security Policy starting from `default-src 'none'` lets only the page's own script run, named by
 its SHA-256, and only its own requests (`connect-src 'self'`); Trusted Types are required, no frame is allowed, and
@@ -281,7 +320,8 @@ The page holds no absolute path of your computer and makes no network request bu
 
 **Disk.** Nothing is written but the snapshot: in your cache folder by default (made only outside the repository, and
 never through a link planted in its place), or the `--output` file, which must be an `.html` file in an existing
-folder that lies outside the repository once its links are resolved, whichever folder of the repository the board
+folder that lies outside the repository and all authorized external roots once its links are resolved, whichever
+folder of the repository the board
 runs from (one it can read: see Paths). It is written whole through a new file, then swapped in, never written through
 an existing file.
 
@@ -297,8 +337,8 @@ inside a folder of branches, or any entry of `.git` or of a worktree's admin fol
 (`ref: <name>`) or a reflog line names (in a detached worktree, `git status` looks up the name its last checkout moved
 to); a pipe there makes git wait until the 8-second limit, and the reading fails. The board trusts what the refs say,
 remote-tracking refs included: a session that can write refs can make its
-branch look merged, as it could by moving `main` itself; when the board follows the remote's main, finds it diverged,
-or guesses main from the checkout's branch, the page and `--resume` say so. git runs with the worktree it reads as its
+branch look merged, as it could by moving `main` itself; the page and `--resume` report a fetched remote ahead of local
+main, a remote-only baseline, divergence, or a guess from the checkout's branch. git runs with the worktree it reads as its
 working folder (Windows searches that folder last for libraries). A browser extension with access to the site can
 read the page. See [SECURITY.md](SECURITY.md) to report a vulnerability.
 
@@ -314,24 +354,25 @@ read the page. See [SECURITY.md](SECURITY.md) to report a vulnerability.
 - A new folder is looked at three levels deep. Ignored deeper down, or holding a nested repository of its own, it
   counts as a new file: the error leans the safe way, and the session is never called ended for it. A folder that
   cannot be listed (its permissions, say) is never taken for an empty one: that worktree's new files are not read.
-- A session whose reading fails shows as unreadable, as it stands now: the board never shows an earlier reading in
-  its place, which could hide the work done since.
+- A session whose reading fails within a successful snapshot is marked unreadable. If the whole live reading fails,
+  the page removes the old session verdicts and announces the failure. Retrying never turns old data into evidence
+  that a session has finished.
 - When a worktree's modified files are not read, its activity is "unknown", unless its last commit, a new file the
   board lists or the worktree's creation is within `--active-minutes` (15 by default): it then reads "writing now",
   never "wrote recently" nor "quiet".
 - The forecast is the roadmap ledger's own model, from the remaining work and the declared capacity, not a
   measurement.
-- A worktree outside the repository (`git worktree add ../x`), or in a folder whose name holds a space or another
-  unusual character or ends with a dot, is listed by its name and never read. Put the sessions' worktrees in a folder
-  inside the repository, and name it with `--worktrees` if it is not `.claude/worktrees`.
+- An external worktree is listed but its files are unread unless its local root was explicitly authorized with
+  `--worktrees-root` and its path meets the registration, depth and plain-folder checks above. Inside a root, its one
+  or two child components must use plain names: spaces, unusual characters and trailing dots are refused there.
 - A partial clone (`git clone --filter=...`) needs git 2.45 or later, and objects it never fetched (the ledger in an
   old commit, say) are simply not read: the board never fetches them. In a clone without trees (`--filter=tree:0`),
   git cannot find the commits that changed the ledger: main's older history is then not read, and the page says so
   (without a ledger, it is read).
 - A very long history is read as fast as git can when it has a commit-graph (`git gc` and `git maintenance` write
-  one). Without one, or with a chain the board does not trust, past about a million commits git's walks may outlast
-  the 8-second limit of a read: main's older history, or the branches not yet in main, are then not read, and the page
-  says so; the worktrees still show.
+  one). Without one, or with a chain the board does not trust, a walk can exceed its 8-second command limit. The
+  affected history or branch listing is then unread; exhausting the shared 12-second reading budget can fail the
+  whole refresh. The page reports incomplete or stale evidence instead of establishing a clean state.
 - A worktree with a sparse index (`git sparse-checkout set --sparse-index`, `index.sparse`) or a split index
   (`core.splitIndex`, `git update-index --split-index`) has its modified and new files unread: git writes into
   `.git/objects` to read the first, and touches the shared part of the second. A sparse checkout without a sparse
@@ -344,6 +385,12 @@ read the page. See [SECURITY.md](SECURITY.md) to report a vulnerability.
   a device (`nul`, `con`, `com1`…), has its modified files unread, and a repository whose own paths reach that length
   cannot be read: the board runs git with `core.longpaths` off.
 - A reflog is read from its last 2 MB: older moves of main then come from its first-parent line, marked approximate.
+- Stash attribution and detached history are conservative and bounded. Unreadable or truncated evidence can hold
+  sessions back; an old detached commit absent from retained reflogs may no longer be discoverable. Inspect Git
+  directly before removing a worktree or branch.
+- A cutoff in tracked status, new-file enumeration or a timed-out reading is incomplete evidence, not a clean tree.
+  Unread files and unknown states block readiness/completion; activity times, inferred task ids and short commit
+  lists are clues, not a transcript or proof of provider activity.
 - On Linux or BSD under a locale that is not UTF-8, with Python older than 3.15, a tracked name beyond ASCII keeps
   `git status` out of its worktree: run the board under a UTF-8 locale, or with `python3 -X utf8`.
 - A folder of `.git` holding more than 50,000 entries is refused, and the board says so; the folders of branches and
@@ -354,12 +401,19 @@ read the page. See [SECURITY.md](SECURITY.md) to report a vulnerability.
 
 ## Development
 
+Session attribution reads up to 1,000 commits and 4,000 characters per commit subject; only eight commits are
+displayed on a card. A failed or incomplete history, or a subject past that cap, blocks ready/ended conclusions.
+The HEAD and stash reflogs must be readable in full within 1,000 entries and 2 MB. Crossing those bounds is unknown
+work, rather than evidence that the session is clean.
+
 ```bash
 python3 -I -B -m unittest discover -s tests -t .
 ```
 
 The tests build real git repositories with worktrees, branches and planted traps; they need git 2.41+ and nothing
 else. A French version of this document is in [docs/fr/README.md](docs/fr/README.md).
+These checks use local fixtures; they do not certify real Claude, Codex or third-party provider sessions, nor
+desktop-chat startup behavior.
 
 ## License
 

@@ -50,7 +50,7 @@ TEXT: dict[str, dict[str, object]] = {
         "wait.invalid_safe": "{name}: invalid ledger (details on the page)",
         "slots": " ({slots})",
         "review_slots": ("{n} review planned per week", "{n} reviews planned per week"),
-        "wait.session": "{name}: uncommitted changes, quiet; it may be waiting for you in Claude Code",
+        "wait.session": "{name}: uncommitted changes, quiet; it may be waiting for you in its coding-agent tool",
         "summary.open": "{sessions}, {writing}",
         "summary.sessions": ("{n} open session", "{n} open sessions"),
         "summary.writing": ("{n} writing now", "{n} writing now"),
@@ -80,7 +80,7 @@ TEXT: dict[str, dict[str, object]] = {
                           "are not read",
         "source.unread": ("{n} working folder whose modified files are not read (reason on the card)",
                           "{n} working folders whose modified files are not read (reason on the card)"),
-        "note.remote_ahead": "{remote}/{main} is ahead of {main}: the page follows {remote}/{main}",
+        "note.remote_ahead": "{remote}/{main} is ahead of {main} (not pulled yet): the page follows local {main}",
         "note.diverged": "{main} and {remote}/{main} have diverged",
         "note.remote_only": "there is no local {main}: the page follows {remote}/{main}",
         "note.guessed": "main is the main checkout's branch, {main}, as the repository has neither main nor master: "
@@ -98,7 +98,7 @@ TEXT: dict[str, dict[str, object]] = {
                                   "history); only the worktrees are shown.",
         "resume_note.guessed": "main is guessed from the main checkout's branch, as the repository has neither main "
                                "nor master: name it with --main",
-        "resume_note.remote_ahead": "the remote's main is ahead of the local main: this summary follows the remote's",
+        "resume_note.remote_ahead": "the remote's main is ahead (not pulled yet): this summary follows local main",
         "resume_note.diverged": "main and the remote's main have diverged",
         "resume_note.remote_only": "there is no local main: this summary follows the remote's",
         "resume.yours": "In the ledger: {decisions} to settle and {tasks} of yours.",
@@ -197,7 +197,7 @@ TEXT: dict[str, dict[str, object]] = {
         "wait.invalid_safe": "{name} : registre invalide (détail sur la page)",
         "slots": " ({slots})",
         "review_slots": ("{n} revue prévue par semaine", "{n} revues prévues par semaine"),
-        "wait.session": "{name} : modifs non commitées, silencieuse ; elle t'attend peut-être dans Claude Code",
+        "wait.session": "{name} : modifs non commitées, silencieuse ; elle t'attend peut-être dans son outil d'agent",
         "summary.open": "{sessions}, {writing}",
         "summary.sessions": ("{n} session ouverte", "{n} sessions ouvertes"),
         "summary.writing": ("{n} écrit en ce moment", "{n} écrivent en ce moment"),
@@ -226,7 +226,7 @@ TEXT: dict[str, dict[str, object]] = {
                           "fichiers modifiés ne sont pas lus",
         "source.unread": ("{n} dossier de travail dont les fichiers modifiés ne sont pas lus (raison sur la carte)",
                           "{n} dossiers de travail dont les fichiers modifiés ne sont pas lus (raison sur la carte)"),
-        "note.remote_ahead": "{remote}/{main} a de l'avance sur {main} : la page suit {remote}/{main}",
+        "note.remote_ahead": "{remote}/{main} a de l'avance sur {main} (pas encore tirée) : la page suit {main} local",
         "note.diverged": "{main} et {remote}/{main} ont divergé",
         "note.remote_only": "il n'y a pas de {main} local : la page suit {remote}/{main}",
         "note.guessed": "main est la branche du dossier principal, {main}, puisque le dépôt n'a ni main ni master : "
@@ -245,8 +245,7 @@ TEXT: dict[str, dict[str, object]] = {
                                   "longue histoire) ; seuls les arbres de travail sont montrés.",
         "resume_note.guessed": "main est déduit de la branche du dossier principal, puisque le dépôt n'a ni main ni "
                                "master : nomme-le avec --main",
-        "resume_note.remote_ahead": "le main du remote a de l'avance sur le main local : ce résumé suit celui du "
-                                    "remote",
+        "resume_note.remote_ahead": "le main du remote a de l'avance (pas encore tirée) : ce résumé suit main local",
         "resume_note.diverged": "main et le main du remote ont divergé",
         "resume_note.remote_only": "il n'y a pas de main local : ce résumé suit celui du remote",
         "resume.yours": "Dans le registre : {decisions} à trancher et {tasks} à toi.",
@@ -391,8 +390,8 @@ PAGE: dict[str, dict[str, object]] = {
         "page.invalid_main": "Main's ledger does not pass its validator: {error}",
         "page.cannot_read": "The page could not read the repository: {reason}. It tries again on its own.",
         "page.ledger_missing": "Main's ledger ({path}) cannot be read: the page shows the sessions only.",
-        "page.failed_at": "Reading impossible at {when}: {reason}. The page shows the last good reading and tries "
-                          "again on its own.",
+        "page.failed_at": "Last successful reading at {when}. {reason}. Previous data is out of date; session "
+                          "verdicts are unavailable until the connection recovers. Retrying automatically.",
         "page.less_than_minute": "less than a minute", "page.minutes": "{n} min", "page.hours": "{n} h",
         "page.days": "{n} d",
         "page.ago": "{span} ago", "page.since": "for {span}", "page.waiting_since": "waiting for {span}",
@@ -415,9 +414,9 @@ PAGE: dict[str, dict[str, object]] = {
         "page.yours": "In the ledger: {decisions} to settle and {tasks} of yours.",
         "page.decisions_n": ["{n} decision", "{n} decisions"], "page.tasks_n": ["{n} task", "{n} tasks"],
         "page.sessions": "Sessions",
-        "page.sessions_lead": "A session is a git working folder (a worktree, usually one Claude Code session) or a "
-                              "branch not yet in main. Quiet does not mean finished: look whether it waits for you "
-                              "in Claude Code.",
+        "page.sessions_lead": "A session is a git working folder (often a coding agent's worktree) or a branch not "
+                              "yet in main. It can come from Claude, Codex or another tool. Quiet does not mean "
+                              "finished: check its conversation in the tool that runs it.",
         "page.writing_now": "writing now", "page.activity_unknown": "activity unknown",
         "page.new_task": "new task, {status}", "page.removed_from": "removed from the ledger (was {status})",
         "page.uncommitted": "uncommitted", "page.back": "move back",
@@ -532,8 +531,8 @@ PAGE: dict[str, dict[str, object]] = {
         "page.invalid_main": "Le registre de main ne passe pas son validateur : {error}",
         "page.cannot_read": "La page n’a pas pu lire le dépôt : {reason}. Elle réessaie toute seule.",
         "page.ledger_missing": "Le registre de main ({path}) est illisible : la page ne montre que les sessions.",
-        "page.failed_at": "Lecture impossible à {when} : {reason}. La page montre la dernière lecture réussie et "
-                          "réessaie toute seule.",
+        "page.failed_at": "Dernière lecture réussie à {when}. {reason}. Les données précédentes sont périmées ; les "
+                          "verdicts des sessions sont indisponibles jusqu'au retour de la connexion. Nouvel essai automatique.",
         "page.less_than_minute": "moins d’une minute", "page.minutes": "{n} min", "page.hours": "{n} h",
         "page.days": "{n} j",
         "page.ago": "il y a {span}", "page.since": "depuis {span}", "page.waiting_since": "en attente depuis {span}",
@@ -557,9 +556,9 @@ PAGE: dict[str, dict[str, object]] = {
         "page.yours": "Dans le registre : {decisions} à trancher et {tasks} à toi.",
         "page.decisions_n": ["{n} décision", "{n} décisions"], "page.tasks_n": ["{n} tâche", "{n} tâches"],
         "page.sessions": "Sessions",
-        "page.sessions_lead": "Une session, c’est un dossier de travail git (un arbre de travail, d’habitude une "
-                              "session Claude Code) ou une branche qui n’est pas encore dans main. Silencieuse ne veut "
-                              "pas dire finie : regarde si elle t’attend dans Claude Code.",
+        "page.sessions_lead": "Une session, c’est un dossier de travail git (souvent l'arbre d'un agent) ou une "
+                              "branche qui n’est pas encore dans main. Elle peut venir de Claude, Codex ou d'un autre "
+                              "outil. Silencieuse ne veut pas dire finie : vérifie sa conversation dans cet outil.",
         "page.writing_now": "écrit en ce moment", "page.activity_unknown": "activité inconnue",
         "page.new_task": "nouvelle tâche, {status}", "page.removed_from": "retirée du registre (était {status})",
         "page.uncommitted": "non commité", "page.back": "recul",
@@ -664,6 +663,73 @@ PAGE: dict[str, dict[str, object]] = {
         "page.chart_unavailable": "Graphique indisponible.",
     },
 }
+
+
+# Codes shared by the safety readers and collector; source text never provides one of these messages.
+TEXT["en"].update({
+    "reason.head_unreadable": "HEAD is unreadable: the worktree's branch is unknown",
+    "reason.head_elsewhere": "HEAD names a branch the board cannot find",
+    "reason.head_symbolic": "a symbolic branch points outside the shared branches: the worktree's commit is unknown",
+    "reason.distance_unreadable": "distance to main could not be read",
+    "reason.commit_history_unreadable": "the session's commit history could not be read completely",
+    "reason.commit_history_cut": "the session's commit history exceeds the reading limit: no ready or ended verdict",
+    "reason.held_unknown": "an unreadable worktree may hold this branch",
+    "reason.held_worktree": "a worktree holds the local branch with uncommitted, unread or stashed work",
+    "reason.held_detached": "a detached worktree on this commit or beyond it holds unfinished work",
+    "reason.working_ledger_unreadable": "the current working ledger cannot be read: its last commit is not its current state",
+    "reason.duplicate_admin": "several git admin folders name the same worktree",
+    "reason.unknown_admin": "an admin folder could not be checked: its worktree is unknown",
+    "issue.head_log_unreadable": "the worktree's HEAD reflog cannot be read; work left behind is unknown",
+    "issue.assumed_tracked": "an assume-unchanged index entry may hide modified work",
+    "issue.skipped_tracked": "a skip-worktree index entry is present on disk and may hide modified work",
+    "error.ambiguous_refs": "branch names differ only by spelling Windows may confuse; the reading is refused",
+    "error.too_many_refs": "too many branch references to check safely",
+    "error.worktrees_unreadable": "the registered worktrees could not all be listed safely",
+    "error.too_many_worktrees": "too many registered worktrees to check safely",
+    "trap.name": "a name in .git that Windows may read differently ({entry})",
+    "left_behind": ("{n} commit left on a detached HEAD: keep the session", "{n} commits left on a detached HEAD: keep the session"),
+})
+TEXT["fr"].update({
+    "reason.head_unreadable": "HEAD illisible : la branche de l'arbre est inconnue",
+    "reason.head_elsewhere": "HEAD nomme une branche que le tableau ne trouve pas",
+    "reason.head_symbolic": "une branche symbolique mène hors des branches partagées : le commit de l'arbre est inconnu",
+    "reason.distance_unreadable": "la distance à main n'a pu être lue",
+    "reason.commit_history_unreadable": "l'historique des commits de la session n'a pu être lu complètement",
+    "reason.commit_history_cut": "l'historique des commits dépasse la limite de lecture : aucun verdict prête ou terminée",
+    "reason.held_unknown": "un arbre illisible pourrait tenir cette branche",
+    "reason.held_worktree": "un arbre tient la branche locale avec du travail non commité, pas lu ou mis de côté",
+    "reason.held_detached": "un arbre détaché sur ce commit, ou plus loin, tient du travail non terminé",
+    "reason.working_ledger_unreadable": "le registre de travail actuel est illisible : son dernier commit ne décrit pas son état actuel",
+    "reason.duplicate_admin": "plusieurs dossiers administratifs git nomment le même arbre",
+    "reason.unknown_admin": "un dossier administratif n'a pu être vérifié : son arbre est inconnu",
+    "issue.head_log_unreadable": "le journal HEAD de l'arbre est illisible ; le travail délaissé est inconnu",
+    "issue.assumed_tracked": "une entrée assume-unchanged de l'index peut masquer du travail modifié",
+    "issue.skipped_tracked": "une entrée skip-worktree présente sur disque peut masquer du travail modifié",
+    "error.ambiguous_refs": "des noms de branche ne diffèrent que par une écriture que Windows peut confondre : lecture refusée",
+    "error.too_many_refs": "trop de références de branches pour les vérifier complètement",
+    "error.worktrees_unreadable": "la liste des arbres enregistrés n'a pu être vérifiée complètement",
+    "error.too_many_worktrees": "trop d'arbres enregistrés pour les vérifier complètement",
+    "trap.name": "un nom dans .git que Windows peut lire autrement ({entry})",
+    "left_behind": ("{n} commit délaissé sur un HEAD détaché : garde la session", "{n} commits délaissés sur un HEAD détaché : garde la session"),
+})
+for _locale in LANGS:
+    LABELS[_locale]["owner"].update({"qwen": "Qwen", "mimo": "MiMo", "minimax": "MiniMax", "kimi": "Kimi", "agent": "Agent"})
+LABELS["en"]["stash"] = {"stashed": "work set aside in the stash: keep the session", "unknown": "stash unreadable: work is unknown", "unmatched": "a stash cannot be tied to a session: keep the sessions"}
+LABELS["fr"]["stash"] = {"stashed": "travail mis de côté dans le stash : garde la session", "unknown": "stash illisible : le travail est inconnu", "unmatched": "un stash ne peut être relié à une session : garde les sessions"}
+PAGE["en"].update({
+    "page.mode_failed": "reading failed", "page.read_failed": "Reading failed · retrying automatically",
+    "page.spoken_failed": "Reading failed: session verdicts are unavailable",
+    "page.task_unavailable": "This task is not available in the current reading. Its previous state is no longer shown.",
+    "page.task_conflict": "Conflicting declarations: no branch status is applied until you resolve the conflict.",
+    "page.left_behind": ["{n} commit left on a detached HEAD: keep the session", "{n} commits left on a detached HEAD: keep the session"],
+})
+PAGE["fr"].update({
+    "page.mode_failed": "lecture impossible", "page.read_failed": "Lecture impossible · nouvel essai automatique",
+    "page.spoken_failed": "Lecture impossible : les verdicts des sessions sont indisponibles",
+    "page.task_unavailable": "Cette tâche est indisponible dans la lecture actuelle. Son état précédent n'est plus montré.",
+    "page.task_conflict": "Déclarations en conflit : aucun statut de branche n'est appliqué tant que le conflit n'est pas résolu.",
+    "page.left_behind": ["{n} commit délaissé sur un HEAD détaché : garde la session", "{n} commits délaissés sur un HEAD détaché : garde la session"],
+})
 
 
 def _lang(lang: str) -> str:

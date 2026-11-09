@@ -16,11 +16,11 @@ from collections import Counter
 from datetime import date, timedelta
 from typing import Any
 
+from .base import OWNER
+
 SCHEMA_VERSION = 2
 STALE_DAYS = 14
 
-OWNERS = ("claude", "codex", "owner", "reviewer")
-EXTERNAL_OWNERS = ("codex", "owner")
 PRIORITIES = ("P0", "P1", "P2", "P3")
 SIZE_UNITS = {"S": 1, "M": 3, "L": 6}
 STATUSES = ("planned", "ready", "in_progress", "awaiting_review", "done", "blocked", "dropped")
@@ -35,7 +35,8 @@ DECISION_STATUSES = ("adopted", "open", "superseded")
 TOP_REQUIRED = ("schema_version", "updated_at", "capacity", "launch_gate", "milestones", "tasks",
                 "external_dependencies")
 TOP_OPTIONAL = ("project", "decisions")
-CAPACITY_FIELDS = ("start_date", "claude_sessions_per_week", "review_slots_per_week", "owner_hours_per_week")
+CAPACITY_FIELDS = ("start_date", "review_slots_per_week", "owner_hours_per_week")
+AGENT_CAPACITY_FIELDS = ("agent_sessions_per_week", "claude_sessions_per_week")
 MILESTONE_FIELDS = ("id", "title_fr", "track", "goal_fr", "value_fr", "timebox_weeks", "dogfood_min",
                     "cut_list", "exit_criteria")
 CRITERION_FIELDS = ("text_fr", "tasks")
@@ -50,16 +51,16 @@ DECISION_REQUIRED = ("id", "title_fr", "status", "date", "record", "task", "summ
 DECISION_OPTIONAL = ("source", "default_fr")
 SOURCE_FIELDS = ("date", "channel_fr", "quote_fr")
 
-MILESTONE_ID = re.compile(r"M\d{1,2}")
+MILESTONE_ID = re.compile(r"M[0-9]{1,2}")
 # Stable ids: PREFIX-M<n>-<nn> names the milestone of origin, PREFIX-<n> any later task; the "milestone" field is the
 # only placement.
-TASK_ID = re.compile(r"[A-Z][A-Z0-9]{0,9}-(?:M\d{1,2}-\d{2}|\d{1,6})")
+TASK_ID = re.compile(r"[A-Z][A-Z0-9]{0,9}-(?:M[0-9]{1,2}-[0-9]{2}|[0-9]{1,6})")
 EXTERNAL_ID = re.compile(r"[A-Z][A-Za-z0-9]{0,15}:[A-Za-z0-9][A-Za-z0-9._-]{0,40}")
-DECISION_ID = re.compile(r"[A-Z]{2,9}-\d{4}")
+DECISION_ID = re.compile(r"[A-Z]{2,9}-[0-9]{4}")
 EPIC = re.compile(r"[a-z][a-z0-9_-]{0,40}")
-DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
-RECORD = re.compile(r"docs/decisions/\d{4}-[a-z0-9-]+\.md")
-OWNER_DECISION_REF = re.compile(r"([A-Z]{2,9}-\d{4})|commit:[0-9a-f]{7,40}")
+DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+RECORD = re.compile(r"docs/decisions/[0-9]{4}-[a-z0-9-]+\.md")
+OWNER_DECISION_REF = re.compile(r"([A-Z]{2,9}-[0-9]{4})|commit:[0-9a-f]{7,40}")
 LOT_REF = re.compile(r"lot:[A-Za-z0-9._-]{1,64}")
 SECRET = re.compile(
     r"(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
@@ -187,12 +188,20 @@ def _check_top(ledger: dict, errors: list[str]) -> None:
     if not isinstance(capacity, dict):
         errors.append("ledger: capacity must be an object")
         return
-    _check_keys(capacity, CAPACITY_FIELDS, (), "capacity", errors)
+    _check_keys(capacity, CAPACITY_FIELDS, AGENT_CAPACITY_FIELDS, "capacity", errors)
     if not _is_date(capacity.get("start_date")):
         errors.append("capacity: start_date must be a YYYY-MM-DD date")
     for key in CAPACITY_FIELDS[1:]:
         if not _is_count(capacity.get(key), 1):
             errors.append(f"capacity: {key} must be a positive integer")
+    present = [key for key in AGENT_CAPACITY_FIELDS if key in capacity]
+    if not present:
+        errors.append("capacity: missing field(s) agent_sessions_per_week")
+    for key in present:
+        if not _is_count(capacity[key], 1):
+            errors.append(f"capacity: {key} must be a positive integer")
+    if len(present) == 2 and capacity[present[0]] != capacity[present[1]]:
+        errors.append("capacity: agent_sessions_per_week and claude_sessions_per_week must agree")
 
 
 def _check_milestones(items: list, errors: list[str]) -> dict[str, dict]:
@@ -262,8 +271,8 @@ def _check_externals(items: list, updated: Any, errors: list[str]) -> dict[str, 
         externals[eid] = ext
         if not _is_text(ext.get("title_fr")):
             errors.append(f"{eid}: empty title_fr")
-        if ext.get("owner") not in EXTERNAL_OWNERS:
-            errors.append(f"{eid}: the owner of an external dependency is codex or owner")
+        if not (isinstance(ext.get("owner"), str) and OWNER.fullmatch(ext["owner"])):
+            errors.append(f"{eid}: invalid owner {_shown(ext.get('owner'))}")
         if ext.get("status") not in EXTERNAL_STATUSES:
             errors.append(f"{eid}: unknown status {_shown(ext.get('status'))}")
         if not isinstance(ext.get("observed_fr"), str):
@@ -316,7 +325,9 @@ def _check_task_enums(task: dict, tid: str, errors: list[str]) -> None:
         errors.append(f"{tid}: notes_fr must be a text")
     if not (isinstance(task.get("epic"), str) and EPIC.fullmatch(task["epic"])):
         errors.append(f"{tid}: invalid epic {_shown(task.get('epic'))}")
-    for key, allowed in (("owner", OWNERS), ("priority", PRIORITIES), ("size", tuple(SIZE_UNITS)),
+    if not (isinstance(task.get("owner"), str) and OWNER.fullmatch(task["owner"])):
+        errors.append(f"{tid}: invalid owner {_shown(task.get('owner'))}")
+    for key, allowed in (("priority", PRIORITIES), ("size", tuple(SIZE_UNITS)),
                          ("status", STATUSES), ("release", RELEASES)):
         if task.get(key) not in allowed:
             errors.append(f"{tid}: unknown {key} {_shown(task.get(key))}")
@@ -652,13 +663,18 @@ def forecast(ledger: dict) -> list[dict]:
     start = date.fromisoformat(cap["start_date"])
     cursor = max(start, date.fromisoformat(ledger["updated_at"]))
     planned, rows = start, []
-    rates = {"claude": cap["claude_sessions_per_week"], "reviewer": cap["review_slots_per_week"],
+    agent_rate = cap.get("agent_sessions_per_week", cap.get("claude_sessions_per_week"))
+    if not _is_count(agent_rate, 1) or any(not _is_count(cap[key], 1) for key in AGENT_CAPACITY_FIELDS if key in cap) \
+            or (all(key in cap for key in AGENT_CAPACITY_FIELDS)
+                and cap[AGENT_CAPACITY_FIELDS[0]] != cap[AGENT_CAPACITY_FIELDS[1]]):
+        raise ValueError("invalid agent capacity")
+    rates = {"agent": agent_rate, "reviewer": cap["review_slots_per_week"],
              "owner": cap["owner_hours_per_week"]}
     for m in ledger["milestones"]:
         load: Counter = Counter()
         for t in ledger["tasks"]:
             if t["milestone"] == m["id"] and t["status"] not in ("done", "dropped"):
-                load["reviewer" if t["owner"] == "codex" else t["owner"]] += SIZE_UNITS[t["size"]]
+                load[t["owner"] if t["owner"] in ("owner", "reviewer") else "agent"] += SIZE_UNITS[t["size"]]
         weeks = max(math.ceil(load[k] / rate) for k, rate in rates.items())
         planned += timedelta(weeks=m["timebox_weeks"])
         cursor += timedelta(weeks=weeks)

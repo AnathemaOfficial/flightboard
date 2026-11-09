@@ -29,15 +29,14 @@ import tomllib
 from typing import Any
 
 from ..text import clean
-from .base import STATUSES, Ledger, NotALedger, read_json, texts
+from .base import OWNER, STATUSES, Ledger, NotALedger, dependencies, read_json, task_identity, texts
 
 MAX_TASK_FILE_BYTES = 2_000_000
 MAX_TASKS = 2000  # as the roadmap ledger's validator: a branch declaring more is read in part, never applied
 TASK_ID = re.compile(r"(?=[0-9._-]*[A-Za-z])[A-Za-z0-9][A-Za-z0-9._-]{0,39}")
-OWNER = re.compile(r"[a-z][a-z0-9_-]{0,30}")
 MILESTONE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}")
 PRIORITY = re.compile(r"P[0-9]")
-DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 
 def _listed(value: object) -> list:
@@ -165,8 +164,11 @@ def check(raw: dict) -> tuple[list[str], dict[str, tuple[dict, str]]]:
 def _task(item: dict, status: str) -> dict:
     return {"status": status, "title": clean(item.get("title"), 200), "milestone": clean(item.get("milestone"), 40),
             "owner": clean(item.get("owner"), 31), "size": "", "priority": clean(item.get("priority"), 2),
-            "release": "", "dependencies": texts(item.get("depends_on"), 30, 40),
-            "acceptance": texts(item.get("acceptance"), 5, 300)}
+            "release": "", "dependencies": dependencies(item.get("depends_on")),
+            "acceptance": texts(item.get("acceptance"), 5, 300),
+            "_identity": task_identity({key: item.get(key, default) for key, default in
+                                        (("title", ""), ("milestone", ""), ("owner", ""), ("priority", ""),
+                                         ("depends_on", []), ("acceptance", []))})}
 
 
 class TasksLedger(Ledger):

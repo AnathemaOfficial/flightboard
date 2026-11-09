@@ -17,6 +17,7 @@ from datetime import datetime
 from . import messages as M
 from . import overlay as OVERLAY
 from .ledgers import SATISFIED, Ledger
+from .ledgers.base import countable
 from .text import clean, instant, iso, parse_time, safe_branch
 
 ACTIVE_MINUTES = 15
@@ -54,13 +55,16 @@ def infer_tasks(texts: list[str], known: set[str] | dict) -> list[str]:
     named auth-refactor does not work on a task called auth."""
     folded = {tid.casefold(): tid for tid in known if any(char.isdigit() for char in tid)}  # never a plain word
     found: list[str] = []
+    seen: set[str] = set()
+    max_parts = max((len(tid.split("-")) for tid in folded), default=1)
     for text in texts:
-        for word in WORD.findall((text or "")[:400]):
+        for word in WORD.findall(text or ""):
             parts = word.split("-")
             for start in range(len(parts)):
-                for end in range(start + 1, min(len(parts), start + 6) + 1):
+                for end in range(start + 1, min(len(parts), start + max_parts) + 1):
                     tid = folded.get("-".join(parts[start:end]).casefold())
-                    if tid is not None and tid not in found:
+                    if tid is not None and tid not in seen:
+                        seen.add(tid)
                         found.append(tid)
     return found
 
@@ -74,7 +78,8 @@ def _stage(session: dict) -> str:
         return "conflict"
     if session["operation"]:
         return "operation"
-    if session["modified"] or session["untracked"]:
+    if session["modified"] or session["untracked"] \
+            or any(change.get("uncommitted") for change in session.get("_changes", session.get("changes", []))):
         return "uncommitted"
     if session["kind"] == "checkout" and not session["ahead"]:
         return "up_to_date"
@@ -96,7 +101,8 @@ def _advice(session: dict, live: dict[str, dict], tracked: bool = True) -> str:
         return ""
     if session.get("gone"):
         return "gone"
-    read = session["files_read"]  # modified files not read: nothing says it is all committed
+    read = session["files_read"] and not (session.get("stash") or session.get("left_behind")
+                                         or session.get("held") or session.get("reason"))
     if stage == "behind_origin" and not session["ahead"]:
         return "open"  # all of this copy is in main, but the remote holds more
     if session["ahead"]:
@@ -165,6 +171,7 @@ def _session_events(sessions: list[dict]) -> list[dict]:
                 continue
             events.append({"at": change.get("at") or session["last_activity"], "sha": change.get("sha", ""),
                            "subject": "" if change["uncommitted"] else session["subject"], "where": session["name"],
+                           "session_id": session.get("id", session["name"]),
                            "uncommitted": change["uncommitted"], "approx": change.get("approx", False),
                            "task": change["task"], "title": change["title"], "milestone": change["milestone"],
                            "from": change["from"], "to": change["to"]})
@@ -174,12 +181,14 @@ def _session_events(sessions: list[dict]) -> list[dict]:
 def _applied_moves(sessions: list[dict], live: dict[str, dict], events: list[dict]) -> list[dict]:
     """The declared moves the live view applied, once per task: what the daily bars count for the sessions. A move
     main already holds is main's, counted once, by main."""
-    applied = {(tid, source["session"]) for tid, entry in live.items() for source in entry["sources"]
-               if source["applied"] and source["to"] != entry["status_main"]}
+    applied = {(tid, source.get("session_id", source["session"]))
+               for tid, entry in live.items() for source in entry["sources"]
+               if source["applied"] and not entry.get("conflict") and not entry.get("collision")
+               and source["to"] != entry["status_main"]}
     seen, moves = set(), []
     for event in events:
-        key = (event["task"], event["where"])
-        if event["where"] != "main" and key in applied and event["task"] not in seen:
+        key = (event["task"], event.get("session_id", event["where"]))
+        if ("session_id" in event or event["where"] != "main") and key in applied and event["task"] not in seen:
             seen.add(event["task"])
             moves.append(event)
     return moves
@@ -199,12 +208,14 @@ def _review_since(live: dict[str, dict], events: list[dict]) -> dict[str, str]:
         if entry["status"] != "awaiting_review":
             continue
         if entry["status_main"] == "awaiting_review":
-            found = [event["at"] for event in moves.get(tid, []) if event["where"] == "main"]
+            found = [event["at"] for event in moves.get(tid, [])
+                     if event["where"] == "main" and "session_id" not in event]
             since[tid] = found[0] if found else ""
         else:
-            applied = {source["session"] for source in entry["sources"]
+            applied = {source.get("session_id", source["session"]) for source in entry["sources"]
                        if source["applied"] and source["to"] == "awaiting_review"}
-            found = [event["at"] for event in moves.get(tid, []) if event["where"] in applied]
+            found = [event["at"] for event in moves.get(tid, [])
+                     if event.get("session_id", event["where"]) in applied]
             since[tid] = found[-1] if found else ""
     return since
 
@@ -316,6 +327,13 @@ class Waiting:
     def alerts(self, sessions: list[dict]) -> list[dict]:
         items = []
         for c in sessions:
+            if c.get("stash") or c.get("left_behind") or c.get("held"):
+                what = M.label(self.lang, "stash", c["stash"]) if c.get("stash") else \
+                    M.count(self.lang, "left_behind", c["left_behind"]) if c.get("left_behind") else c["reason_text"]
+                text = self.say("wait.alert", name=c["name"], what=what)
+                items.append(_item("alert", self.say("verb.alert"), text, text, _named(c), c["name"],
+                                   c["last_activity"]))
+                continue
             if c["stage"] in ("conflict", "operation"):
                 what = self.say("git_conflict") if c["stage"] == "conflict" else \
                     M.label(self.lang, "operation", c["operation"], default=self.say("git_operation"))
@@ -365,15 +383,16 @@ def _next(live: dict[str, dict], sessions: list[dict], ledger: Ledger, raw: dict
         if c["advice"] == "ended" or c["stale"]:  # a branch quiet for weeks takes nothing, whatever else it says
             continue
         taken |= {change["task"] for change in c["_changes"] if change["to"] in STARTED}
-        taken |= set(c["inferred"])
+        taken |= set(c.get("_inferred", c["inferred"]))  # decisions use even the ids omitted from the card
     externals = ledger.externals(raw)
 
     def met(dep: str) -> bool:
-        return live[dep]["status"] in SATISFIED if dep in live else externals.get(dep) == "done"
+        return (live[dep]["status"] in SATISFIED and not live[dep]["conflict"] and not live[dep]["collision"]) \
+            if dep in live else externals.get(dep) == "done"
 
     ready = [(tid, entry) for tid, entry in live.items()
              if ledger.agent_task(entry["owner"]) and entry["status"] in ("planned", "ready") and tid not in taken
-             and not entry["collision"] and all(met(dep) for dep in entry["dependencies"])]
+             and not entry["collision"] and not entry["conflict"] and all(met(dep) for dep in entry["dependencies"])]
     ready.sort(key=lambda item: (order.get(item[1]["milestone"], len(order)), PRIORITY.get(item[1]["priority"], 9),
                                  item[0]))
     return [{"id": tid, "title": entry["title"], "milestone": entry["milestone"], "priority": entry["priority"],
@@ -400,7 +419,8 @@ def _details(ids: set[str], live: dict[str, dict], sessions: list[dict]) -> dict
             entry, where = declared[tid]
         waiting = [dep for dep in entry["dependencies"] if dep in live and live[dep]["status"] not in SATISFIED]
         details[tid] = {**{key: entry[key] for key in DETAIL_KEYS}, "status_main": entry.get("status_main"),
-                        "declared_in": where, "waiting_on": waiting}
+                        "declared_in": where, "waiting_on": waiting,
+                        "conflict": bool(entry.get("conflict")), "collision": bool(entry.get("collision"))}
     return details
 
 
@@ -443,7 +463,7 @@ def listed(lang: str, ids: list[str]) -> str:
 
 def _kpis(main: dict[str, dict], live: dict[str, dict], sessions: list[dict]) -> dict:
     """main's figures from main alone; what the sessions declare, counted apart."""
-    counted = [entry for entry in live.values() if not entry["collision"] or entry["status_main"]]
+    counted = [entry for entry in live.values() if countable(entry)]
     status = Counter(entry["status"] for entry in counted)
     status_10 = Counter(entry["status"] for entry in counted if entry["release"] == "1.0")
     in_main = [task for task in main.values() if task["status"] != "dropped"]

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 from .files import RESERVED, WORKTREES
 from .gitreads import REMOTE_NAME, is_ref
@@ -32,6 +33,7 @@ class Settings:
     main: str | None = None  # the main branch; main, then master, then the main checkout's branch when None
     remote: str = "origin"
     worktrees: tuple[tuple[str, ...], ...] = WORKTREES  # .claude/worktrees always, then the folders named
+    external_worktrees: tuple[Path, ...] = ()  # explicit local roots only; never discovered from repository content
     kept: tuple[str, ...] = ()  # folders whose ignored files a merged session must not lose (say, notes)
     active_minutes: int = 15
     recent_minutes: int = 120
@@ -41,6 +43,7 @@ class Settings:
     def public(self) -> dict:
         """What the page may say about these settings: relative folders, names and numbers, never a machine path."""
         return {"worktrees": ["/".join(parts) for parts in self.worktrees], "remote": self.remote,
+                "external_worktree_roots": len(self.external_worktrees),
                 "main": self.main or "", "active_minutes": self.active_minutes, "stale_days": self.stale_days,
                 "kept": list(self.kept)}
 
@@ -64,6 +67,27 @@ def branch(text: str) -> str | None:
     if not isinstance(text, str) or text.endswith((".lock", "/")) or text.startswith("-"):
         return None
     return text if is_ref("refs/heads/" + text) else None
+
+
+def external_root(value: object) -> Path | None:
+    """An explicit absolute local root, checked as text only; the file reader later checks every folder for links.
+
+    Spaces in an owner-supplied root are allowed. Only the one or two plain components below it come from git.
+    A network/device path, traversal, or a git admin folder is never an authorization to read worktree content.
+    """
+    if not isinstance(value, (str, Path)) or not str(value) or "\0" in str(value):
+        return None
+    text = str(value)
+    if text.startswith(("//", "\\\\")):
+        return None
+    path = Path(text)
+    if not path.is_absolute() or path == Path(path.anchor):
+        return None
+    for part in path.parts[1:]:
+        if part in (".", "..") or part.lower() == ".git" or ":" in part \
+                or part.split(".")[0].strip().upper() in RESERVED or part.endswith((".", " ")):
+            return None
+    return path
 
 
 def remote(text: str) -> str | None:
@@ -90,4 +114,5 @@ def valid(settings: Settings) -> bool:
         and (settings.main is None or branch(settings.main) == settings.main) \
         and remote(settings.remote) == settings.remote \
         and all(folder("/".join(parts)) == parts for parts in settings.worktrees) \
+        and all(isinstance(path, Path) and external_root(path) == path for path in settings.external_worktrees) \
         and all(folder(name) is not None for name in settings.kept)

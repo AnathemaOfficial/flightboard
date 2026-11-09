@@ -14,6 +14,7 @@ from collections import Counter
 from datetime import datetime, timedelta
 
 from .ledgers import GOVERNED, PROGRESS
+from .ledgers.base import countable
 from .text import iso, parse_time
 
 DAYS = 14
@@ -54,7 +55,22 @@ def _entry(task: dict, status_main: str | None, new: bool) -> dict:
     return {"status": task["status"], "status_main": status_main, "title": task["title"],
             "milestone": task["milestone"], "owner": task["owner"], "priority": task["priority"],
             "release": task["release"], "size": task["size"], "dependencies": task["dependencies"],
-            "acceptance": task["acceptance"], "new": new, "conflict": False, "collision": False, "sources": []}
+            "acceptance": task["acceptance"], "_identity": _identity(task),
+            "new": new, "conflict": False, "collision": False, "sources": []}
+
+
+def _identity(task: dict) -> object:
+    """Compare all canonical metadata; adapters retain complete declarations before display limits."""
+    return task.get("_identity") or {key: task.get(key) for key in
+                                     ("title", "milestone", "owner", "size", "priority", "release",
+                                      "dependencies", "acceptance")}
+
+
+def _unapply(entry: dict) -> None:
+    if entry["status_main"] is not None:
+        entry["status"] = entry["status_main"]
+    for source in entry["sources"]:
+        source["applied"] = False
 
 
 def _new_task(live: dict, notes: list, moved_by: dict, session: dict, change: dict, source: dict) -> None:
@@ -64,35 +80,37 @@ def _new_task(live: dict, notes: list, moved_by: dict, session: dict, change: di
         return  # gone on both sides: nothing to say
     if not change["new"] or tid not in head:
         notes.append({"kind": "orphan", "task": tid, "title": change["title"], "session": session["name"],
-                      "to": change["to"]})
+                      "session_id": source["session_id"], "to": change["to"]})
     elif head[tid]["owner"] in GOVERNED:
         notes.append({"kind": "governed", "task": tid, "title": change["title"], "session": session["name"],
-                      "to": change["to"], "owner": head[tid]["owner"]})
+                      "session_id": source["session_id"], "to": change["to"], "owner": head[tid]["owner"]})
     else:
         live[tid] = _entry(head[tid], None, True)
         source["applied"] = True
-        moved_by[tid] = session["name"]
+        moved_by[tid] = (source["session_id"], session["name"])
         live[tid]["sources"].append(source)
 
 
 def overlay(main: dict[str, dict], sessions: list[dict]) -> tuple[dict[str, dict], list[dict]]:
     """main's tasks plus what every session allowed to overlay changed, and the notes for what could not apply.
-    Each entry keeps main's status, the live one, and its sources: {session, from, to, uncommitted, applied, reason
-    (a code), other (the session that moved it first), governed (the owner or reviewer a change could not move for)}.
+    Each entry keeps main's status, the live one, and its sources: {session_id, session (display name), from, to,
+    uncommitted, applied, reason (a code), other_id, other (the first mover's display name), governed (the owner or
+    reviewer a change could not move for)}.
     A note is a change to a task main no longer holds, or a new task given to the owner or a reviewer: shown, never
-    applied. Sessions are taken by name, so their order never matters."""
+    applied. Sessions are taken by name then stable id, so their input order never matters."""
     live = {tid: _entry(task, task["status"], False) for tid, task in main.items()}
     notes: list[dict] = []
-    moved_by: dict[str, str] = {}
-    for session in sorted(sessions, key=lambda item: item["name"]):
+    moved_by: dict[str, tuple[str, str]] = {}
+    for session in sorted(sessions, key=lambda item: (item["name"], item.get("id", item["name"]))):
         if not session.get("overlay"):
             continue
         head = session.get("_head_tasks") or {}
         for change in session.get("_changes", session["changes"]):
             tid, before, after = change["task"], change["from"], change["to"]
-            source = {"session": session["name"], "from": before, "to": after,
+            source = {"session": session["name"], "session_id": session.get("id", session["name"]),
+                      "from": before, "to": after,
                       "uncommitted": change["uncommitted"], "applied": False, "reason": "", "other": "",
-                      "governed": ""}
+                      "other_id": "", "governed": ""}
             entry = live.get(tid)
             if entry is None:
                 _new_task(live, notes, moved_by, session, change, source)
@@ -102,18 +120,22 @@ def overlay(main: dict[str, dict], sessions: list[dict]) -> tuple[dict[str, dict
             elif change["owner"] in GOVERNED or entry["owner"] in GOVERNED:
                 source["governed"] = entry["owner"] if entry["owner"] in GOVERNED else change["owner"]
                 source["reason"] = "governed"
-            elif change["new"] and (head.get(tid, {}).get("title"), head.get(tid, {}).get("milestone")) != (
-                    entry["title"], entry["milestone"]):
+            elif change["new"] and _identity(head.get(tid, {})) != entry["_identity"]:
                 entry["collision"] = True
+                _unapply(entry)
                 source["reason"] = "collision"
             elif tid in moved_by and entry["status"] != after:
                 entry["status"], entry["conflict"] = entry["status_main"] or entry["status"], True
-                source["reason"], source["other"] = "changed_elsewhere", moved_by[tid]
-            elif entry["status_main"] in (before, after) or (tid in moved_by and entry["status"] == after):
+                _unapply(entry)
+                source["reason"] = "changed_elsewhere"
+                source["other_id"], source["other"] = moved_by[tid]
+            elif not entry["conflict"] and not entry["collision"] and (
+                    entry["status_main"] in (before, after) or (tid in moved_by and entry["status"] == after)):
                 entry["status"], source["applied"] = after, True
-                moved_by.setdefault(tid, session["name"])
+                moved_by.setdefault(tid, (source["session_id"], session["name"]))
             else:
                 entry["conflict"] = True
+                _unapply(entry)
                 source["reason"] = "main_changed"
             entry["sources"].append(source)
     return live, notes
@@ -152,7 +174,7 @@ def history_events(versions: list[dict], zone) -> list[dict]:
 
 def counts(tasks: dict[str, dict], release: str | None = None) -> dict[str, int]:
     return dict(sorted(Counter(task["status"] for task in tasks.values()
-                               if release is None or task["release"] == release).items()))
+                               if countable(task) and (release is None or task["release"] == release)).items()))
 
 
 def daily(events: list[dict], now: datetime, days: int = DAYS, zone=None) -> list[dict]:

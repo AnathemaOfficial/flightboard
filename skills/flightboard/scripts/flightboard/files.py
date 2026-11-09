@@ -23,17 +23,23 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from . import gitconfig as GITCONFIG
-from .gitreads import GitFailed
+from . import readio
+from .gitreads import GitFailed, ReadingTooLong
 from .text import clean
 
 # Windows device names: as the last part of a path they name the device (lstat of a folder named nul answers the NUL
 # device), in the middle of one a real folder
 RESERVED = frozenset({"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$",
-                      *(f"{kind}{n}" for kind in ("COM", "LPT") for n in "123456789¹²³")})
+                      *(f"{kind}{n}" for kind in ("COM", "LPT") for n in "0123456789¹²³")})
 WORKTREES = ((".claude", "worktrees"),)  # the default worktree folders, as parts relative to the main checkout
 MAX_LEDGER_BYTES = 5_000_000
 MAX_SMALL_BYTES = 4096
 MAX_DATED = 200
+MAX_WORKTREES = 100
+MAX_LIST_ENTRIES = 50_000
+MAX_KEPT_ENTRIES = 2000
+MAX_KEPT_DEPTH = 8
+OPEN_WAITS = (0.0, 0.01, 0.05)
 REPARSE_POINT = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT: links, junctions, cloud placeholders
 # a folder name as the board accepts one: never ending with a dot, which Windows drops from the last part of a path
 # but keeps in the middle of one (x.. names the folder x, while x..\sub names nothing)
@@ -72,14 +78,17 @@ def plain_parts(pure) -> bool:
             return False
         if part.split(".")[0].strip().upper() in RESERVED:
             return False
+        if os.name == "nt" and part.endswith((".", " ")):
+            return False
     return True
 
 
 def check_worktree(text: str, root: Path, admin: Path | None = None,
-                   parents: tuple[tuple[str, ...], ...] = WORKTREES) -> Path | None:
+                   parents: tuple[tuple[str, ...], ...] = WORKTREES,
+                   external_roots: tuple[Path, ...] = ()) -> Path | None:
     """The worktree folder a gitdir file names (its "<folder>/.git"), when it may be read; None otherwise.
     Text only: nothing on disk is touched here."""
-    text = text.strip()
+    text = text.rstrip(" \t\r\n")
     if not text or text.startswith(("//", "\\\\")) or "\0" in text:
         return None
     pure = _pure(text)
@@ -92,15 +101,41 @@ def check_worktree(text: str, root: Path, admin: Path | None = None,
     if pure.name.lower() != ".git" or not plain_parts(pure):
         return None
     folder, base = pure.parent, _pure(str(root))
-    if os.name == "nt" and folder.drive.lower() != base.drive.lower():
-        return None
     if _key(folder) == _key(base):
         return Path(root)
     if SAFE_NAME.fullmatch(folder.name):
         for parent in parents:
             if _key(folder.parent) == _key(base) + [_fold(part) for part in parent]:
                 return Path(root).joinpath(*parent, folder.name)
+    for allowed in external_roots:
+        boundary = _pure(str(allowed))
+        if not boundary.is_absolute() or str(boundary).startswith(("//", "\\\\")) or not plain_parts(boundary):
+            continue
+        key, prefix = _key(folder), _key(boundary)
+        parts = folder.parts[len(prefix):]
+        if key[:len(prefix)] == prefix and len(parts) in (1, 2) and all(SAFE_NAME.fullmatch(part) for part in parts):
+            return Path(allowed).joinpath(*parts)
     return None
+
+
+def worktree_boundary(tree: Path, root: Path, external_roots: tuple[Path, ...] = ()) -> Path:
+    """The already-authorized boundary for a discovered worktree; never infer a new root from repository text."""
+    for boundary in (Path(root), *(Path(path) for path in external_roots)):
+        try:
+            Path(tree).relative_to(boundary)
+            return boundary
+        except ValueError:
+            continue
+    return Path(root)  # a caller that did not authorize it gets failing no_link checks
+
+
+def local_root(path: Path) -> bool:
+    """An explicit absolute local directory reached from its anchor without any reparse point."""
+    text = os.fspath(path)
+    pure = _pure(text)
+    return pure.is_absolute() and not text.startswith(("//", "\\\\")) and plain_parts(pure) \
+        and readio.local_volume(Path(path)) and no_link(Path(path), Path(pure.anchor)) \
+        and _folder_state(Path(path), Path(pure.anchor)) == "plain"
 
 
 def _is_link(info: os.stat_result) -> bool:
@@ -127,6 +162,8 @@ def no_link(path: Path, root: Path) -> bool:
         for part in relative.parts:
             if _is_link(info) or not stat.S_ISDIR(info.st_mode):
                 return False
+            if os.name == "nt" and _windows_odd(part):
+                return False
             current = current / part
             info = os.lstat(current)
     except (OSError, ValueError):
@@ -138,12 +175,13 @@ def _open_regular(path: Path, info: os.stat_result):
     """The file lstat saw at path, opened for reading, or None. A pipe put there meanwhile is never waited on, a link
     never followed where the system can tell, and what opened must be that same regular file."""
     try:
-        descriptor = os.open(path, OPEN_FLAGS)
+        descriptor = readio.open_file(path)
     except (OSError, ValueError):
         return None
     try:
         opened = os.fstat(descriptor)
-        if stat.S_ISREG(opened.st_mode) and (opened.st_ino, opened.st_dev) == (info.st_ino, info.st_dev):
+        if not _is_link(opened) and stat.S_ISREG(opened.st_mode) \
+                and (opened.st_ino, opened.st_dev) == (info.st_ino, info.st_dev):
             return os.fdopen(descriptor, "rb")
     except OSError:
         pass
@@ -155,15 +193,21 @@ def read_small(path: Path, root: Path) -> str | None:
     """A small admin file (HEAD, gitdir, head-name), read only through plain folders and only if it is a regular
     file: a pipe planted there would otherwise hold the reading for good."""
     data, state = _read_file(path, root, MAX_SMALL_BYTES)
-    return data.decode("utf-8", errors="replace").strip() if state == "ok" else None
+    return data.decode("utf-8", errors="replace").rstrip(" \t\r\n") if state == "ok" else None
 
 
 def _head(admin: Path, root: Path) -> dict:
     """What HEAD names: {ref} for a branch, {sha} when detached, {} when unreadable."""
-    text = read_small(admin / "HEAD", root) or ""
-    if text.startswith("ref: ") and HEAD_REF.fullmatch(text[5:].strip()):
-        return {"ref": text[5:].strip()}
-    return {"sha": text} if FULL_SHA.fullmatch(text) else {}
+    data, state = _read_file(admin / "HEAD", root, MAX_SMALL_BYTES)
+    if state != "ok":
+        return {}
+    text = data.rstrip(b" \t\r\n")
+    if text.startswith(b"ref:"):
+        branch = text[4:].lstrip(b" \t\r\n").split(b"\0", 1)[0].decode("utf-8", errors="replace")
+        return {"ref": branch} if HEAD_REF.fullmatch(branch) else {}
+    match = re.match(rb"[0-9A-Fa-f]{40}", text)
+    after = text[40:41] if match else b"x"
+    return {"sha": match.group().decode("ascii").lower()} if after in (b"", b"\0", b" ", b"\t", b"\r", b"\n") else {}
 
 
 def _operation(admin: Path, root: Path) -> dict:
@@ -193,20 +237,23 @@ def _bytes(config: bytes | str) -> bytes:
     return config.encode("utf-8") if isinstance(config, str) else config
 
 
-def plain_config(config: bytes | str) -> bool:
+def plain_config(config: bytes | str, deadline: float | None = None) -> bool:
     """A config.worktree that only sets core.longpaths, core.sparseCheckout, core.sparseCheckoutCone or index.sparse
     (what Claude Code and git sparse-checkout write) to true or false, read as git reads it: nothing that could point
     git at a file, a program or a network share."""
-    return GITCONFIG.plain_worktree(_bytes(config))
+    return GITCONFIG.plain_worktree(_bytes(config), deadline)
 
 
-def plain_admin(admin: Path, root: Path) -> bool:
+def plain_admin(admin: Path, root: Path, budget: Budget | None = None) -> bool:
     """An admin folder git may be pointed at: its commondir is "../..", none of the files git reads there in a worktree
     (its index and a split index's shared file, HEAD, the state of a merge or a rebase, its logs, a reftable store) is
     a link, and its config.worktree, if any, holds only what Claude Code or sparse-checkout writes there. Anything else
     could steer git elsewhere, a network share included."""
     common, state = _read_file(admin / "commondir", root, MAX_SMALL_BYTES)
     if state != "ok" or common.rstrip(b"\r\n") != b"../..":  # as git reads it: only CR and LF dropped at the end
+        return False
+    budget = budget or Budget()
+    if _walk_problem(admin, ADMIN_SPOTS, root, budget)[0]:
         return False
     for name in ADMIN_ENTRIES:
         path = admin.joinpath(*name.split("/"))
@@ -216,18 +263,21 @@ def plain_admin(admin: Path, root: Path) -> bool:
             or _linked_entry(admin, root, SHARED_INDEX, MAX_GIT_FOLDER_ENTRIES):
         return False
     data, state = _read_file(admin / "config.worktree", root, MAX_SMALL_BYTES)
-    return state == "absent" or (data is not None and plain_config(data))
+    return state == "absent" or (data is not None and plain_config(data, budget.deadline))
 
 
-def tracked_problem(tree: Path, root: Path, staged: list[tuple[str, str]]) -> str:
+def tracked_problem(tree: Path, root: Path, staged: list[tuple[str, str, str]]) -> str:
     """Why git status must not run in this worktree (a code), or "": git would read a .git it finds where the index
     expects a file (a tracked file turned into a folder) or a submodule (a gitlink), and follow it, a network share
     included; and a link or junction where the index expects a file or a folder would lead it outside the worktree."""
     checked: dict[str, str] = {}
-    for mode, name in staged:
+    for item in staged:
+        tag, mode, name = item if len(item) == 3 else ("H", *item)
         relative = PurePosixPath(name)
         if not safe_relative(name):
             return "odd_tracked_path"
+        if tag.islower():
+            return "assumed_tracked"
         path = Path(tree).joinpath(*relative.parts)
         if os.name == "nt" and len(str(path).encode("utf-16-le", "surrogatepass")) // 2 >= MAX_PATH:
             # git, kept to short paths (counted in UTF-16 units), cannot read it; nor may the board, which would take
@@ -253,6 +303,8 @@ def tracked_problem(tree: Path, root: Path, staged: list[tuple[str, str]]) -> st
                 return "submodule_git"
         elif stat.S_ISDIR(info.st_mode) or (mode != "120000" and _is_link(info)):
             return "tracked_replaced"
+        if tag == "S":
+            return "skipped_tracked"
     return ""
 
 
@@ -285,9 +337,19 @@ def ignore_file_special(tree: Path, root: Path, names: list[str]) -> bool:
     for parts in folders:
         folder = Path(tree).joinpath(*parts)
         state = _folder_state(folder, root)
-        if state == "link" or (state == "plain" and _special(folder / ".gitignore")):
+        if state == "link" or (state == "plain" and not _regular_or_absent(folder / ".gitignore")):
             return True
     return False
+
+
+def _regular_or_absent(path: Path) -> bool:
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError):
+        return False
+    return stat.S_ISREG(info.st_mode) and not _is_link(info)
 
 
 def _folder_state(path: Path, root: Path) -> str:
@@ -300,6 +362,8 @@ def _folder_state(path: Path, root: Path) -> str:
         return "link"
     current = Path(root)
     for part in ("", *relative.parts):
+        if part and os.name == "nt" and _windows_odd(part):
+            return "link"
         current = current / part if part else current
         try:
             info = os.lstat(current)
@@ -310,7 +374,7 @@ def _folder_state(path: Path, root: Path) -> str:
         if _is_link(info):
             return "link"
         if not stat.S_ISDIR(info.st_mode):
-            return "gone"
+            return "gone" if stat.S_ISREG(info.st_mode) else "link"
     return "plain"
 
 
@@ -361,19 +425,19 @@ def _admin_of(root: Path):
         info = os.lstat(marker)
     except OSError:
         return None
-    if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_SMALL_BYTES:
+    if _is_link(info) or not stat.S_ISREG(info.st_mode) or info.st_size > MAX_SMALL_BYTES:
         return None
     handle = _open_regular(marker, info)
     if handle is None:
         return None
     try:
         with handle:
-            text = handle.read(MAX_SMALL_BYTES).decode("utf-8", errors="replace").strip()
+            text = handle.read(MAX_SMALL_BYTES).decode("utf-8", errors="replace").rstrip(" \t\r\n")
     except OSError:
         return None
     if not text.startswith("gitdir: "):
         return None
-    admin_text = text[len("gitdir: "):].strip()
+    admin_text = text[len("gitdir: "):].rstrip(" \t\r\n")
     if not admin_text or admin_text.startswith(("//", "\\\\")):
         return None
     if not _pure(admin_text).is_absolute():
@@ -419,7 +483,8 @@ def top_folder(start: Path) -> Path:
     return start
 
 
-def main_checkout(root: Path, parents: tuple[tuple[str, ...], ...] = WORKTREES) -> Path:
+def main_checkout(root: Path, parents: tuple[tuple[str, ...], ...] = WORKTREES,
+                  external_roots: tuple[Path, ...] = ()) -> Path:
     """The main checkout root belongs to: root itself, or, when root is a worktree (its .git is a file), the checkout
     its admin folder names. Text checks first, as for any worktree; root when anything is odd."""
     root = Path(root)
@@ -427,12 +492,38 @@ def main_checkout(root: Path, parents: tuple[tuple[str, ...], ...] = WORKTREES) 
     if admin is None:
         return root
     named = Path(str(admin.parent.parent.parent))
-    if check_worktree((root / ".git").as_posix(), named, parents=parents) != root:
+    if check_worktree((root / ".git").as_posix(), named, parents=parents, external_roots=external_roots) != root:
         return root  # root must be one of main's own session folders, as written
     # root's own parent at that depth, never the folder the text names: case folding may match two folders the disk
     # keeps apart (str.lower turns the Kelvin sign into k, NTFS does not), and root's parents are resolved
-    main = Path(*root.parts[:len(named.parts)])
+    external = worktree_boundary(root, named, external_roots) != named
+    if external:
+        boundary = worktree_boundary(root, named, external_roots)
+        if not local_root(boundary) or not no_link(root, boundary) or not local_root(named):
+            return root
+        main = named
+        actual_admin = main / ".git" / "worktrees" / admin.name
+        target = check_worktree(read_small(actual_admin / "gitdir", main) or "", main, actual_admin, parents,
+                                external_roots)
+        if target != root or not _worktree_marker(root, actual_admin, boundary):
+            return root
+    else:
+        main = Path(*root.parts[:len(named.parts)])
     return main if no_link(main / ".git", main) and (main / ".git").is_dir() else root
+
+
+def _worktree_marker(tree: Path, admin: Path, boundary: Path) -> bool:
+    """The worktree's own plain .git file must point back to the admin folder that registered it."""
+    text = read_small(Path(tree) / ".git", boundary)
+    if text is None or not text.startswith("gitdir:"):
+        return False
+    value = text[len("gitdir:"):].lstrip(" \t")
+    if not value or value.startswith(("//", "\\\\")) or "\0" in value:
+        return False
+    pure = _pure(value)
+    if not pure.is_absolute():
+        pure = _pure(os.path.normpath(os.path.join(str(tree), value)))
+    return pure.is_absolute() and plain_parts(pure) and _key(pure) == _key(_pure(str(admin)))
 
 
 def attributes_planted(root: Path) -> bool:
@@ -482,6 +573,7 @@ GIT_FOLDERS = ("refs", "refs/remotes", "objects", "objects/info", "objects/info/
 BRANCH_FOLDERS = ("refs/heads", "logs/refs/heads")
 SHARED_INDEX = "sharedindex."  # the shared part of a split index, next to the index that names it
 MAX_GIT_FOLDER_ENTRIES = 50_000
+MAX_GIT_ENTRIES = 50_000  # one shared preflight budget, including all worktree admin folders
 LIST_WAITS = (0.0, 0.02, 0.05, 0.1)  # seconds before each look at a folder that fails to list (Windows: ~20 ms)
 PROMISOR = GITCONFIG.PROMISOR  # a partial clone's remote: git older than gitreads.NO_LAZY_FETCH may fetch from it
 MAX_CONFIG_BYTES = 1_000_000
@@ -495,40 +587,123 @@ REFLOG_LINE = re.compile(rb"([0-9a-f]{40}) ([0-9a-f]{40}) [^\n>]*> ([1-9][0-9]{0
                          rb"(?:\t([^\n]*)|([^\n]*))")
 NULL_SHA = b"0" * 40
 MAX_REFLOG_BYTES = 2_000_000  # the newest part of a long reflog
+GIT_SPOTS = (("", False), ("refs", True), ("logs", True),
+             *((name, False) for name in (*STATE_FOLDERS, "objects", "objects/info", "objects/info/commit-graphs",
+                                          "objects/pack", "objects/pack/multi-pack-index.d", "reftable")))
+ADMIN_SPOTS = (("", False), ("refs", True), ("logs", True),
+               *((name, False) for name in (*STATE_FOLDERS, "info", "reftable")))
 
 
-def risky_config(config: bytes | str) -> str:
+class Budget:
+    """Entries and time shared by the repository preflight and every admin folder of one snapshot."""
+
+    def __init__(self, entries: int | None = None, deadline: float | None = None) -> None:
+        self.left = MAX_GIT_ENTRIES if entries is None else entries
+        self.deadline = deadline
+
+    def check(self) -> None:
+        if self.deadline is not None and time.monotonic() >= self.deadline:
+            raise ReadingTooLong("the whole reading exceeded its time budget")
+
+
+class TooManyWorktrees(GitFailed):
+    """The admin entry count is past the limit; no session may silently disappear."""
+
+
+def _entry_kind(entry: os.DirEntry) -> str:
+    if os.name == "nt" and _windows_odd(entry.name):
+        return "name"
+    try:
+        info = entry.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        return "gone"
+    except OSError:
+        return "unreadable"
+    if _is_link(info):
+        return "link"
+    if stat.S_ISDIR(info.st_mode):
+        return "folder"
+    return "file" if stat.S_ISREG(info.st_mode) else "special"
+
+
+def _walk_problem(base: Path, spots: tuple[tuple[str, bool], ...], root: Path,
+                  budget: Budget) -> tuple[str, str]:
+    """Check direct admin entries and recursively every ref/log, charging every listed entry to one budget."""
+    for spot, deep in spots:
+        stack = [base / spot if spot else base]
+        while stack:
+            budget.check()
+            folder = stack.pop()
+            state = _folder_state(folder, root)
+            if state == "gone":
+                continue
+            if state != "plain":
+                return "link", spot
+            listed = _entries(folder)
+            if listed is None:
+                return "link", spot
+            for entry in listed:
+                budget.check()
+                budget.left -= 1
+                if budget.left < 0:
+                    return "many", spot
+                kind = _entry_kind(entry)
+                if kind in ("link", "special", "name", "unreadable"):
+                    return ("link" if kind == "unreadable" else kind), spot
+                if kind == "folder" and deep:
+                    stack.append(Path(entry.path))
+    return "", ""
+
+
+def risky_config(config: bytes | str, deadline: float | None = None) -> str:
     """What in a repository configuration makes every git command read elsewhere (a code), or "": see
     gitconfig.risky, which reads it as git does. PROMISOR comes last, only when nothing worse is found."""
-    return GITCONFIG.risky(_bytes(config))
+    return GITCONFIG.risky(_bytes(config), deadline)
 
 
 def _read_file(path: Path, root: Path, limit: int) -> tuple[bytes | None, str]:
     """A file read through plain folders only: (data, state), state being ok, absent, too_big or unreadable."""
+    data, state, _ = _read_regular(path, root, limit)
+    return data, state
+
+
+def _read_regular(path: Path, root: Path, limit: int) -> tuple[bytes | None, str, os.stat_result | None]:
+    """Retry a rename race from lstat, never reusing an identity from a previous open."""
+    info = None
+    for wait in OPEN_WAITS:
+        if wait:
+            time.sleep(wait)
+        data, state, info = _read_once(path, root, limit)
+        if state != "retry":
+            return data, state, info
+    return None, "unreadable", info
+
+
+def _read_once(path: Path, root: Path, limit: int) -> tuple[bytes | None, str, os.stat_result | None]:
     if not no_link(Path(path).parent, root):
-        return None, "unreadable"
+        return None, "unreadable", None
     try:
         info = os.lstat(path)
     except FileNotFoundError:
-        return None, "absent"
+        return None, "absent", None
     except OSError:
-        return None, "unreadable"
+        return None, "unreadable", None
     if _is_link(info) or not stat.S_ISREG(info.st_mode):
-        return None, "unreadable"
+        return None, "unreadable", None
     if info.st_size > limit:
-        return None, "too_big"
+        return None, "too_big", info
     handle = _open_regular(path, info)
     if handle is None:
-        return None, "unreadable"
+        return None, "retry", info
     try:
         with handle:
             data = handle.read(limit + 1)
     except OSError:
-        return None, "unreadable"
-    return (None, "too_big") if len(data) > limit else (data, "ok")
+        return None, "retry", info
+    return (None, "too_big", info) if len(data) > limit else (data, "ok", info)
 
 
-def git_dir_problem(root: Path, remote: str = "origin") -> str:
+def git_dir_problem(root: Path, remote: str = "origin", budget: Budget | None = None) -> str:
     """Why git must not run on this repository at all (a code; "link:<entry>", "special:<entry>", "many:<folder>" and
     "config_unreadable:<name>" name what), or "". At every command git follows a link planted on one of its own
     entries, an included configuration file, core.worktree, a commondir file and a borrowed object store
@@ -539,26 +714,35 @@ def git_dir_problem(root: Path, remote: str = "origin") -> str:
     the last code, is for the caller to weigh against git's version. remote is the remote the board reads, a name
     checked as text."""
     common = Path(root) / ".git"
+    budget = budget or Budget()
+    budget.check()
     for name in GIT_ENTRIES:
         path = common.joinpath(*name.split("/"))
+        if _folder_state(path.parent, root) == "plain" and _special(path):
+            return f"special:{name}"
         if _folder_state(path, root) == "link":
             return f"link:{name}"
-        if _special(path):  # a pipe where git expects HEAD or the index would hold every command until it times out
-            return f"special:{name}"
     # the folder is named, never the entry: an entry's name is the repository's own text
     folders = [*((name, MAX_GIT_FOLDER_ENTRIES) for name in GIT_FOLDERS),
                *((name, None) for name in (*BRANCH_FOLDERS, f"refs/remotes/{remote}", f"logs/refs/remotes/{remote}"))]
     for name, cap in folders:
+        budget.check()
         found = _linked_entry(common.joinpath(*name.split("/")), root, cap=cap)
         if found:
             return f"{found}:{name}"
     found = _linked_entry(common, root, SHARED_INDEX, MAX_GIT_FOLDER_ENTRIES)
     if found:
         return "link:sharedindex" if found == "link" else f"{found}:.git"
+    found, spot = _walk_problem(common, GIT_SPOTS, root, budget)
+    if found:
+        return f"{found}:{spot or '.git'}"
     if _exists(common / "commondir"):
         return "commondir"
     try:
-        if os.lstat(common / "objects" / "info" / "alternates").st_size > 0:
+        info = os.lstat(common / "objects" / "info" / "alternates")
+        if _is_link(info) or not stat.S_ISREG(info.st_mode):
+            return "alternates_unreadable"
+        if info.st_size > 0:
             return "alternates"
     except FileNotFoundError:
         pass
@@ -571,7 +755,8 @@ def git_dir_problem(root: Path, remote: str = "origin") -> str:
             return f"config_unreadable:{name}"
         if data is None:
             continue
-        found = risky_config(data) if name == "config" else ("" if plain_config(data) else "main_worktree_config")
+        found = risky_config(data, budget.deadline) if name == "config" \
+            else ("" if plain_config(data, budget.deadline) else "main_worktree_config")
         if found == "config_unreadable":  # git itself would stop on it
             return f"config_unreadable:{name}"
         if found == PROMISOR:
@@ -687,44 +872,83 @@ def index_state(git_dir: Path, root: Path) -> str:
     return ""
 
 
-def read_reflog(root: Path, ref: str, limit: int) -> list[dict]:
+def read_reflog(root: Path, ref: str, limit: int, whole: bool = False) -> list[dict] | None:
     """A branch's reflog, read here rather than by git (finding no entry it can read, git would look up other names,
     refs/tags/<name> and the like, and follow a link planted there): its newest entries first, {sha, at, via}, at most
     limit of them, from its newest MAX_REFLOG_BYTES. Read through plain folders only; a line REFLOG_LINE does not
     match is skipped, and so may be an odd one git would take."""
     parts = ref.split("/")
-    if any(part in ("", ".", "..") for part in parts):
+    if any(part in ("", ".", "..") or (os.name == "nt" and _windows_odd(part)) for part in parts):
         return []
     path = Path(root).joinpath(".git", "logs", *parts)
-    if not no_link(path.parent, root):
+    return _read_log(path, root, limit, whole)
+
+
+def read_head_log(git_dir: Path, root: Path, limit: int) -> list[dict] | None:
+    # Discarding an old or incomplete checkout can hide a detached commit: the whole bounded log is needed.
+    return _read_log(Path(git_dir) / "logs" / "HEAD", root, limit, True)
+
+
+def _read_log(path: Path, root: Path, limit: int, whole: bool) -> list[dict] | None:
+    if _folder_state(path.parent, root) == "gone":
         return []
-    try:
-        info = os.lstat(path)
-    except (OSError, ValueError):
-        return []
-    if _is_link(info) or not stat.S_ISREG(info.st_mode):
-        return []
-    handle = _open_regular(path, info)
-    if handle is None:
-        return []
-    try:
-        with handle:
-            skip = max(0, info.st_size - MAX_REFLOG_BYTES)
-            handle.seek(skip)
-            data = handle.read(MAX_REFLOG_BYTES)
-    except OSError:
-        return []
-    lines = data.split(b"\n")[1 if skip else 0:-1]  # a line cut at the start, and one with no end, are not read
+    if whole:
+        data, state = _read_file(path, root, MAX_REFLOG_BYTES)
+    else:
+        data, state = _read_tail(path, root, MAX_REFLOG_BYTES)
+    if data is None:
+        return [] if state == "absent" else None
+    lines = data.split(b"\n")
+    if whole and lines[-1]:
+        return None
     entries = []
-    for line in reversed(lines):
+    for line in reversed(lines[:-1]):
         match = REFLOG_LINE.fullmatch(line)
-        if match and match.group(2) != NULL_SHA:
-            reason = match.group(4) if match.group(4) is not None else match.group(5)
-            entries.append({"sha": match.group(2).decode("ascii"), "at": int(match.group(3)),
-                            "via": clean(reason.decode("utf-8", errors="replace"), 160)})
-            if len(entries) >= limit:
-                break
+        if match is None:
+            if whole and line:
+                return None
+            continue
+        if match.group(2) == NULL_SHA:
+            continue
+        if len(entries) >= limit:
+            if whole:
+                return None
+            break
+        reason = match.group(4) if match.group(4) is not None else match.group(5)
+        entries.append({"sha": match.group(2).decode("ascii"), "at": int(match.group(3)),
+                        "via": reason.decode("utf-8", errors="replace")})
     return entries
+
+
+def _read_tail(path: Path, root: Path, limit: int) -> tuple[bytes | None, str]:
+    for wait in OPEN_WAITS:
+        if wait:
+            time.sleep(wait)
+        if not no_link(path.parent, root):
+            return None, "unreadable"
+        try:
+            info = os.lstat(path)
+        except FileNotFoundError:
+            return None, "absent"
+        except (OSError, ValueError):
+            return None, "unreadable"
+        if _is_link(info) or not stat.S_ISREG(info.st_mode):
+            return None, "unreadable"
+        handle = _open_regular(path, info)
+        if handle is None:
+            continue
+        try:
+            with handle:
+                start = max(0, os.fstat(handle.fileno()).st_size - limit)
+                handle.seek(max(0, start - 1))
+                data = handle.read(limit + (1 if start else 0))
+        except OSError:
+            continue
+        if start:
+            end = data.find(b"\n")
+            data = data[end + 1:] if end >= 0 else b""
+        return data, "ok"
+    return None, "unreadable"
 
 
 def _entries(folder: Path) -> list[os.DirEntry] | None:
@@ -736,7 +960,12 @@ def _entries(folder: Path) -> list[os.DirEntry] | None:
             time.sleep(wait)
         try:
             with os.scandir(folder) as found:
-                return list(found)
+                entries = []
+                for entry in found:
+                    if len(entries) >= MAX_LIST_ENTRIES:
+                        return None
+                    entries.append(entry)
+                return entries
         except (FileNotFoundError, NotADirectoryError):
             return []
         except OSError:
@@ -774,19 +1003,18 @@ def untracked(tree: Path, root: Path, tracked: set[str], limit: int = MAX_DATED)
         if listed is None:
             return None
         for entry in listed:
-            if entry.name == ".git" or not _plain_entry(entry):
+            if entry.name == ".git":
                 continue
             relative = f"{folder}/{entry.name}" if folder else entry.name
-            try:
-                is_folder = entry.is_dir(follow_symlinks=False)
-            except OSError:
+            kind = _entry_kind(entry)
+            if kind == "gone":
                 continue
-            if is_folder and relative not in known_folders and relative not in tracked:
+            if kind == "folder" and relative not in known_folders and relative not in tracked:
                 found.append(relative + "/")
-            elif not is_folder and relative not in tracked:
+            elif kind != "folder" and relative not in tracked:
                 found.append(relative)
-            if len(found) >= limit:
-                return found
+            if len(found) > limit:
+                return None  # ignored candidates must never hide unknown untracked work after this boundary
     return found
 
 
@@ -806,14 +1034,11 @@ def children(tree: Path, root: Path, folder: str, limit: int = MAX_DATED, depth:
         if listed is None:
             return None
         for entry in listed:
-            if entry.name == ".git" or not _plain_entry(entry):
-                return None
-            try:
-                is_folder = entry.is_dir(follow_symlinks=False)
-            except OSError:
+            kind = "" if entry.name == ".git" else _entry_kind(entry)
+            if kind not in ("folder", "file", "special"):
                 return None
             relative = f"{current}/{entry.name}"
-            if not is_folder:
+            if kind != "folder":
                 found["leaves"].append(relative)
             elif _exists(Path(entry.path) / ".git"):
                 found["sealed"].append(relative + "/")
@@ -843,73 +1068,107 @@ def all_ignored(found: dict, ignored: set[str]) -> bool:
 def kept_count(tree: Path, root: Path, tracked: set[str], folders: tuple[str, ...], limit: int = 500) -> int:
     """Files under the kept folders (say, an ignored notes folder) that the index does not hold: work an agent must
     not lose, counted without following a link and without opening any file."""
-    total = 0
+    total, seen = 0, 0
     for top in folders:
-        stack = [Path(tree).joinpath(*top.split("/"))]
+        stack = [(Path(tree).joinpath(*top.split("/")), 0)]
         while stack and total < limit:
-            folder = stack.pop()
+            folder, depth = stack.pop()
             if not no_link(folder, root):
+                if _folder_state(folder, root) != "gone":
+                    total = max(total, 1)
                 continue
             listed = _entries(folder)
-            if listed is None:  # what it holds is unknown: counted as kept work, never as nothing
-                total += 1
-                continue
+            seen += len(listed or ())
+            if listed is None or seen > MAX_KEPT_ENTRIES:
+                return max(total, 1)
             for entry in listed:
-                if entry.name == ".git" or not _plain_entry(entry):
+                if entry.name == ".git":
                     continue
+                kind = _entry_kind(entry)
+                if kind in ("name", "unreadable") or (kind == "folder" and depth >= MAX_KEPT_DEPTH):
+                    return max(total, 1)
                 relative = Path(entry.path).relative_to(tree).as_posix()
-                try:
-                    if entry.is_dir(follow_symlinks=False):
-                        stack.append(Path(entry.path))
-                    elif relative not in tracked:
-                        total += 1
-                except OSError:
-                    continue
+                if kind == "folder":
+                    stack.append((Path(entry.path), depth + 1))
+                elif kind not in ("gone", "link") and relative not in tracked:
+                    total += 1
+                    if total >= limit:
+                        return limit
     return total
 
 
-def _admin_state(admin: Path, root: Path) -> str:
+def _admin_state(admin: Path, root: Path, budget: Budget | None = None) -> str:
     """"plain" for an admin folder git may be pointed at (plain_admin), "odd_admin" for any other, and
     "admin_unchecked" when git could not read its config.worktree (it timed out, say): that worktree alone is left
     unread, never the others."""
     try:
-        return "plain" if plain_admin(admin, root) else "odd_admin"
+        return "plain" if plain_admin(admin, root, budget) else "odd_admin"
     except GitFailed:
         return "admin_unchecked"
 
 
-def discover(root: Path, parents: tuple[tuple[str, ...], ...] = WORKTREES) -> list[dict]:
+def discover(root: Path, parents: tuple[tuple[str, ...], ...] = WORKTREES,
+             external_roots: tuple[Path, ...] = (), budget: Budget | None = None) -> list[dict] | None:
     """The worktrees of the repository, main checkout first: {id, name, path (None when not read), git_dir, head,
     operation, created, main, reason}."""
     root = Path(root)
+    budget = budget or Budget()
+    budget.check()
     common = root / ".git"
     if not no_link(common, root) or not common.is_dir():
         return []
     found = [{"id": "", "name": root.name if SAFE_NAME.fullmatch(root.name) else "repository", "path": root,
               "git_dir": common, "head": _head(common, root), "operation": _operation(common, root), "created": None,
-              "main": True, "reason": ""}]
+              "main": True, "reason": "", "unknown": False, "boundary": root, "target": None}]
     admins = common / "worktrees"
-    if not no_link(admins, root):
+    state = _folder_state(admins, root)
+    if state == "gone":
         return found
-    try:
-        names = sorted(os.listdir(admins))
-    except OSError:
-        return found
-    for name in names:
+    listed = _entries(admins) if state == "plain" else None
+    if listed is None:
+        return None
+    if len(listed) > MAX_WORKTREES:
+        raise TooManyWorktrees("too many entries in .git/worktrees")
+    external_roots = tuple(path for path in external_roots if local_root(path))
+    for number, entry in enumerate(sorted(listed, key=lambda item: item.name), 1):
+        budget.check()
+        name = entry.name
         admin = admins / name
-        if not SAFE_NAME.fullmatch(name) or not no_link(admin, root):
+        kind = _entry_kind(entry)
+        if kind in ("file", "special", "gone"):
             continue
-        target = check_worktree(read_small(admin / "gitdir", root) or "", root, admin, parents)
+        safe_name = bool(SAFE_NAME.fullmatch(name)) and not (os.name == "nt" and _windows_odd(name))
+        if not safe_name or kind != "folder" or not no_link(admin, root):
+            found.append({"id": name if safe_name else f"unknown:{number}", "name": name if safe_name else "worktree",
+                          "path": None, "git_dir": admin, "head": {}, "operation": {"kind": "", "branch": None},
+                          "created": None, "main": False, "reason": "unknown_admin", "unknown": True,
+                          "boundary": root, "target": None})
+            continue
+        target = check_worktree(read_small(admin / "gitdir", root) or "", root, admin, parents, external_roots)
+        boundary = worktree_boundary(target, root, external_roots) if target is not None else root
         reason = ""
         if target is None:
             reason = "outside"
-        elif (checked := _admin_state(admin, root)) != "plain":
-            target, reason = None, checked
-        elif (state := _folder_state(target, root)) != "plain":
-            target, reason = None, GONE if state == "gone" else "link"
-        found.append({"id": name, "name": target.name if target is not None else name, "path": target,
+        elif (checked := _admin_state(admin, root, budget)) != "plain":
+            reason = checked
+        elif (state := _folder_state(target, boundary)) != "plain":
+            reason = GONE if state == "gone" else "link"
+        elif not _worktree_marker(target, admin, boundary):
+            reason = "odd_admin"
+        found.append({"id": name, "name": target.name if target is not None and not reason else name,
+                      "path": None if reason else target, "target": target, "boundary": boundary,
                       "git_dir": admin, "head": _head(admin, root), "operation": _operation(admin, root),
-                      "created": _created(admin, root), "main": False, "reason": reason})
+                      "created": _created(admin, root), "main": False, "reason": reason, "unknown": False})
+    keys = [tuple(_key(_pure(str(tree["target"])))) if tree["target"] is not None else None for tree in found]
+    counts: dict[tuple, int] = {}
+    for key in keys:
+        if key is not None:
+            counts[key] = counts.get(key, 0) + 1
+    main_key = tuple(_key(_pure(str(root))))
+    for tree, key in zip(found, keys):
+        if key is not None and (counts[key] > 1 or key == main_key) and not tree["reason"]:
+            tree.update(path=None, reason="duplicate_admin", name=tree["git_dir"].name)
+        tree.pop("target", None)
     return found
 
 
@@ -917,29 +1176,10 @@ def read_ledger(tree: Path, root: Path, parts: tuple[str, ...]) -> tuple[bytes |
     """The working copy of a worktree's ledger (at parts, relative to the worktree): (content, state, identity). The
     identity (size, time, file id) lets the caller skip a file that did not change; the file is opened only through
     plain folders, checked once open."""
-    path = Path(tree).joinpath(*parts)
-    if not no_link(path.parent, root):
-        return None, "unreadable", None
-    try:
-        info = os.lstat(path)
-    except FileNotFoundError:
-        return None, "absent", None
-    except OSError:
-        return None, "unreadable", None
-    if _is_link(info) or not stat.S_ISREG(info.st_mode):
-        return None, "unreadable", None
-    identity = (info.st_size, info.st_mtime_ns, info.st_ino, info.st_dev)
-    if info.st_size > MAX_LEDGER_BYTES:
-        return None, "too_big", identity
-    handle = _open_regular(path, info)
-    if handle is None:
-        return None, "unreadable", None
-    try:
-        with handle:
-            data = handle.read(MAX_LEDGER_BYTES + 1)
-    except OSError:
-        return None, "unreadable", None
-    return (None, "too_big", identity) if len(data) > MAX_LEDGER_BYTES else (data, "ok", identity)
+    data, state, info = _read_regular(Path(tree).joinpath(*parts), root, MAX_LEDGER_BYTES)
+    identity = (info.st_size, info.st_mtime_ns, info.st_ino, info.st_dev) \
+        if info is not None and state in ("ok", "too_big") else None
+    return data, state, identity
 
 
 def safe_relative(name: str) -> bool:

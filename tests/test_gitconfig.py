@@ -317,10 +317,10 @@ class WorktreeConfigTest(unittest.TestCase):
         (repo.root / ".git" / "worktrees" / "w2" / "config.worktree").write_bytes(odd)
         real = gitconfig.entries
 
-        def slow(data: bytes) -> list:
+        def slow(data: bytes, deadline=None) -> list:
             if data == odd:
                 raise gitreads.GitFailed("TimeoutExpired")  # git did not answer in time for that one
-            return real(data)
+            return real(data, deadline)
 
         with mock.patch.object(gitconfig, "entries", side_effect=slow):
             found = collector_module.Collector(repo.root, Settings()).snapshot(NOW)

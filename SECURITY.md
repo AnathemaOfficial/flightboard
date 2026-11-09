@@ -15,7 +15,8 @@ Only the latest release is supported.
 ## What flightboard defends against
 
 flightboard reads a git repository where coding agents write: their worktrees, their branches and their copies of the
-task ledger. It assumes any of them may be hostile, and holds these properties:
+task ledger. It assumes any of them may be hostile and implements the checks below. These checks reduce exposure;
+they are not an isolation boundary against a process that can rewrite `.git` while it is being read.
 
 - **No program of the repository ever starts.** No filter, textconv, LFS, fsmonitor, hook, external diff or signature
   program: attributes come from git's empty tree, every configured filter driver is blanked for the whole reading,
@@ -24,7 +25,7 @@ task ledger. It assumes any of them may be hostile, and holds these properties:
   a partial clone's remote is never asked for a missing object (with git older than 2.45, which cannot be kept from
   fetching, a partial clone is not read at all: a promisor remote, a remote with a partial clone filter, or
   `extensions.partialClone`).
-- **No link is followed.** No symlink, junction or reparse point, and no `.git` file planted in a new folder: every
+- **File reads reject links they can identify.** No symlink, junction or reparse point, and no `.git` file planted in a new folder: every
   folder on the way is checked with `lstat` and must be a plain folder (never a device, which is what Windows answers
   for a last part named `nul`), and untracked content is listed by flightboard, never walked by git.
 - **git is not run on the repository** when `.git` holds a link on one of its entries (or among the direct entries of
@@ -33,9 +34,11 @@ task ledger. It assumes any of them may be hostile, and holds these properties:
   would follow them (or wait on them) at every command. The configuration is read by the installed git itself, from a
   copy of its bytes on git's standard input with no include followed, so no spelling git accepts hides one of these,
   and a worktree's `commondir` must read `../..`. Replacement objects (`refs/replace`), grafts, mailmap files, a diff
-  order file, the stash and the multi-pack-index are never read, nor a commit-graph chain unless each of its lines is
-  a plain object id. The board's own arguments make git look up no other ref name (every revision is a full commit id,
-  and the reflogs are read by the board itself), no index name the board has not checked, no `.gitignore` that is a
+  order file and the multi-pack-index are never read, nor a commit-graph chain unless each of its lines is a plain
+  object id. The board reads stash and detached-HEAD reflog metadata itself to avoid treating held work as finished;
+  it does not ask git to count or apply a stash. Revision arguments given to git are full SHA-1 ids. Symbolic targets
+  are parsed as data and checked against the shared refs, rather than passed back as revision arguments. The board
+  checks index names before git reads them, refuses a `.gitignore` that is a
   pipe, and, on Windows, no path of 260 characters or more (`core.longpaths` off). An index git would read as a sparse
   one, or a split index, is never handed to git, which would write into `.git/objects` or touch the shared part to
   read it; git reads every other index with one thread, as the board walks it. A worktree folder whose name ends with
@@ -49,10 +52,21 @@ task ledger. It assumes any of them may be hostile, and holds these properties:
 - **The lines agents read carry no free text from a branch.** `--resume` keeps verbs, ids, names and counts, and a
   name may be one a session chose (a branch or a worktree folder: letters, digits, `.` `_` `/` `-`, 100 characters at
   most); titles, quotes and commit messages read in a branch stay on the page.
-- **Nothing is written** but the snapshot, outside the repository, through a new file, never through a link. Run
+- **External worktrees require explicit scope.** `--worktrees-root DIR` authorizes a local absolute root supplied
+  by the user; it is repeatable. Only this repository's registered worktrees, one or two plain components below that
+  root, can be read. Root and worktree paths must pass the plain-directory and marker checks: UNC/device paths,
+  symlinks, junctions and reparse points are refused. A root does not authorize scanning other repositories or
+  arbitrary descendants. It can cover Codex's `<root>/<hash>/<project>` layout without trusting a path found in a chat.
+- **Nothing is written** but the snapshot, outside the repository and every authorized external root, through a new
+  file, never through a link. Run
   from a folder whose `.git` is not a plain git folder of its own (a worktree the board does not read, a submodule, a
   checkout whose git folder lives elsewhere), the board reads nothing, never looks at what a `.git` file names, and
   writes the snapshot only to the cache folder.
+- **Incomplete evidence does not prove completion.** Unreadable HEADs, symbolic chains, distances or file listings
+  remain unknown. Stashed work and detached commits can hold back relevant cards. A complete reading has a shared
+  12-second budget and git runs keep their 8-second cap; the browser aborts a state request after 20 seconds. The
+  server's separate socket timeout is 10 seconds. If a live refresh fails, old session verdicts are removed and the
+  failure is announced visually and accessibly. The next successful reading restores the current view.
 
 The full model, and what it does not cover, is in the [README](README.md#security-model).
 
@@ -65,3 +79,9 @@ checkout: git follows the link, or waits on the pipe until its time limit), or r
 board has just checked.
 Any git run in that repository meets the same trap; flightboard narrows that exposure, it cannot remove it. A browser
 extension with access to the page's address can read it.
+
+Refs and reflog messages are local evidence, not authenticated provider activity. A process that can write them can
+mislead the board. Local main remains the baseline when its fetched remote is ahead; remote-tracking refs are not
+proof that a merge has been pulled. Stash attribution and retained detached history are bounded, and old commits
+missing from reflogs may not be discoverable. A ready/ended card does not authorize deletion, merging or approval.
+The board reads no conversations and does not connect to Claude, OpenAI or other model providers.

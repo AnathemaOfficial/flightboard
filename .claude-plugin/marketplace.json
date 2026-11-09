@@ -4,20 +4,21 @@
     "name": "Technologies CoreXalt Inc."
   },
   "metadata": {
-    "description": "flightboard: a read-only board of the parallel sessions working in one git repository."
+    "description": "flightboard: a read-only Git board for parallel coding-agent worktrees and branches, without reading conversations."
   },
   "plugins": [
     {
       "name": "flightboard",
       "source": "./",
-      "description": "A read-only board of your parallel coding-agent sessions: what each one changed in your roadmap, and what waits for you.",
+      "description": "A read-only Git board for parallel Claude Code, Codex and other coding-agent worktrees and branches: declared task progress and what waits for you, without reading conversations.",
       "category": "productivity",
       "tags": [
         "sessions",
         "worktrees",
         "git",
         "roadmap",
-        "read-only"
+        "read-only",
+        "multi-agent"
       ]
     }
   ]

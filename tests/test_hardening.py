@@ -370,18 +370,20 @@ class MainNotesTest(unittest.TestCase):
     """What "main" means for a reading is said on the page, with checked names, and in --resume in fixed words only:
     no branch name read in the repository."""
 
-    def test_a_remote_main_followed_is_said(self) -> None:
+    def test_a_remote_main_ahead_keeps_the_local_baseline_and_says_so(self) -> None:
         repo = Plain()
         self.addCleanup(repo.close)
         ahead = repo.worktree("tmp-ahead", "claude/tmp-ahead")
         repo.commit(ahead, "x.py", "x\n", "feat: pushed from elsewhere", "09:00")
         repo.git("update-ref", "refs/remotes/origin/main", repo.git("rev-parse", "HEAD", where=ahead))
         found = read(repo.root)
-        self.assertEqual(found["main"]["note_text"], "origin/main is ahead of main: the page follows origin/main")
-        self.assertIn("Note: the remote's main is ahead of the local main: this summary follows the remote's.",
+        self.assertEqual(found["main"]["head"], repo.git("rev-parse", "main")[:7])
+        self.assertEqual(found["main"]["note_text"],
+                         "origin/main is ahead of main (not pulled yet): the page follows local main")
+        self.assertIn("Note: the remote's main is ahead (not pulled yet): this summary follows local main.",
                       cli.resume_text(found))
         french = read(repo.root, Settings(lang="fr"))
-        self.assertIn("À noter : le main du remote a de l'avance sur le main local : ce résumé suit celui du remote.",
+        self.assertIn("À noter : le main du remote a de l'avance (pas encore tirée) : ce résumé suit main local.",
                       cli.resume_text(french))
 
     def test_a_diverged_main_is_said(self) -> None:

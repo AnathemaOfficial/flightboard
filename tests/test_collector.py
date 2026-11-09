@@ -352,14 +352,14 @@ class SafetyTest(unittest.TestCase):
     def worktree_status(self) -> tuple[dict, list[str]]:
         """A reading, and the worktrees git status ran in."""
         trees: list[str] = []
-        real = subprocess.run
+        real = gitreads._spawn
 
         def spy(command, *args, **kwargs):
             if "status" in command:
                 trees.append(next(part for part in command if part.startswith("--work-tree=")))
             return real(command, *args, **kwargs)
 
-        with mock.patch.object(gitreads.subprocess, "run", side_effect=spy):
+        with mock.patch.object(gitreads, "_spawn", side_effect=spy):
             view = read(self.repo.root)
         return view, trees
 
@@ -390,7 +390,7 @@ class SafetyTest(unittest.TestCase):
         (self.a / "new.py").write_text("x", encoding="utf-8")
         seen: list[str] = []
         calls: list[tuple[list[str], bytes]] = []
-        real_lstat, real_open, real_scandir, real_run = os.lstat, open, os.scandir, subprocess.run
+        real_lstat, real_open, real_scandir, real_run = os.lstat, open, os.scandir, gitreads._spawn
 
         def spy_path(real):
             def spy(path, *args, **kwargs):
@@ -398,20 +398,21 @@ class SafetyTest(unittest.TestCase):
                 return real(path, *args, **kwargs)
             return spy
 
-        def spy_run(command, *args, **kwargs):
-            calls.append((list(command), kwargs.get("input") or b""))
-            return real_run(command, *args, **kwargs)
+        def spy_run(command, env, cwd, stdin, timeout=None, limit=gitreads.MAX_OUTPUT_BYTES):
+            calls.append((list(command), stdin or b""))
+            return real_run(command, env, cwd, stdin, timeout, limit)
 
         with mock.patch.object(files.os, "lstat", side_effect=spy_path(real_lstat)), \
                 mock.patch.object(files.os, "scandir", side_effect=spy_path(real_scandir)), \
                 mock.patch("builtins.open", side_effect=spy_path(real_open)), \
-                mock.patch.object(gitreads.subprocess, "run", side_effect=spy_run):
+                mock.patch.object(gitreads, "_spawn", side_effect=spy_run):
             session = by_name(read(self.repo.root))["fb-001-a-1b2c3d"]
         self.assertFalse([path for path in seen if path.startswith((SLASHES, BACKSLASHES))])
         self.assertFalse([path for path in seen if Path(path).name == ".git" and "sub-repo" in path
                           and not path.endswith(".git")])
         self.assertFalse([command for command, _ in calls if "--untracked-files=all" in command])
         self.assertFalse([stdin for command, stdin in calls if b"sub-repo" in stdin])
+        self.assertTrue(calls)
         self.assertEqual(session["untracked"], 2)  # sub-repo/ and new.py, counted, never handed to git
 
     def test_an_ignored_new_file_is_not_counted(self) -> None:
@@ -432,30 +433,32 @@ class SafetyTest(unittest.TestCase):
         (self.a / "box" / "caches" / "sealed" / ".git").write_text("gitdir: " + SLASHES + "host.invalid/x\n",
                                                                     encoding="utf-8")
         feeds: list[bytes] = []
-        real = subprocess.run
+        real = gitreads._spawn
 
-        def spy(command, *args, **kwargs):
-            feeds.append(kwargs.get("input") or b"")
-            return real(command, *args, **kwargs)
+        def spy(command, env, cwd, stdin, timeout=None, limit=gitreads.MAX_OUTPUT_BYTES):
+            feeds.append(stdin or b"")
+            return real(command, env, cwd, stdin, timeout, limit)
 
-        with mock.patch.object(gitreads.subprocess, "run", side_effect=spy):
+        with mock.patch.object(gitreads, "_spawn", side_effect=spy):
             session = by_name(read(self.repo.root))["fb-001-a-1b2c3d"]
         self.assertEqual(session["untracked"], 0)
         self.assertFalse([feed for feed in feeds if b"sealed" in feed])  # the sealed folder is never named to git
+        self.assertTrue(feeds)
 
     def test_odd_admin_files_keep_git_away(self) -> None:
         admin = self.repo.root / ".git" / "worktrees" / "fb-001-a-1b2c3d"
         (admin / "commondir").write_text(SLASHES + "host.invalid/share/x\n", encoding="utf-8")
         calls = []
-        real = subprocess.run
+        real = gitreads._spawn
 
         def spy(command, *args, **kwargs):
             calls.append(list(command))
             return real(command, *args, **kwargs)
 
-        with mock.patch.object(gitreads.subprocess, "run", side_effect=spy):
+        with mock.patch.object(gitreads, "_spawn", side_effect=spy):
             view = read(self.repo.root)
         self.assertFalse([command for command in calls if any(str(admin) in part for part in command)])
+        self.assertTrue(calls)
         sessions = by_name(view)
         session = sessions["fb-001-a-1b2c3d"]  # still shown, by its folder's name, and never read
         self.assertEqual((session["kind"], session["reason"], session["files_read"], session["overlay"]),
@@ -557,12 +560,15 @@ class SafetyTest(unittest.TestCase):
         self.assertEqual([(c["task"], c["to"]) for c in session["changes"]], [("FB-004", "awaiting_review")])
         self.assertEqual((view["tasks"]["FB-004"]["status"], view["kpis"]["conflicts"]), ("awaiting_review", 0))
 
-    def test_a_worktree_git_file_neither_redirects_nor_hides_it(self) -> None:
+    def test_a_missing_worktree_marker_keeps_its_branch_but_disables_working_reads(self) -> None:
         (self.a / ".git").unlink()
         (self.a / "data" / "roadmap.json").write_text(json.dumps({"tasks": "nothing"}), encoding="utf-8")
         session = by_name(read(self.repo.root))["fb-001-a-1b2c3d"]
         self.assertEqual(session["branch"], "claude/fb-001-a-1b2c3d")
-        self.assertEqual(session["ledger"], "writing")
+        self.assertEqual(session["ledger"], "ok")  # its committed ledger, never the unbound working copy
+        self.assertEqual(session["reason"], "odd_admin")
+        self.assertFalse(session["files_read"])
+        self.assertNotIn(session["advice"], ("ready_to_merge", "ended"))
         self.assertEqual([c["task"] for c in session["changes"]], ["FB-001"])
 
     def test_a_worktree_outside_the_read_folders_is_never_touched(self) -> None:
