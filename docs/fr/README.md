@@ -2,104 +2,163 @@
 SPDX-License-Identifier: Apache-2.0
 SPDX-FileCopyrightText: 2026 Technologies CoreXalt Inc.
 -->
+<p align="center"><img src="../../assets/wordmark.svg" alt="flightboard" width="312"></p>
+
 # flightboard
 
-**Un tableau en lecture seule de tes sessions d'agents en parallèle : ce que chacune a changé dans ta feuille de
-route, et ce qui t'attend.**
+[English](../../README.md)
 
-Tu fais tourner plusieurs agents de code à la fois, chacun dans son arbre de travail Git et sa branche. La feuille
-de route de `main` n'apprend ce qu'elles ont fait qu'à la fusion, et rien ne montre d'un coup d'œil qui fait quoi, ce
-qui a bougé et ce qui attend ton go. flightboard, c'est une page locale, et quelques lignes de texte pour un agent, qui
-répondent à ça à partir du dépôt lui-même :
+**Un tableau local en lecture seule de tes sessions d'agents en parallèle : leurs changements dans Git, leur
+avancement déclaré et ce qui attend ton intervention.**
 
-- **Ce qui t'attend**, avec tes verbes : donner ton go de fusion, arbitrer un conflit, vérifier une décision
-  enregistrée en ton nom dans une branche, lancer une revue, regarder une session silencieuse qui a des modifications
-  non commitées.
-- **Chaque session** : écrit en ce moment ou silencieuse depuis quand, non commitée / commitée / poussée / dans main,
-  en retard sur son remote, et ce qu'on peut en dire — « prête pour ton go de fusion » ou « terminée » seulement quand
-  son état le permet.
-- **La feuille de route, en direct** : les statuts que chaque session déclare dans sa propre copie de ton fichier de
-  tâches, posés sur `main` avant toute fusion, avec les conflits entre sessions montrés, jamais tranchés à ta place.
-- **L'avancement** : les tâches faites dans le temps, les jalons, les mouvements par jour, chacun avec sa vue en
-  tableau.
+flightboard réunit le dépôt principal, ses arbres de travail autorisés et les branches qui ne sont pas encore dans
+`main`. Il montre les fichiers modifiés, les commits, les tâches déclarées et les conflits entre sessions. Avec un
+fichier de tâches, il compare les déclarations de chaque session à la feuille de route de `main` avant toute fusion.
+Sans fichier de tâches, il fournit la vue des sessions à partir de Git seul.
 
-Il marche aussi sans fichier de tâches : un dépôt qui n'en a pas reçoit toute la vue des sessions, tirée de git seul.
+Il ne lit pas les conversations, les API des fournisseurs ni la CI, et ne fait jamais de `fetch`. Claude Code,
+Codex et d'autres outils peuvent suivre le même flux, dès lors qu'ils travaillent dans des branches et arbres Git.
+Une session silencieuse peut encore réfléchir, lire ou attendre une réponse : le tableau n'en déduit pas qu'elle a
+terminé. Il n'approuve aucune fusion et ne supprime rien.
 
-flightboard fait des lectures Git et de fichiers contrôlées, n'écrit rien dans le dépôt ni dans les racines d'arbres
-autorisées, et ne sert sa page qu'à cet ordinateur. Ses contrôles et leurs limites sont décrits plus bas. Il lui faut
-**Python 3.12+ et git 2.41+, rien d'autre** : aucun paquet à
-installer, pas de réseau, pas de compte.
-
-Claude Code, Codex et les outils qui font tourner Qwen, MiMo, MiniMax, Kimi ou d'autres modèles peuvent suivre le même
-flux Git. Le tableau observe leurs fichiers, commits et propriétaires de tâches déclarés ; il ne se connecte pas aux
-fournisseurs, ne lit pas les conversations et ne se lance pas automatiquement à l'ouverture d'un chat desktop.
-L'outil qui exécute le modèle doit fournir le travail en arbres et branches Git.
+Il lui faut **Python 3.12+ et Git 2.41+**, sans paquet Python supplémentaire ni compte. Ses lectures contrôlées
+n'écrivent rien dans le dépôt ou dans les racines d'arbres autorisées ; le serveur reste sur cet ordinateur. Les
+contrôles et leurs limites sont détaillés plus bas.
 
 > flightboard est un projet indépendant ; les noms de produits et modèles décrivent les flux Git qu'il peut observer.
 
-La commande autonome et les deux plugins utilisent le même moteur dans `skills/flightboard/scripts` et le même
-dashboard web. Claude Code utilise `.claude-plugin` ; Codex utilise le `plugin.json` portable à la racine et
-`.agents/plugins/marketplace.json`. Les plugins donnent à l'agent la procédure pour choisir un dépôt et lancer ce
-moteur ; Python et Git restent exécutés localement. Chaque instance lit un dépôt et ses arbres autorisés.
+## Ouvrir le tableau avec ton agent
 
-## Installation
+Si le skill Codex ou le plugin Claude Code est déjà installé pour ton utilisateur, tu peux l'utiliser directement
+dans tes autres projets. Sinon, suis l'[installation unique](#installation-unique) ci-dessous.
 
-Comme plugin Claude Code (ce dépôt est à la fois le marché et le plugin), en une étape depuis Claude Code 2.1.275 ou
-plus récent :
+1. Ouvre une session Codex ou Claude Code dans le dépôt que tu veux observer.
+2. Demande **« Ouvre Flightboard pour ce dépôt en français »** ou **« Ouvre Flightboard pour ce dépôt en anglais »**.
+   Tu peux aussi nommer le dépôt : « Ouvre Flightboard pour le dépôt `/chemin/absolu/vers/mon-projet` en français ».
+3. L'agent lance le serveur pour ce dépôt et ouvre l'adresse locale dans le navigateur. Par défaut, c'est
+   [http://localhost:8790/](http://localhost:8790/). Utilise l'adresse annoncée par l'agent.
+
+Pour appeler le skill explicitement dans le chat :
 
 ```text
-/plugin install flightboard --marketplace AnathemaOfficial/flightboard
+Codex : $flightboard Ouvre le tableau de ce dépôt en français.
+Claude Code : /flightboard:flightboard Ouvre le tableau de ce dépôt en français.
 ```
 
-ou depuis un terminal, `claude plugin marketplace add AnathemaOfficial/flightboard`, puis installe `flightboard` depuis
-`/plugin`. Son skill dit à Claude quand ouvrir le tableau (« quelles sessions travaillent ? », « qu'est-ce qui
-m'attend ? ») et comment lire son résumé.
+Pour le statut en texte, demande plutôt **« Avec Flightboard, résume ce qui m'attend dans ce dépôt en français »** :
+l'agent utilise alors `--resume`, sans serveur web.
 
-Dans Codex, choisis le plugin ou le skill seul pour éviter que le même skill soit découvert deux fois. Pour
-installer le plugin depuis une copie locale du dépôt :
+**Un serveur lit un seul dépôt et ses arbres autorisés.** Pour observer plusieurs projets à la fois, demande un
+serveur par projet : le premier sur `8790`, le deuxième sur `8791`, le troisième sur `8792` (avec `--port` pour choisir).
+Par exemple : « Ouvre Flightboard pour `/chemin/absolu/vers/autre-projet` en français sur le port 8791 ».
+Le deuxième tableau sera alors à [http://localhost:8791/](http://localhost:8791/) ; le troisième à
+[http://localhost:8792/](http://localhost:8792/). Un port occupé demande de choisir un autre port ; le serveur ne
+bascule pas automatiquement.
+
+La page se rafraîchit toutes les **10 secondes**. **Fermer l'onglet n'arrête pas le serveur** : tu peux rouvrir son
+adresse tant qu'il tourne. Pour l'arrêter, utilise `Ctrl+C` dans le terminal qui l'a lancé. Si l'agent l'a lancé en
+arrière-plan, demande-lui d'arrêter le processus Flightboard qu'il a démarré pour ce dépôt et ce port. Après un arrêt
+ou un redémarrage de l'ordinateur, redemande l'ouverture du tableau : Flightboard ne démarre pas automatiquement.
+
+## Installation unique
+
+Installe Flightboard une fois pour ton utilisateur ; tu n'as pas à le recopier dans chaque dépôt observé.
+Les deux intégrations utilisent le même moteur dans `skills/flightboard/scripts` et le même tableau web.
+Python et Git sont exécutés localement.
+
+### Codex : le skill utilisateur ou le plugin
+
+**Choisis une seule des deux options**, pour éviter que le même skill soit découvert deux fois.
+
+- **Skill utilisateur** : depuis une copie propre de ce dépôt, copie le dossier `skills/flightboard`, avec son
+  `SKILL.md` et son dossier `scripts`, dans `~/.agents/skills/flightboard`. Sous Windows, la destination est
+  `$env:USERPROFILE/.agents/skills/flightboard`. Exclus `__pycache__` et les fichiers `*.pyc` de la copie. Ce skill
+  utilisateur peut ensuite servir dans tes différents projets ; voir la
+  [documentation officielle des skills Codex](https://learn.chatgpt.com/docs/build-skills).
+- **Plugin Codex** : depuis un terminal, en remplaçant le chemin par celui de ta copie locale :
+
+  ```bash
+  codex plugin marketplace add "/chemin/absolu/vers/flightboard"
+  codex plugin add flightboard@flightboard
+  ```
+
+  Le marché local pointe vers le plugin commun à `./` ; voir le
+  [guide OpenAI de distribution des plugins](https://developers.openai.com/plugins/build/plugins).
+
+Après l'installation, ouvre une session Codex dans le projet à observer et utilise la demande ci-dessus ou
+`$flightboard`. Le skill n'est pas lancé à l'ouverture d'un chat.
+
+### Claude Code : le plugin utilisateur
+
+Depuis un terminal, clone ce dépôt si tu ne l'as pas déjà, puis ajoute son marché local et installe le plugin pour
+ton utilisateur :
 
 ```bash
-codex plugin marketplace add "/chemin/absolu/vers/flightboard"
-codex plugin add flightboard@flightboard
+git clone https://github.com/AnathemaOfficial/flightboard.git "/chemin/absolu/vers/flightboard"
+claude plugin marketplace add "/chemin/absolu/vers/flightboard"
+claude plugin install flightboard@flightboard --scope user
 ```
 
-Remplace le chemin par celui de ta copie. Le marché local pointe vers le plugin commun à `./` ; voir le
-[guide OpenAI de distribution des plugins](https://developers.openai.com/plugins/build/plugins).
+Remplace `/chemin/absolu/vers/flightboard` par le dossier où tu conserves ta copie. Si elle existe déjà, commence par
+`claude plugin marketplace add`. L'installation utilisateur rend le plugin disponible dans tes projets ; les
+portées d'installation et les commandes sont décrites dans la
+[documentation officielle des plugins Claude Code](https://code.claude.com/docs/en/discover-plugins).
+Ouvre ensuite une session Claude Code dans le dépôt à observer et utilise la demande ci-dessus ou
+`/flightboard:flightboard`.
 
-Pour le skill seul, copie un dossier `skills/flightboard` propre, avec `SKILL.md` et `scripts`, dans
-`~/.agents/skills/flightboard` ; exclus les dossiers `__pycache__` et les fichiers `*.pyc`. Codex y découvre les
-skills utilisateur : voir la
-[documentation officielle des skills](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills).
-Invoque ensuite `$flightboard` ou demande simplement « Ouvre Flightboard pour ce dépôt ». Le skill utilise le dépôt
-courant, ou celui que tu nommes explicitement avec `--repo`. L'installation ne le lance pas au démarrage d'un chat,
-et le tableau ne récupère jamais de changements depuis un remote.
+## Lancer directement depuis un terminal
 
-Ou sans le plugin, depuis une copie de ce dépôt, dans n'importe quel dépôt git :
+L'intégration à un agent est facultative. Place-toi dans le dépôt que tu veux observer, puis lance le script de ta
+copie de Flightboard. Garde toujours `-I -B` : Python est isolé des variables d'environnement, du site utilisateur
+et du dossier courant. Vérifie que l'interpréteur est Python 3.12 ou plus récent.
 
 ```bash
-python3 -I -B /chemin/vers/flightboard/skills/flightboard/scripts/flightboard.py --resume --lang fr
+python3 -I -B "/chemin/absolu/vers/flightboard/skills/flightboard/scripts/flightboard.py" --repo "$PWD" --lang fr
 ```
 
-Lance-le toujours avec `-I -B` (isolé : aucune variable d'environnement, aucun site utilisateur ni dossier courant
-n'oriente Python).
-Vérifie que l'interpréteur utilise Python 3.12 ou plus récent avant le lancement. Sous Windows, utilise un `python`
-fonctionnel ou `py -3` si `python3` est absent ou ouvre le Microsoft Store. Pour un skill Codex installé, en
-PowerShell :
+Ouvre [http://localhost:8790/](http://localhost:8790/) dans ton navigateur et garde ce terminal ouvert. `Ctrl+C`
+arrête le serveur. Ajoute `--port 8791` pour lancer un autre dépôt sur un autre port.
+
+Sous Windows, si tu as installé le **skill utilisateur Codex**, ces commandes PowerShell utilisent directement sa
+copie installée. Lance-les depuis le dépôt à observer :
 
 ```powershell
 py -3 --version
+py -3 -I -B "$env:USERPROFILE/.agents/skills/flightboard/scripts/flightboard.py" --repo "$PWD" --lang fr
+```
+
+Pour obtenir seulement le résumé en texte :
+
+```powershell
 py -3 -I -B "$env:USERPROFILE/.agents/skills/flightboard/scripts/flightboard.py" --repo "$PWD" --resume --lang fr
 ```
 
-Enlève `--resume` pour lancer le dashboard en direct ; `--lang fr` choisit le français pour les deux sorties.
+Si `py -3` n'est pas disponible, utilise un `python` fonctionnel en version 3.12 ou plus récente. La présence d'une
+commande `python3` sous Windows ne garantit pas qu'elle fonctionne : elle peut ouvrir le Microsoft Store.
+Avec la copie du dépôt, ajoute de même `--resume` à la commande pour le texte, ou `--snapshot` pour écrire la page
+une fois dans ton dossier de cache (son chemin est affiché). `--lang en` choisit l'anglais pour toutes les sorties.
 
-## Utilisation
+### Quels arbres de travail sont inclus ?
 
-```bash
-python3 -I -B flightboard.py --lang fr               # la page en direct sur http://127.0.0.1:8790/ (Ctrl+C l'arrête)
-python3 -I -B flightboard.py --resume --lang fr      # le résumé et ce qui t'attend, en texte
-python3 -I -B flightboard.py --snapshot --lang fr    # la page une fois, dans ton dossier de cache (chemin affiché)
+Le dossier principal et les arbres sous `.claude/worktrees` sont inclus par défaut. Pour inclure un dossier
+`.worktrees` dans le dépôt, demande-le explicitement à l'agent ou ajoute `--worktrees .worktrees` à la commande.
+Pour les arbres Codex externes sous ta racine utilisateur, demande explicitement cette racine ou ajoute en
+PowerShell :
+
+```powershell
+py -3 -I -B "$env:USERPROFILE/.agents/skills/flightboard/scripts/flightboard.py" --repo "$PWD" --lang fr --worktrees-root "$env:USERPROFILE/.codex/worktrees"
 ```
+
+Cette autorisation ne porte que sur les arbres **enregistrés pour ce dépôt**, un ou deux composants simples sous
+la racine. Elle ne lit pas tous les autres projets qui s'y trouvent. Les contrôles de chemin peuvent encore refuser
+un arbre ; une carte dont les fichiers n'ont pas été lus reste inconnue pour cette partie de son état.
+
+Pour un gros dépôt, chaque lecture partage un budget de **12 secondes**. Si le tableau signale un dépassement,
+essaie `--max-branches 0` : cela ignore les branches sans arbre de travail et conserve les arbres suivis. Ce réglage
+ne garantit pas une lecture complète ; un arbre refusé ou illisible le reste, et ne peut pas être déclaré prêt ou
+terminé sur la base de fichiers non lus.
+
+### Choix du dépôt, options et résumé texte
 
 Lance-le depuis le dépôt, n'importe quel dossier qu'il contient, ou l'un des arbres de travail qu'il lit (sous
 `.claude/worktrees`, dans un dossier nommé avec `--worktrees`, ou sous une racine externe explicitement autorisée

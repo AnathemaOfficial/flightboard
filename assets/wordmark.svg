@@ -1,0 +1,16 @@
+<!--
+SPDX-License-Identifier: Apache-2.0
+SPDX-FileCopyrightText: 2026 Technologies CoreXalt Inc.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="156" height="56" viewBox="0 0 156 56" role="img" aria-labelledby="title">
+  <title id="title">flightboard</title>
+  <!-- Export of the dashboard's .mark: same type, colours, border and header background. -->
+  <defs>
+    <linearGradient id="header" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#07090d"/>
+      <stop offset="1" stop-color="#141b26"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="154" height="54" rx="11" fill="url(#header)" stroke="#7fe3ff" stroke-width="2"/>
+  <text x="16" y="35" fill="#fff" font-family="system-ui, -apple-system, 'Segoe UI', Arial, sans-serif" font-size="22" font-weight="800" letter-spacing=".5">flight<tspan fill="#7fe3ff">board</tspan></text>
+</svg>

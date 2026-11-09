@@ -2,7 +2,13 @@
 SPDX-License-Identifier: Apache-2.0
 SPDX-FileCopyrightText: 2026 Technologies CoreXalt Inc.
 -->
+<p align="center">
+  <img src="assets/wordmark.svg" alt="flightboard" width="312">
+</p>
+
 # flightboard
+
+[Français](docs/fr/README.md)
 
 **A read-only board of your parallel coding-agent sessions: what each one changed in your roadmap, and what waits for
 you.**
@@ -37,18 +43,70 @@ dashboard. Claude Code uses `.claude-plugin`; Codex uses the portable root `plug
 `.agents/plugins/marketplace.json`. The plugins supply the workflow for choosing a repository and launching that
 engine; Python and Git still run locally. Each running instance reads one repository and its authorized worktrees.
 
-## Install
+## Quick start: ask your coding agent
 
-As a Claude Code plugin (this repository is both the marketplace and the plugin), in one step from Claude Code
-2.1.275 or later:
+After the [one-time installation](#install), open a Codex or Claude Code session in the Git repository you want to
+watch and ask:
 
 ```text
-/plugin install flightboard --marketplace AnathemaOfficial/flightboard
+Open Flightboard for this repository, in English.
 ```
 
-or from a shell, `claude plugin marketplace add AnathemaOfficial/flightboard`, then install `flightboard` from
-`/plugin`. Its skill tells Claude when to open the board ("which sessions are working?", "what waits for me?") and
-how to read its summary.
+Or name another local repository: `Open Flightboard for the repository "/path/to/my-project", in English.`
+The user installation works across your projects on this computer; you do not copy Flightboard into every repository.
+The agent starts the local server and opens its web dashboard. These instructions require a coding-agent session
+with local file and command access.
+
+To select the skill explicitly:
+
+| Agent | Prompt |
+| :- | :- |
+| Codex | `$flightboard Open the live dashboard for this repository, in English.` |
+| Claude Code | `/flightboard:flightboard Open the live dashboard for this repository, in English.` |
+
+Ask for a **live dashboard** to open the page, or for a **text summary** to get a one-time status in the chat.
+
+### Open the page and choose a language
+
+Click the URL returned by the agent, or paste it into Chrome, Edge, Firefox or another browser. The default address
+is [http://127.0.0.1:8790/](http://127.0.0.1:8790/); it works while the server is running on this computer. You can
+bookmark it. The page refreshes every 10 seconds.
+
+English is the default. Ask `Open Flightboard for this repository, in French` for French; the corresponding command
+options are `--lang en` and `--lang fr`. They select the language of both the dashboard and the text summary.
+
+### Watch several repositories
+
+Start one server per repository and request a different port for each:
+
+```text
+Open Flightboard for "/path/to/project-a" on port 8791, in English.
+Open Flightboard for "/path/to/project-b" on port 8792, in English.
+```
+
+Open `http://127.0.0.1:8791/` and `http://127.0.0.1:8792/` in separate tabs. Each tab shows one repository and its
+authorized worktrees. Flightboard currently has no combined dashboard for unrelated repositories.
+
+Closing a browser tab does not stop its server. If you started it in a terminal, press **Ctrl+C** there. If an agent
+started it in the background, ask that agent to stop the Flightboard server for the named repository. After the
+process exits or the computer restarts, launch it again to use the bookmarked page.
+
+## Install
+
+### Claude Code
+
+Install once for your user from a shell (this repository contains both the marketplace and the plugin):
+
+```bash
+claude plugin marketplace add AnathemaOfficial/flightboard --scope user
+claude plugin install flightboard@flightboard --scope user
+```
+
+To install from a local clone instead, replace `AnathemaOfficial/flightboard` in the first command with its quoted
+absolute path, such as `"/absolute/path/to/flightboard"`. Start a new Claude Code session after installation, then
+use the prompts above. See the [official Claude Code plugin instructions](https://code.claude.com/docs/en/discover-plugins).
+
+### Codex
 
 For Codex, choose either the plugin or the standalone skill so the same skill is not discovered twice. To install
 the plugin from a local clone:
@@ -66,12 +124,15 @@ For the skill alone, copy a clean `skills/flightboard` folder, including `SKILL.
 see the [official skills documentation](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills).
 Then invoke `$flightboard` or ask naturally, for example "Open Flightboard for this repository". The skill uses the
 current repository, or a repository you explicitly name with `--repo`. Installation does not launch it when a chat
-starts, and the board never fetches from a remote.
+starts, and the board never fetches from a remote. If the skill does not appear, restart Codex.
 
-Or without the plugin, from a clone of this repository, in any git repository:
+### Standalone command
+
+You can also launch the same engine directly. Replace the first path with your Flightboard clone and `--repo` with
+the local Git repository to watch:
 
 ```bash
-python3 -I -B /path/to/flightboard/skills/flightboard/scripts/flightboard.py --resume
+python3 -I -B "/path/to/flightboard/skills/flightboard/scripts/flightboard.py" --repo "/path/to/my-project" --lang en
 ```
 
 Always run it with `-I -B` (isolated: no environment variable, user site or current folder steers Python).
@@ -80,18 +141,42 @@ Check that your interpreter is Python 3.12 or newer before launching it. On Wind
 
 ```powershell
 py -3 --version
-py -3 -I -B "$env:USERPROFILE/.agents/skills/flightboard/scripts/flightboard.py" --repo "$PWD" --resume --lang fr
+py -3 -I -B "$env:USERPROFILE/.agents/skills/flightboard/scripts/flightboard.py" --repo "$PWD" --lang en
 ```
 
-Omit `--resume` to start the live dashboard; `--lang fr` selects French for both outputs.
+Here `$PWD` means the current project folder. The terminal stays open while the server runs: open the printed URL
+in your browser and press Ctrl+C in that terminal to stop it.
+
+For a one-time text summary instead of the live page:
+
+```powershell
+py -3 -I -B "$env:USERPROFILE/.agents/skills/flightboard/scripts/flightboard.py" --repo "$PWD" --resume --lang en
+```
 
 ## Use
 
+From a clone, these commands explicitly name the shared script and the repository to read:
+
 ```bash
-python3 -I -B flightboard.py                 # the live page on http://127.0.0.1:8790/ (Ctrl+C stops it)
-python3 -I -B flightboard.py --resume        # the summary and what waits for you, as text
-python3 -I -B flightboard.py --snapshot      # the page once, in your cache folder (its path is printed)
+python3 -I -B "/path/to/flightboard/skills/flightboard/scripts/flightboard.py" --repo "/path/to/my-project"
+python3 -I -B "/path/to/flightboard/skills/flightboard/scripts/flightboard.py" --repo "/path/to/my-project" --resume
+python3 -I -B "/path/to/flightboard/skills/flightboard/scripts/flightboard.py" --repo "/path/to/my-project" --snapshot
 ```
+
+The first command serves the live page; `--resume` prints a text summary; `--snapshot` writes a standalone HTML
+page in your cache and prints its location. A snapshot does not refresh. Add `--lang fr` to any mode for French.
+
+### Include agent worktrees
+
+The default folder is `.claude/worktrees`. To include another folder inside the repository, explicitly request it
+with `--worktrees .worktrees`. Registered Codex worktrees outside the repository need an explicit root, for example
+`--worktrees-root "$HOME/.codex/worktrees"`; in PowerShell you can use
+`--worktrees-root "$env:USERPROFILE/.codex/worktrees"`. You can also tell the agent to include that root in your prompt.
+Only registered worktrees belonging to the chosen repository are eligible; authorizing a root does not scan other projects.
+
+Large repositories may exceed the shared 12-second reading budget. To focus on worktrees, request
+`--max-branches 0`: this excludes branches without a worktree. It does not make unread worktrees readable; check
+the warnings on their cards and the source status at the bottom of the page.
 
 Run it from the repository, any folder inside it, or one of the worktrees it reads (under `.claude/worktrees`, or a
 folder named with `--worktrees`, or an explicitly authorized external root with `--worktrees-root`): it reads the
