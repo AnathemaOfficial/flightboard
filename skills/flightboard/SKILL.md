@@ -13,13 +13,22 @@ provider APIs, and starts no desktop-chat automation. Its guarded reads write no
 worktree roots. It needs Python 3.12+ and git 2.41+, nothing else.
 
 Run it from the repository, any folder inside it, or one of the worktrees it reads (under `.claude/worktrees`, or a
-folder named with `--worktrees`, or an external root authorized with `--worktrees-root`). Use `python3`; on Windows,
-`python` or `py -3` if `python3` is missing. Always keep `-I -B`.
+folder named with `--worktrees`, or an external root authorized with `--worktrees-root`). On Windows, try `py -3`,
+then `python`, then `python3`; elsewhere try `python3`, then `python`. Check the candidate by running
+`-I -B -c "import sys; print(sys.executable); raise SystemExit(sys.version_info < (3, 12))"` and use one that
+exits successfully. Command discovery alone does not prove that a Windows app alias works. Always keep `-I -B`.
 
 In the portable commands below, replace `<skill-directory>` with the absolute directory containing the `SKILL.md`
 you just read. Use that installed file's path, not a directory inferred from the observed repository. This works
 when Codex reads the copied skill under `~/.agents/skills/flightboard` and when another host supplies its location.
-Do not assume a Claude environment variable exists in Codex.
+Do not assume a Claude environment variable exists in Codex. Replace `python3` in the examples with the verified
+interpreter command. Both host plugins use these same scripts and the same web dashboard.
+
+Use the current project as the target, or the user's named repository via `--repo DIR`; quote absolute paths that
+contain spaces. Ask for a path only when no repository can be determined. One server reads one repository and its
+authorized worktrees. Do not clone, fetch or authorize additional worktree roots merely to open the board.
+For a request to open or launch Flightboard, start the live page below. For a text-only status request, use
+`--resume`. Use `--lang fr` when reporting in French.
 
 ## What waits for the user: `--resume`
 
@@ -57,11 +66,16 @@ python3 -I -B "<skill-directory>/scripts/flightboard.py"
 ```
 
 Run it in the background: it serves the board on `http://127.0.0.1:8790/` (another port with `--port N`) and prints
-one JSON line `{"status": "SERVING", "url": ...}`. Open that address in the browser pane. The page refreshes itself
-every 10 seconds; stop the process to stop it. `--snapshot` writes the page once to the user's cache folder instead
+one JSON line `{"status": "SERVING", "url": ...}`. Open the returned address in the browser pane, or the system
+browser if no pane is available. If the default port is occupied, reuse a server only if you started it in this
+session and know its repository path and options match this request. `/state.json` exposes only the repository's
+folder name, which cannot distinguish two clones with the same name. Otherwise start a separate server with
+`--port N`. Never stop an unrelated process to free a port. Tell the user the URL and how to stop the server you started.
+The page refreshes itself every 10 seconds; stop the process to stop it. `--snapshot` writes the page once to the user's cache folder instead
 and prints its path (`--output FILE.html` names another file, outside the repository and all authorized external
 roots). A reading has a shared 12-second budget; a browser state request times out after 20 seconds. If a refresh
-fails, report the warning and treat retained cards as the last successful reading, not the current state.
+fails, the page reports the failure and removes stale readiness verdicts. Report the warning; wait for a successful
+refresh before describing the current repository state.
 
 ## Rules
 

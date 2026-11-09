@@ -1,0 +1,25 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "flightboard",
+  "version": "0.1.0",
+  "description": "A read-only Git board for parallel coding-agent worktrees and branches: declared task progress and what waits for you, without reading conversations.",
+  "author": {
+    "name": "Technologies CoreXalt Inc."
+  },
+  "repository": "https://github.com/AnathemaOfficial/flightboard",
+  "license": "Apache-2.0",
+  "keywords": ["sessions", "worktrees", "git", "roadmap", "dashboard", "read-only", "multi-agent"],
+  "extensions": {
+    "com.openai": {
+      "requires_local_executor": true,
+      "interface": {
+        "displayName": "Flightboard",
+        "shortDescription": "A local Git dashboard for parallel coding agents",
+        "developerName": "Technologies CoreXalt Inc.",
+        "category": "Productivity",
+        "capabilities": ["Read"],
+        "defaultPrompt": ["Open Flightboard for the current Git repository."]
+      }
+    }
+  }
+}

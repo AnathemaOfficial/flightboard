@@ -1,0 +1,20 @@
+{
+  "name": "flightboard",
+  "interface": {
+    "displayName": "Flightboard"
+  },
+  "plugins": [
+    {
+      "name": "flightboard",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

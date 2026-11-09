@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Technologies CoreXalt Inc.
+interface:
+  display_name: "Flightboard"
+  short_description: "A local Git dashboard for parallel coding agents"
+  default_prompt: "Use $flightboard to open the live dashboard for this Git repository."

@@ -65,9 +65,18 @@ class HygieneTest(unittest.TestCase):
     def test_the_plugin_layout(self) -> None:
         self.assertFalse((ROOT / "bin").exists(), "claude.ai and Cowork refuse a plugin with a bin/ folder")
         manifest = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        portable = json.loads((ROOT / "plugin.json").read_text(encoding="utf-8"))
+        codex_market = json.loads((ROOT / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8"))
         market = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
         self.assertEqual((manifest["name"], manifest["license"], manifest["version"]),
                          ("flightboard", "Apache-2.0", load().__version__))
+        self.assertEqual({key: portable[key] for key in ("name", "license", "version")},
+                         {key: manifest[key] for key in ("name", "license", "version")})
+        self.assertTrue(portable["extensions"]["com.openai"]["requires_local_executor"])
+        self.assertEqual(portable["extensions"]["com.openai"]["interface"]["capabilities"], ["Read"])
+        self.assertEqual(codex_market["name"], market["name"])
+        self.assertEqual([(entry["name"], entry["source"]) for entry in codex_market["plugins"]],
+                         [("flightboard", {"source": "local", "path": "./"})])
         self.assertEqual([(entry["name"], entry["source"]) for entry in market["plugins"]], [("flightboard", "./")])
         skill = (ROOT / "skills" / "flightboard" / "SKILL.md").read_text(encoding="utf-8")
         front = skill.split("---", 2)[1]

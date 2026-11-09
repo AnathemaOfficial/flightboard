@@ -5,7 +5,8 @@
 version = 1
 
 [[annotations]]
-path = [".claude-plugin/plugin.json", ".claude-plugin/marketplace.json", "skills/flightboard/SKILL.md",
+path = ["plugin.json", ".agents/plugins/marketplace.json", ".claude-plugin/plugin.json",
+        ".claude-plugin/marketplace.json", "skills/flightboard/SKILL.md",
         "skills/flightboard/scripts/flightboard/template.html"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Technologies CoreXalt Inc."

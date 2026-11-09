@@ -32,6 +32,11 @@ or launch itself when a desktop chat starts. The tool running a model must provi
 
 > flightboard is an independent project; product and model names describe Git workflows it can observe.
 
+The standalone command and both plugins use the same engine in `skills/flightboard/scripts` and the same web
+dashboard. Claude Code uses `.claude-plugin`; Codex uses the portable root `plugin.json` and
+`.agents/plugins/marketplace.json`. The plugins supply the workflow for choosing a repository and launching that
+engine; Python and Git still run locally. Each running instance reads one repository and its authorized worktrees.
+
 ## Install
 
 As a Claude Code plugin (this repository is both the marketplace and the plugin), in one step from Claude Code
@@ -45,10 +50,23 @@ or from a shell, `claude plugin marketplace add AnathemaOfficial/flightboard`, t
 `/plugin`. Its skill tells Claude when to open the board ("which sessions are working?", "what waits for me?") and
 how to read its summary.
 
-For optional local use in Codex, copy the entire `skills/flightboard` folder, including `SKILL.md` and `scripts`, to
-`~/.agents/skills/flightboard`. Codex discovers user skills there; see the
-[official OpenAI skills documentation](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills).
-Ask the agent to use the skill when needed. This is a manual installation option, not a desktop startup hook.
+For Codex, choose either the plugin or the standalone skill so the same skill is not discovered twice. To install
+the plugin from a local clone:
+
+```bash
+codex plugin marketplace add "/absolute/path/to/flightboard"
+codex plugin add flightboard@flightboard
+```
+
+Replace the path with the absolute path of your clone. The local marketplace points to the shared plugin at `./`;
+see [OpenAI's plugin packaging guide](https://developers.openai.com/plugins/build/plugins).
+
+For the skill alone, copy a clean `skills/flightboard` folder, including `SKILL.md` and `scripts`, to
+`~/.agents/skills/flightboard`; exclude `__pycache__` folders and `*.pyc` files. Codex discovers user skills there;
+see the [official skills documentation](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills).
+Then invoke `$flightboard` or ask naturally, for example "Open Flightboard for this repository". The skill uses the
+current repository, or a repository you explicitly name with `--repo`. Installation does not launch it when a chat
+starts, and the board never fetches from a remote.
 
 Or without the plugin, from a clone of this repository, in any git repository:
 
@@ -57,6 +75,15 @@ python3 -I -B /path/to/flightboard/skills/flightboard/scripts/flightboard.py --r
 ```
 
 Always run it with `-I -B` (isolated: no environment variable, user site or current folder steers Python).
+Check that your interpreter is Python 3.12 or newer before launching it. On Windows, use a working `python` or
+`py -3` if `python3` is unavailable or opens the Microsoft Store. For an installed Codex skill, in PowerShell:
+
+```powershell
+py -3 --version
+py -3 -I -B "$env:USERPROFILE/.agents/skills/flightboard/scripts/flightboard.py" --repo "$PWD" --resume --lang fr
+```
+
+Omit `--resume` to start the live dashboard; `--lang fr` selects French for both outputs.
 
 ## Use
 
