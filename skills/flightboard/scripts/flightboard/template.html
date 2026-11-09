@@ -143,7 +143,6 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
   let failed = data.main.state === 'ok' ? '' : data.main.reason_text;
   let refreshController = null;
   let refreshVersion = 0;
-  const REQUEST_TIMEOUT_MS = 20000;
   let scope = '1.0';
   let burnupPick = null;  // {live, t}: the burn-up point the owner browses, kept across redraws
   const polling = data.mode === 'live' && (location.protocol === 'http:' || location.protocol === 'https:');
@@ -714,6 +713,10 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
   const keyOf = text => text.replace(/^\{"generated_at":"[^"]*",/, '{');
 
   // ---- live: read again; an error or timeout cannot leave old session verdicts looking current
+  function requestTimeout() {
+    const seconds = own(own(data, 'settings'), 'read_seconds');
+    return ((Number.isInteger(seconds) && seconds >= 12 && seconds <= 120 ? seconds : 12) + 8) * 1000;
+  }
   async function refresh() {
     clearTimeout(timer);
     const version = ++refreshVersion;
@@ -721,7 +724,7 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
     if (document.hidden) return;
     const controller = new AbortController();
     refreshController = controller;
-    const deadline = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const deadline = setTimeout(() => controller.abort(), requestTimeout());
     if (!document.hidden) {
       try {
         const response = await fetch('state.json', {cache: 'no-store', credentials: 'same-origin', redirect: 'error', signal: controller.signal});

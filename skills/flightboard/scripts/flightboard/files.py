@@ -4,8 +4,9 @@
 
 Worktrees are found in the repository's own admin folders (.git/worktrees/<id>), never through `git worktree list`,
 which checks every path it prints. A worktree folder is checked as text before anything touches it: it must be the
-main checkout or a direct child of one of the worktree folders (.claude/worktrees unless the owner names others), on
-the root's drive, written plainly (no network share, no device path, no "..", no stream, no reserved name). Then every
+main checkout, a direct child of one of the worktree folders (.claude/worktrees unless the owner names others), or
+one or two plain components below an explicitly authorized local external root. It must be written plainly (no
+network share, no device path, no "..", no stream, no reserved name). Then every
 folder on the way is checked for links, junctions and other reparse points. A folder that cannot be read stays listed
 with its reason, its branch read from the object database alone. Before git runs on the repository, its own .git is
 checked for what would lead every git command elsewhere (git_dir_problem; the installed git reads only a byte copy of
@@ -239,16 +240,16 @@ def _bytes(config: bytes | str) -> bytes:
 
 def plain_config(config: bytes | str, deadline: float | None = None) -> bool:
     """A config.worktree that only sets core.longpaths, core.sparseCheckout, core.sparseCheckoutCone or index.sparse
-    (what Claude Code and git sparse-checkout write) to true or false, read as git reads it: nothing that could point
-    git at a file, a program or a network share."""
+    to true or false, or codex.localenvironmentconfigpath to __none__, read as git reads it: nothing that could point
+    git at a file, a program or a network share. The Codex marker is not opened as a path."""
     return GITCONFIG.plain_worktree(_bytes(config), deadline)
 
 
 def plain_admin(admin: Path, root: Path, budget: Budget | None = None) -> bool:
     """An admin folder git may be pointed at: its commondir is "../..", none of the files git reads there in a worktree
     (its index and a split index's shared file, HEAD, the state of a merge or a rebase, its logs, a reftable store) is
-    a link, and its config.worktree, if any, holds only what Claude Code or sparse-checkout writes there. Anything else
-    could steer git elsewhere, a network share included."""
+    a link, and its config.worktree, if any, holds only the allowed booleans or Codex's exact no-environment marker.
+    Other configuration remains refused."""
     common, state = _read_file(admin / "commondir", root, MAX_SMALL_BYTES)
     if state != "ok" or common.rstrip(b"\r\n") != b"../..":  # as git reads it: only CR and LF dropped at the end
         return False

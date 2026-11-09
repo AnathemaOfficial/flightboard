@@ -82,6 +82,27 @@ class ExternalWorktreeTest(unittest.TestCase):
     def test_launch_from_authorized_external_tree_reads_its_main_checkout(self):
         self.assertEqual(collector.Collector(self.tree, self.settings).root, self.repo.root)
 
+    def test_codex_sentinel_keeps_tracked_changes_visible_and_is_rechecked(self):
+        self.repo.git("config", "extensions.worktreeConfig", "true")
+        worktree_config = self.repo.root / ".git" / "worktrees" / "project" / "config.worktree"
+        sentinel = b"[codex]\n\tlocalEnvironmentConfigPath = __none__\n"
+        worktree_config.write_bytes(sentinel)
+        (self.tree / "app.py").write_text("print(2)\n", encoding="utf-8", newline="\n")
+        reader = collector.Collector(self.repo.root, self.settings)
+        card = by_name(reader.snapshot(NOW))["project"]
+        self.assertEqual((card["reason"], card["files_read"], card["modified"]), ("", True, 1))
+
+        for dangerous in (b"[codex]\n\tlocalEnvironmentConfigPath = /local/environment.toml\n",
+                          sentinel + b"[include]\n\tpath = //server/share/other.cfg\n",
+                          sentinel + b"[core]\n\thooksPath = /local/hooks\n"):
+            with self.subTest(config=dangerous):
+                worktree_config.write_bytes(dangerous)
+                refused = by_name(reader.snapshot(NOW))["project"]
+                self.assertEqual((refused["reason"], refused["files_read"]), ("odd_admin", False))
+                worktree_config.write_bytes(sentinel)
+                restored = by_name(reader.snapshot(NOW))["project"]
+                self.assertEqual((restored["reason"], restored["files_read"], restored["modified"]), ("", True, 1))
+
     def test_prefix_lookalike_is_not_an_authorized_root(self):
         wrong = config.Settings(external_worktrees=(self.external.with_name(self.external.name + "-other"),))
         card = by_name(collector.Collector(self.repo.root, wrong).snapshot(NOW))["project"]

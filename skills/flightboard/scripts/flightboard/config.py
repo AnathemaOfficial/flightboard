@@ -14,13 +14,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .files import RESERVED, WORKTREES
-from .gitreads import REMOTE_NAME, is_ref
+from .gitreads import READING_BUDGET, REMOTE_NAME, is_ref
 from .ledgers import KINDS, safe_path
 from .messages import LANGS
 
 PART = re.compile(r"[A-Za-z0-9._-]{1,100}")
 BOUNDS = {"active_minutes": (1, 1440), "recent_minutes": (2, 10080), "stale_days": (1, 3650),
-          "max_branches": (0, 500)}
+          "max_branches": (0, 500), "read_seconds": (12, 120)}
 
 
 @dataclass(frozen=True)
@@ -39,13 +39,14 @@ class Settings:
     recent_minutes: int = 120
     stale_days: int = 14
     max_branches: int = 30
+    read_seconds: int = int(READING_BUDGET)  # shared snapshot; each git run still has its own cap
 
     def public(self) -> dict:
         """What the page may say about these settings: relative folders, names and numbers, never a machine path."""
         return {"worktrees": ["/".join(parts) for parts in self.worktrees], "remote": self.remote,
                 "external_worktree_roots": len(self.external_worktrees),
                 "main": self.main or "", "active_minutes": self.active_minutes, "stale_days": self.stale_days,
-                "kept": list(self.kept)}
+                "kept": list(self.kept), "read_seconds": self.read_seconds}
 
 
 def folder(text: str) -> tuple[str, ...] | None:
@@ -103,8 +104,13 @@ def ledger_path(text: str) -> str | None:
 
 def number(name: str, text: str) -> int | None:
     low, high = BOUNDS[name]
-    return int(text) if isinstance(text, str) and text.isascii() and text.isdigit() and low <= int(text) <= high \
-        else None
+    if not isinstance(text, str) or not text.isascii() or not text.isdigit():
+        return None
+    try:
+        value = int(text)
+    except ValueError:  # Python refuses excessively long digit strings too
+        return None
+    return value if low <= value <= high else None
 
 
 def valid(settings: Settings) -> bool:
@@ -115,4 +121,6 @@ def valid(settings: Settings) -> bool:
         and remote(settings.remote) == settings.remote \
         and all(folder("/".join(parts)) == parts for parts in settings.worktrees) \
         and all(isinstance(path, Path) and external_root(path) == path for path in settings.external_worktrees) \
-        and all(folder(name) is not None for name in settings.kept)
+        and all(folder(name) is not None for name in settings.kept) \
+        and type(settings.read_seconds) is int and BOUNDS["read_seconds"][0] <= settings.read_seconds \
+        <= BOUNDS["read_seconds"][1]

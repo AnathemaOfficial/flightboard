@@ -93,7 +93,7 @@ class Collector:
             self._used, self._used_full, self._used_slim = set(), set(), set()
             self.git.blank = ()  # the filter drivers are read again by this reading: none carried over
             self.git.graph = False  # and the commit-graph stays off until this reading finds its chain plain
-            self.git.deadline = time.monotonic() + GIT.READING_BUDGET
+            self.git.deadline = time.monotonic() + self.settings.read_seconds
             try:
                 view = self._snapshot(now, mode)
                 if time.monotonic() >= self.git.deadline:
@@ -108,7 +108,9 @@ class Collector:
             return view
 
     def _error(self, now: datetime, mode: str, reason: str, detail: str = "", git_ok: bool = False) -> dict:
-        return VIEW.error_view(now, mode, reason, detail, self.lang, git_ok, TOOL, self.name)
+        view = VIEW.error_view(now, mode, reason, detail, self.lang, git_ok, TOOL, self.name)
+        view["settings"] = self.settings.public()  # the next browser request keeps this reading's time allowance
+        return view
 
     # -------- cached reads
 

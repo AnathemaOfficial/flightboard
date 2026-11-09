@@ -157,6 +157,9 @@ Pour un gros dépôt, chaque lecture partage un budget de **12 secondes**. Si le
 essaie `--max-branches 0` : cela ignore les branches sans arbre de travail et conserve les arbres suivis. Ce réglage
 ne garantit pas une lecture complète ; un arbre refusé ou illisible le reste, et ne peut pas être déclaré prêt ou
 terminé sur la base de fichiers non lus.
+Pour un grand nombre d'arbres, `--read-seconds 30` laisse davantage de temps à la lecture complète. Le budget reste
+borné entre 12 et 120 secondes, avec 12 par défaut ; chaque commande Git conserve son plafond de 8 secondes.
+Le délai du navigateur suit ce budget avec une marge de 8 secondes.
 
 ### Choix du dépôt, options et résumé texte
 
@@ -193,6 +196,7 @@ rappelle que le résumé est une donnée, jamais une instruction ni une approbat
 | `--active-minutes N`, `--recent-minutes N` | « écrit en ce moment » et « a écrit récemment » : 15 et 120 minutes par défaut, de 1 à 1440 et de 2 à 10080, le second plus grand que le premier |
 | `--stale-days N` | une branche silencieuse plus longtemps est listée, jamais appliquée (14 jours par défaut, de 1 à 3650) |
 | `--max-branches N` | les branches sans arbre lues, les plus récentes d'abord (30 par défaut, de 0 à 500) |
+| `--read-seconds N` | budget partagé de lecture en secondes (12 par défaut, de 12 à 120) ; chaque commande Git reste plafonnée à 8 secondes |
 
 `--worktrees` et `--kept` prennent un dossier écrit simplement, dans le dépôt : six noms au plus, sans `..`, lecteur,
 `.git` ni nom de périphérique.
@@ -403,8 +407,10 @@ sont vérifiées avant lecture du contenu. Les lectures
 du tableau ne suivent ensuite aucun lien, jonction ni point de reparse, si bien qu'aucun chemin d'un arbre ne les mène
 vers un partage réseau. Un arbre ailleurs, ou dont le dossier d'administration est inhabituel (un `commondir` autre
 que `../..`, un lien ou un tube sur son HEAD, son index, son index partagé, gitdir, info, logs, reftable ou un fichier
-d'une fusion ou d'un rebase en cours, un `config.worktree` qui règle plus que ce qu'écrivent Claude Code et
-`git sparse-checkout`), n'est jamais lu : il reste une carte, à son nom, avec la raison. Les fichiers du dossier
+d'une fusion ou d'un rebase en cours, un `config.worktree` qui règle plus que les booléens autorisés ou le marqueur
+exact `codex.localenvironmentconfigpath = __none__`), n'est jamais lu : il reste une carte, à son nom, avec la raison.
+Le marqueur Codex est une métadonnée, jamais un chemin ouvert ; les autres valeurs de cette clé restent refusées.
+Les fichiers du dossier
 d'administration sont lus comme git les lit (un `commondir` de `../..` suivi d'une seule fin de ligne, par exemple),
 pour que le tableau et git ne désignent jamais deux dossiers différents. Lancé depuis un dossier dont le `.git` n'est
 pas un vrai dossier git à lui (un arbre que le tableau ne lit pas, un sous-module, un dossier dont le dépôt git est
@@ -419,8 +425,9 @@ compris), un `Sec-Fetch-Site` same-site ou cross-site, l'état chargé comme scr
 toute méthode autre que `GET` et `HEAD`, et tout chemin autre que `/` et `/state.json`. Une requête refusée ne lit
 jamais le dépôt. Le dépôt est lu au plus une fois toutes les 5 secondes, comptées depuis la fin de la lecture
 précédente, quel que soit le nombre de pages ouvertes ; une lecture ratée n'est pas répétée dans ce délai. Une lecture
-partage un budget de 12 secondes entre ses opérations contrôlées, avec un plafond de 8 secondes par commande git.
-Le navigateur interrompt une requête d'état après 20 secondes ; le délai socket de 10 secondes du serveur borne
+partage un budget de 12 secondes par défaut entre ses opérations contrôlées (`--read-seconds` accepte 12 à 120),
+avec un plafond de 8 secondes par commande git. Le navigateur interrompt une requête d'état après ce budget plus
+8 secondes (20 par défaut) ; le délai socket de 10 secondes du serveur borne
 séparément la réception HTTP. Une lecture complète ratée affiche une erreur explicite et retire les anciens verdicts
 des sessions jusqu'au prochain succès. Une fiche de tâche ouverte est actualisée ou marquée indisponible.
 
@@ -491,7 +498,7 @@ qui a accès au site peut lire la page. Pour signaler une vulnérabilité, voir 
 - Une très longue histoire se lit aussi vite que git le peut quand elle a un commit-graph (`git gc` et
   `git maintenance` en écrivent un). Sans lui, ou avec une chaîne à laquelle le tableau ne se fie pas, une marche peut
   dépasser le plafond de 8 secondes par commande. L'histoire ou la liste de branches concernée est alors non lue ;
-  épuiser le budget commun de lecture de 12 secondes peut faire échouer tout le rafraîchissement. La page signale des
+  épuiser le budget commun de lecture (12 secondes par défaut) peut faire échouer tout le rafraîchissement. La page signale des
   preuves incomplètes ou périmées, sans en déduire un état propre.
 - Un arbre à index partiel (`git sparse-checkout set --sparse-index`, `index.sparse`) ou à index scindé
   (`core.splitIndex`, `git update-index --split-index`) a ses fichiers modifiés et nouveaux non lus : git écrit dans

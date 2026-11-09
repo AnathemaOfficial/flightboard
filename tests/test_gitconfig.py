@@ -150,6 +150,40 @@ class ReaderTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(files.plain_config(text), plain)
 
+    def test_codex_worktree_config_accepts_only_its_exact_no_environment_sentinel(self) -> None:
+        for text in ("[codex]\n\tlocalEnvironmentConfigPath = __none__\n",
+                     BOM + "[codex]\n\tlocalEnvironmentConfigPath = __none__\n",
+                     '[CoDeX]\r\n\tLoCaLeNvIrOnMeNtCoNfIgPaTh = "__none__"\r\n',
+                     "[core]\n\tlongpaths = true\n[codex]\n\tlocalEnvironmentConfigPath = __none__\n"
+                     "[index]\n\tsparse = false\n"):
+            with self.subTest(text=text):
+                self.assertTrue(files.plain_config(text))
+                self.assertTrue(files.plain_config(text.encode("utf-8")))
+
+    def test_codex_worktree_config_refuses_other_values_and_keys(self) -> None:
+        for text in ("[codex]\n\tlocalEnvironmentConfigPath = /local/environment.toml\n",
+                     "[codex]\n\tlocalEnvironmentConfigPath = //server/share/environment.toml\n",
+                     "[codex]\n\tlocalEnvironmentConfigPath = __NONE__\n",
+                     '[codex]\n\tlocalEnvironmentConfigPath = " __none__ "\n',
+                     "[codex]\n\tlocalEnvironmentConfigPath =\n",
+                     "[codex]\n\tlocalEnvironmentConfigPath\n",
+                     "[codex]\n\tother = __none__\n",
+                     '[codex "other"]\n\tlocalEnvironmentConfigPath = __none__\n',
+                     "[codex]\n\tlocalEnvironmentConfigPath = __none__\n"
+                     "\tlocalEnvironmentConfigPath = /local/environment.toml\n"):
+            with self.subTest(text=text):
+                self.assertFalse(files.plain_config(text))
+
+    def test_codex_sentinel_cannot_hide_an_include_or_hooks_configuration(self) -> None:
+        sentinel = "[codex]\n\tlocalEnvironmentConfigPath = __none__\n"
+        for dangerous in ("[include]\n\tpath = /local/other.cfg\n",
+                          '[includeIf "gitdir:**"]\n\tpath = //server/share/other.cfg\n',
+                          "[core]\n\thooksPath = /local/hooks\n",
+                          "[codex]\n\tother = true\n"):
+            for text in (sentinel + dangerous, dangerous + sentinel):
+                with self.subTest(text=text):
+                    self.assertFalse(files.plain_config(text))
+
 
 @unittest.skipIf(GIT is None, "git absent")
 class SameAsGitTest(unittest.TestCase):
@@ -176,6 +210,15 @@ class SameAsGitTest(unittest.TestCase):
     def test_hand_written_spellings(self) -> None:
         for data in CORPUS + [text.encode("utf-8") for text in PLAIN]:
             self.compare(data)
+
+    def test_codex_sentinel_uses_gits_case_bom_and_line_ending_rules(self) -> None:
+        for data in (b"[codex]\n\tlocalEnvironmentConfigPath = __none__\n",
+                     b'\xef\xbb\xbf[CoDeX]\r\n\tLoCaLeNvIrOnMeNtCoNfIgPaTh = "__none__"\r\n'):
+            with self.subTest(data=data):
+                expected = [(b"codex.localenvironmentconfigpath", b"__none__")]
+                self.assertEqual(_git_entries(data, self.folder), expected)
+                self.assertEqual(gitconfig.entries(data), expected)
+                self.assertTrue(files.plain_config(data))
 
     def test_random_spellings(self) -> None:
         chance = random.Random(2026)  # the same cases at every run

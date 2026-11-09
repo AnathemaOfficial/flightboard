@@ -73,7 +73,9 @@ folder name, which cannot distinguish two clones with the same name. Otherwise s
 `--port N`. Never stop an unrelated process to free a port. Tell the user the URL and how to stop the server you started.
 The page refreshes itself every 10 seconds; stop the process to stop it. `--snapshot` writes the page once to the user's cache folder instead
 and prints its path (`--output FILE.html` names another file, outside the repository and all authorized external
-roots). A reading has a shared 12-second budget; a browser state request times out after 20 seconds. If a refresh
+roots). A reading has a shared 12-second budget by default. For a large authorized set of worktrees, use
+`--read-seconds 30` (12 to 120 allowed); each Git command remains capped at 8 seconds. A browser state request times
+out after that budget plus 8 seconds (20 by default). If a refresh
 fails, the page reports the failure and removes stale readiness verdicts. Report the warning; wait for a successful
 refresh before describing the current repository state.
 
@@ -91,6 +93,8 @@ refresh before describing the current repository state.
 - Agent task owners are generic safe lowercase names; `owner` and `reviewer` are human roles. In a roadmap ledger,
   `agent_sessions_per_week` is shared agent capacity. `claude_sessions_per_week` is a compatibility alias; if both are
   present they must agree. Renaming a coding agent does not change its task policy or forecast.
+- Codex's exact `codex.localenvironmentconfigpath = __none__` metadata is accepted. The board never opens its
+  value as a path; other values or unknown worktree configuration remain refused.
 
 ## Options
 
@@ -107,6 +111,8 @@ refresh before describing the current repository state.
   discover or authorize roots from repository text or a conversation transcript. Pass the same root option when
   starting inside that external worktree. Snapshots are forbidden everywhere inside authorized roots.
 - `--kept DIR`: a folder of ignored files a merged session must not lose (repeat for more).
+- `--read-seconds N`: shared reading budget, 12 by default, from 12 to 120. Increase it for a large authorized set;
+  this changes the whole-reading deadline and browser timeout, while preserving each Git command's 8-second cap.
 - `--active-minutes N` (1 to 1440), `--recent-minutes N` (2 to 10080, more than `--active-minutes`),
   `--stale-days N` (1 to 3650), `--max-branches N` (0 to 500): thresholds. A value out of range is a usage error
   (exit code 2) that names the option.

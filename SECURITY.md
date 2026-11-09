@@ -45,6 +45,9 @@ they are not an isolation boundary against a process that can rewrite `.git` whi
   a dot, and on Windows a tracked name with a part ending in a dot or a space or named after a device (`nul`, `con`,
   `com1`…: Windows reads them as another file depending on where they fall in a path), or one that is not UTF-8, keep
   `git status` out.
+- **Worktree configuration remains narrowly scoped.** Only the allowed Git booleans and the exact Codex metadata
+  `codex.localenvironmentconfigpath = __none__` are accepted in `config.worktree`. That marker is never opened as a
+  path. Other values, includes, hooks and unknown settings remain refused.
 - **The page is served to this computer only** (`127.0.0.1` and `[::1]`), after Host, Origin and Sec-Fetch checks
   that stop DNS rebinding, other sites and other local pages.
 - **Only the page's own script runs**: a Content Security Policy names it by its SHA-256 and requires Trusted Types;
@@ -64,7 +67,8 @@ they are not an isolation boundary against a process that can rewrite `.git` whi
   writes the snapshot only to the cache folder.
 - **Incomplete evidence does not prove completion.** Unreadable HEADs, symbolic chains, distances or file listings
   remain unknown. Stashed work and detached commits can hold back relevant cards. A complete reading has a shared
-  12-second budget and git runs keep their 8-second cap; the browser aborts a state request after 20 seconds. The
+  12-second budget by default (`--read-seconds` accepts 12 to 120) and git runs keep their 8-second cap. The browser
+  aborts a state request after the configured budget plus 8 seconds, or 20 seconds by default. The
   server's separate socket timeout is 10 seconds. If a live refresh fails, old session verdicts are removed and the
   failure is announced visually and accessibly. The next successful reading restores the current view.
 

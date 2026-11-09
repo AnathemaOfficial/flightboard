@@ -28,7 +28,7 @@ EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"  # git's built-in empty 
 MIN_VERSION = (2, 41)  # git --attr-source=<tree> <command> (RelNotes 2.41.0)
 NO_LAZY_FETCH = (2, 45)  # GIT_NO_LAZY_FETCH: older git may fetch a missing object from a partial clone's remote
 GIT_TIMEOUT = 8  # shorter than the page's refresh
-READING_BUDGET = 12.0  # one whole snapshot, shared by every git run through Git.deadline
+READING_BUDGET = 12.0  # default snapshot budget; Settings.read_seconds can choose a larger bounded allowance
 GRACE = 0.25  # one cleanup allowance shared by the process and all its pipe threads
 REAL_GIT_FOLDERS = ("mingw64", "clangarm64", "mingw32")  # where Git for Windows keeps the git its launchers start
 MAX_HISTORY = 300

@@ -14,4 +14,4 @@ class LivePageTest(unittest.TestCase):
         result = subprocess.run([shutil.which("node"), str(ROOT / "tests" / "live_page_checks.cjs"),
                                  str(PACKAGE / "template.html")], capture_output=True, text=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        self.assertIn("7 live-page checks passed", result.stdout)
+        self.assertIn("9 live-page checks passed", result.stdout)

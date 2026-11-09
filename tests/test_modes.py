@@ -8,12 +8,15 @@ Run from the repository root:
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import subprocess
 import tempfile
 import unittest
 from datetime import timedelta
 from pathlib import Path
+from unittest import mock
 
 from tests.fixtures import GIT, NOW, Repository, load
 
@@ -302,6 +305,85 @@ class WorktreeFoldersTest(unittest.TestCase):
                     ".git", "a/.GIT"):
             with self.subTest(bad=bad):
                 self.assertIsNone(cli.settings_of(cli.parse(["--worktrees", bad])) if bad else None)
+
+
+class ReadSecondsTest(unittest.TestCase):
+    def test_the_command_line_accepts_the_default_and_both_bounds(self) -> None:
+        self.assertEqual(cli.settings_of(cli.parse([])).read_seconds, 12)
+        for seconds in (12, 30, 120):
+            with self.subTest(seconds=seconds):
+                settings = cli.settings_of(cli.parse(["--read-seconds", str(seconds)]))
+                self.assertIsNotNone(settings)
+                self.assertEqual(settings.read_seconds, seconds)
+                self.assertEqual(settings.public()["read_seconds"], seconds)
+
+    def test_invalid_budgets_are_usage_errors_before_any_repository_read(self) -> None:
+        for value in ("0", "11", "121", "-1", "12.0", "NaN", "inf", "\u0663\u0660", "30 ", "9" * 5000):
+            with self.subTest(value=value):
+                output, errors = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors), \
+                        mock.patch.object(cli, "Collector") as started:
+                    code = cli.main(["--read-seconds", value], root=Path(tempfile.gettempdir()), now=NOW)
+                self.assertEqual(code, 2)
+                self.assertIn("--read-seconds takes a number from 12 to 120", errors.getvalue())
+                started.assert_not_called()
+        for argv in (["--read-seconds"], ["--read-seconds", "--resume"],
+                     ["--read-seconds", "30", "--read-seconds", "60"]):
+            with self.subTest(argv=argv):
+                self.assertIsNone(cli.parse(argv))
+
+    def test_help_names_the_budget_and_its_default(self) -> None:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(cli.main(["--help"]), 0)
+        self.assertIn("--read-seconds N", output.getvalue())
+        self.assertIn("12 to 120 seconds; default 12", output.getvalue())
+
+    def test_budgets_built_by_hand_follow_the_same_bounds(self) -> None:
+        for value in (11, 121, True, "30", 30.0, None):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "settings refused"):
+                collector_module.Collector(Path(tempfile.gettempdir()), Settings(read_seconds=value))
+
+    def make_collector(self, seconds: int = 30):
+        root = Path(tempfile.gettempdir())
+        with mock.patch.object(collector_module.FILES, "top_folder", return_value=root), \
+                mock.patch.object(collector_module.FILES, "main_checkout", return_value=root):
+            return collector_module.Collector(root, Settings(read_seconds=seconds))
+
+    def test_the_configured_deadline_is_shared_and_cleared_after_success(self) -> None:
+        collector = self.make_collector()
+        expected = {"settings": collector.settings.public()}
+
+        def read(now, mode):
+            self.assertEqual(collector.git.deadline, 130)
+            return expected
+
+        with mock.patch.object(collector_module.time, "monotonic", side_effect=[100, 129]), \
+                mock.patch.object(collector, "_snapshot", side_effect=read):
+            self.assertEqual(collector.snapshot(NOW), expected)
+        self.assertIsNone(collector.git.deadline)
+
+    def test_errors_and_expired_readings_keep_the_budget_for_the_page(self) -> None:
+        for failure in (collector_module.GitFailed("failed"), collector_module.GitRefused("refused"),
+                        RuntimeError("failed"), None):
+            with self.subTest(failure=failure):
+                collector = self.make_collector()
+                with mock.patch.object(collector_module.time, "monotonic", side_effect=[100, 130]), \
+                        mock.patch.object(collector, "_snapshot", side_effect=failure, return_value={}):
+                    found = collector.snapshot(NOW)
+                self.assertEqual(found["main"]["state"], "unreadable")
+                self.assertEqual(found["settings"]["read_seconds"], 30)
+                self.assertIsNone(collector.git.deadline)
+        early = self.make_collector()._error(NOW, "live", "no_repository")
+        self.assertEqual(early["settings"]["read_seconds"], 30)
+
+    def test_a_larger_reading_budget_keeps_each_git_run_at_eight_seconds(self) -> None:
+        collector = self.make_collector(120)
+        with mock.patch.object(collector_module.time, "monotonic", return_value=100):
+            collector.git.deadline = 220
+            self.assertEqual(collector.git.time_left(), 8)
+            collector.git.deadline = 103
+            self.assertEqual(collector.git.time_left(), 3)
 
 
 if __name__ == "__main__":

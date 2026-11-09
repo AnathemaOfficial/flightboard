@@ -25,6 +25,8 @@ PROMISOR = "promisor"  # a partial clone's remote: git older than gitreads.NO_LA
 FALSE_WORDS = (b"false", b"no", b"off", b"0", b"")  # git reads these as false; any other spelling counts as true
 # what Claude Code and git sparse-checkout (set, init, disable) write in a config.worktree: booleans only
 WORKTREE_KEYS = frozenset({b"core.longpaths", b"core.sparsecheckout", b"core.sparsecheckoutcone", b"index.sparse"})
+# Codex also records this exact no-environment marker. It is metadata, never a path the board opens.
+CODEX_NO_ENVIRONMENT = (b"codex.localenvironmentconfigpath", b"__none__")
 COMMAND = ("config", "--file", "-", "--no-includes", "--null", "--list")
 # git's listing of a configuration of files.MAX_CONFIG_BYTES, with room to spare: past it, nothing is weighed
 MAX_LISTING_BYTES = 4_000_000
@@ -138,11 +140,13 @@ def weigh(found: list[tuple[bytes, bytes | None]]) -> str:
 
 def plain_worktree(data: bytes, deadline: float | None = None) -> bool:
     """A config.worktree that only sets core.longpaths, core.sparseCheckout, core.sparseCheckoutCone or index.sparse
-    to true or false: nothing that could point git at a file, a program or a network share. GitFailed when git cannot
-    tell (the caller decides what is left unread)."""
+    to true or false, or Codex's exact no-environment marker: nothing that could point git at a file, a program or a
+    network share. Other values of the Codex key remain refused. GitFailed when git cannot tell (the caller decides
+    what is left unread)."""
     try:
         found = entries(data, deadline)
     except ConfigError:
         return False
-    return all(name in WORKTREE_KEYS and value is not None and value.lower() in (b"true", b"false")
+    return all((name, value) == CODEX_NO_ENVIRONMENT
+               or (name in WORKTREE_KEYS and value is not None and value.lower() in (b"true", b"false"))
                for name, value in found)

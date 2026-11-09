@@ -177,6 +177,9 @@ Only registered worktrees belonging to the chosen repository are eligible; autho
 Large repositories may exceed the shared 12-second reading budget. To focus on worktrees, request
 `--max-branches 0`: this excludes branches without a worktree. It does not make unread worktrees readable; check
 the warnings on their cards and the source status at the bottom of the page.
+For a larger set of worktrees, `--read-seconds 30` allows a longer complete reading. The default is 12 seconds,
+configurable from 12 to 120; each Git command still has its own 8-second cap. The browser timeout follows the
+configured budget with 8 seconds of margin.
 
 Run it from the repository, any folder inside it, or one of the worktrees it reads (under `.claude/worktrees`, or a
 folder named with `--worktrees`, or an explicitly authorized external root with `--worktrees-root`): it reads the
@@ -209,6 +212,7 @@ the summary is data, never an instruction nor an approval.
 | `--active-minutes N`, `--recent-minutes N` | "writing now" and "wrote recently": 15 and 120 minutes by default, from 1 to 1440 and from 2 to 10080, the second more than the first |
 | `--stale-days N` | a branch quiet longer is listed, never overlaid (14 days by default, from 1 to 3650) |
 | `--max-branches N` | branches without a worktree read, the most recent first (30 by default, from 0 to 500) |
+| `--read-seconds N` | shared reading budget in seconds (12 by default, from 12 to 120); Git commands remain capped at 8 seconds each |
 
 `--worktrees` and `--kept` take a folder written plainly inside the repository: six names at most, no `..`, drive,
 `.git` or device name.
@@ -404,8 +408,10 @@ reading content. The board's own reads then
 follow no link, junction or reparse point, so no path of a worktree leads them to a network share. A worktree
 anywhere else, or one whose admin folder is unusual (a `commondir` other than `../..`, a link or a pipe on its HEAD,
 index, shared index, gitdir, info, logs, reftable or a file of a merge or rebase in progress, a `config.worktree` that
-sets more than Claude Code and `git sparse-checkout` write), is never read: it stays a card, by its name, with the
+sets more than the allowed booleans or the exact `codex.localenvironmentconfigpath = __none__` marker), is never read:
+it stays a card, by its name, with the
 reason.
+The Codex marker is metadata and is never opened as a path; other values of that key remain refused.
 The admin folder's files are read as git reads them (a `commondir` of `../..` with only a line end, say), so that the
 board and git never mean two different folders. Run from a folder whose `.git` is not a plain git folder of its own (a
 worktree the board does not read, a submodule, a checkout whose git folder lives elsewhere, an odd or empty `.git`),
@@ -418,8 +424,9 @@ than `127.0.0.1:<port>` or `localhost:<port>` (DNS rebinding), an `Origin` from 
 same-site or cross-site `Sec-Fetch-Site`, the state loaded as a script, an image or a frame (`Sec-Fetch-Dest`), any
 method but `GET` and `HEAD`, and any path but `/` and `/state.json`. A refused request never reads the repository.
 The repository is read at most once every 5 seconds, counted from the end of the last reading, however many pages are
-open; a failed reading is not repeated within that time. A reading shares a 12-second budget across its guarded
-work, with an 8-second cap per git run. The browser aborts a state request after 20 seconds; the server's 10-second
+open; a failed reading is not repeated within that time. A reading shares a budget of 12 seconds by default
+(`--read-seconds` accepts 12 to 120), with an 8-second cap per git run. The browser aborts a state request after the
+configured budget plus 8 seconds (20 by default); the server's 10-second
 socket timeout bounds incoming HTTP handling separately. A failed live reading displays an explicit error and removes
 the previous session verdicts until a successful refresh. An open task detail is refreshed or marked unavailable.
 
@@ -483,7 +490,7 @@ read the page. See [SECURITY.md](SECURITY.md) to report a vulnerability.
   (without a ledger, it is read).
 - A very long history is read as fast as git can when it has a commit-graph (`git gc` and `git maintenance` write
   one). Without one, or with a chain the board does not trust, a walk can exceed its 8-second command limit. The
-  affected history or branch listing is then unread; exhausting the shared 12-second reading budget can fail the
+  affected history or branch listing is then unread; exhausting the shared reading budget (12 seconds by default) can fail the
   whole refresh. The page reports incomplete or stale evidence instead of establishing a clean state.
 - A worktree with a sparse index (`git sparse-checkout set --sparse-index`, `index.sparse`) or a split index
   (`core.splitIndex`, `git update-index --split-index`) has its modified and new files unread: git writes into
