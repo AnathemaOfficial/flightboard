@@ -2,7 +2,7 @@
 SPDX-License-Identifier: Apache-2.0
 SPDX-FileCopyrightText: 2026 Technologies CoreXalt Inc.
 -->
-<p align="center">
+<p align="left">
   <img src="assets/wordmark.svg" alt="flightboard" width="312">
 </p>
 
