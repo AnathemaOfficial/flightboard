@@ -58,7 +58,66 @@ bascule pas automatiquement.
 La page se rafraîchit toutes les **10 secondes**. **Fermer l'onglet n'arrête pas le serveur** : tu peux rouvrir son
 adresse tant qu'il tourne. Pour l'arrêter, utilise `Ctrl+C` dans le terminal qui l'a lancé. Si l'agent l'a lancé en
 arrière-plan, demande-lui d'arrêter le processus Flightboard qu'il a démarré pour ce dépôt et ce port. Après un arrêt
-ou un redémarrage de l'ordinateur, redemande l'ouverture du tableau : Flightboard ne démarre pas automatiquement.
+ou un redémarrage de l'ordinateur, redemande l'ouverture du tableau, ou active le démarrage Windows facultatif
+ci-dessous.
+
+### Démarrage automatique Windows pour plusieurs dépôts
+
+L'outil facultatif de démarrage mémorise plusieurs tableaux et les lance à **l'ouverture de ta session Windows**.
+Ils restent indépendants de Codex et Claude : fermer et rouvrir ces applications ne demande pas de les relancer.
+Un superviseur contrôle les processus et les ports locaux environ chaque minute, puis relance les serveurs absents,
+sans ouvrir de navigateur. Ces contrôles ne lisent pas Git et ne demandent pas les pages des tableaux.
+
+Installe-le une fois avec un Python 3.12+ fonctionnel et son `pythonw.exe` correspondant. Pour le skill utilisateur
+Codex, dans PowerShell :
+
+```powershell
+py -3 -I -B "$env:USERPROFILE/.agents/skills/flightboard/scripts/flightboard_startup.py" install
+```
+
+Depuis une copie du dépôt, utilise plutôt `./skills/flightboard/scripts/flightboard_startup.py`, en te plaçant à sa
+racine. Pour Claude Code, utilise le même outil dans le dossier `scripts` de son skill installé. L'installation
+copie le moteur dans `$env:LOCALAPPDATA/Flightboard/startup/engine`, crée le raccourci `Flightboard.lnk` dans le
+dossier Démarrage de ton utilisateur et lance immédiatement le superviseur. Aucun compte administrateur ni
+changement à Codex ou Claude n'est nécessaire. Relance `install` depuis une version mise à jour de Flightboard
+pour mettre à jour cette copie du moteur.
+
+Pour mémoriser un autre dépôt :
+
+1. Demande à ton agent d'ouvrir son tableau Flightboard, sur un port distinct, avec **`--repo` et le chemin absolu du
+   dépôt**. Conserve les options des racines de worktrees nécessaires dans cette commande.
+2. Laisse tourner le serveur au moins une minute. Le superviseur mémorise son port, sa langue et ses options de lecture.
+3. Après ta prochaine connexion Windows, rouvre son adresse mise en favori. Les nouvelles sessions Git de ce dépôt
+   apparaissent selon les règles de worktrees déjà autorisées. Ouvrir seulement un chat dans un nouveau dépôt ne
+   mémorise pas de tableau.
+
+La découverte accepte seulement les serveurs en direct lancés avec `-I -B`, un `--repo` absolu explicite, un moteur
+et un interpréteur Python autorisés, et un port local appartenant à leur processus. `install` autorise son moteur
+source et son interpréteur, ainsi que la copie stable. Pour inclure une autre installation Codex ou Claude, lance
+aussi `install` depuis celle-ci, ou ajoute explicitement ses chemins absolus avec les options répétables
+`--trust-engine FILE` et `--trust-python FILE` de `install`. Un nouveau chemin de plugin après mise à jour peut
+demander cette étape à nouveau. La découverte n'autorise aucune racine de worktrees supplémentaire.
+
+Pour consulter ou modifier la configuration, utilise la copie stable :
+
+```powershell
+$startupTool = "$env:LOCALAPPDATA/Flightboard/startup/engine/flightboard_startup.py"
+py -3 -I -B $startupTool status
+py -3 -I -B $startupTool forget --repo "$env:USERPROFILE/projects/projet-a"
+py -3 -I -B $startupTool disable
+py -3 -I -B $startupTool enable
+```
+
+Remplace le dépôt d'exemple par son chemin absolu. `forget` l'enlève de la liste mémorisée et l'exclut des prochaines
+découvertes. `disable` retire le raccourci et demande au superviseur de quitter ; ces deux commandes laissent les
+serveurs déjà ouverts en marche. `enable` réactive le démarrage et la supervision. `once` exécute un seul contrôle ;
+`run` lance le superviseur au premier plan pour un diagnostic.
+Pour suivre à nouveau un dépôt oublié, retire son chemin de `excluded_repos` dans `config.json`, puis rouvre son tableau.
+
+Configuration, état et journaux tournants restent dans `$env:LOCALAPPDATA/Flightboard/startup`. Conserve le Python
+choisi. Un lecteur de dépôt indisponible est réessayé ; un port occupé par un autre processus est signalé et laissé
+intact. Un serveur encore présent mais sans port d'écoute est signalé, sans être arrêté de force. Cet outil ne
+réunit pas les dépôts en un tableau unique.
 
 ## Installation unique
 
@@ -439,12 +498,15 @@ branches et de dossiers) est nettoyé des caractères de contrôle, de format et
 texte, jamais du HTML. La page ne contient aucun chemin absolu de ton ordinateur et ne fait aucune requête réseau
 autre que son propre état.
 
-**Disque.** Rien ne s'écrit, sauf l'instantané : dans ton dossier de cache par défaut (créé seulement hors du dépôt, et
+**Disque.** Les modes du tableau n'écrivent que l'instantané : dans ton dossier de cache par défaut (créé seulement hors du dépôt, et
 jamais au travers d'un lien planté à sa place), ou le fichier `--output`, qui doit être un fichier `.html` dans un
 dossier existant qui reste hors du dépôt et de toutes les racines externes autorisées une fois ses liens résolus,
 quel que soit le dossier du dépôt d'où le
 tableau est lancé (un dossier qu'il sait lire : voir Chemins). Il est écrit en entier dans un fichier neuf, puis mis en
 place, jamais écrit au travers d'un fichier existant.
+L'outil facultatif de démarrage Windows conserve aussi son moteur copié, sa configuration, son état et ses journaux
+tournants dans les données locales d'application de ton utilisateur, et gère son raccourci dans ton dossier
+Démarrage. Il n'écrit pas dans un dépôt observé et n'autorise aucune racine de worktrees supplémentaire.
 
 **Portée.** Le tableau n'approuve rien et n'autorise aucune action : il lit.
 

@@ -60,7 +60,7 @@ they are not an isolation boundary against a process that can rewrite `.git` whi
   root, can be read. Root and worktree paths must pass the plain-directory and marker checks: UNC/device paths,
   symlinks, junctions and reparse points are refused. A root does not authorize scanning other repositories or
   arbitrary descendants. It can cover Codex's `<root>/<hash>/<project>` layout without trusting a path found in a chat.
-- **Nothing is written** but the snapshot, outside the repository and every authorized external root, through a new
+- **Dashboard modes write only the snapshot**, outside the repository and every authorized external root, through a new
   file, never through a link. Run
   from a folder whose `.git` is not a plain git folder of its own (a worktree the board does not read, a submodule, a
   checkout whose git folder lives elsewhere), the board reads nothing, never looks at what a `.git` file names, and
@@ -73,6 +73,25 @@ they are not an isolation boundary against a process that can rewrite `.git` whi
   failure is announced visually and accessibly. The next successful reading restores the current view.
 
 The full model, and what it does not cover, is in the [README](README.md#security-model).
+
+## Optional Windows startup
+
+`flightboard_startup.py install` is an explicit, persistent user-level setup action. It copies the engine and stores
+configuration, status and rotating logs under the user's local application-data folder, creates a shortcut in the
+user's Startup folder, and starts a hidden supervisor. `disable` removes that shortcut and asks the supervisor to
+exit; it leaves existing dashboard servers running. The dashboard's Git-reading code is unchanged.
+
+The supervisor examines local process metadata and listening ports, without polling HTTP pages, reading Git or
+reading agent conversations. Discovery requires a trusted engine and Python executable, `-I -B`, live mode, an
+explicit absolute `--repo`, and loopback listeners owned by the process. Only the existing launch options are saved;
+no repository text supplies commands, and discovery does not authorize new worktree roots. Other engine and runtime
+paths require explicit trust during installation. `forget` excludes a repository from rediscovery.
+
+A Windows lock prevents duplicate supervisors. Foreign port owners and existing processes without a listener are
+reported rather than terminated. Child output shares a bounded rotating log. The copied engine, selected Python
+installation and local startup configuration must remain trusted: this feature is not a boundary against another
+process running as the same user. Updating the source plugin alone does not update the copied engine; rerun
+`install` from the new version.
 
 ## Known limits
 

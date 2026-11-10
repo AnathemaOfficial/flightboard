@@ -89,7 +89,63 @@ authorized worktrees. Flightboard currently has no combined dashboard for unrela
 
 Closing a browser tab does not stop its server. If you started it in a terminal, press **Ctrl+C** there. If an agent
 started it in the background, ask that agent to stop the Flightboard server for the named repository. After the
-process exits or the computer restarts, launch it again to use the bookmarked page.
+process exits or the computer restarts, launch it again to use the bookmarked page, or enable the optional Windows
+startup helper below.
+
+### Start automatically on Windows, across repositories
+
+The optional startup helper remembers several dashboards and starts them at **Windows sign-in**. They run
+independently of Codex and Claude: closing and reopening either application leaves the dashboards available.
+It checks local processes and listening ports about once a minute, and restarts a missing server without opening
+a browser. It does not read Git or request dashboard pages during these checks.
+
+Install once, using a working Python 3.12+ with its matching `pythonw.exe`. For an installed Codex skill, in
+PowerShell:
+
+```powershell
+py -3 -I -B "$env:USERPROFILE/.agents/skills/flightboard/scripts/flightboard_startup.py" install
+```
+
+From a clone, run the same command with `./skills/flightboard/scripts/flightboard_startup.py` from the clone's
+root instead. For Claude Code, use the helper in its installed skill's `scripts` folder. Installation copies the
+engine into `$env:LOCALAPPDATA/Flightboard/startup/engine`, creates a `Flightboard.lnk` shortcut in your user's
+Startup folder, and starts the supervisor immediately. No administrator account or change to either AI app is
+needed. Rerun `install` from an updated Flightboard installation to update the copied engine.
+
+To remember another repository:
+
+1. Ask your agent to open its Flightboard dashboard, with a distinct port and **`--repo` set to its absolute path**.
+   Keep the required worktree-root options in that launch command.
+2. Leave the server running for at least one minute. The supervisor remembers its port, language and read options.
+3. Reopen the bookmarked URL after your next Windows sign-in. New Git sessions within that repository appear under
+   its existing worktree rules. A chat in a new repository alone does not register a dashboard.
+
+Discovery accepts only live servers using `-I -B`, an explicit absolute `--repo`, an authorized engine and Python
+interpreter, and a loopback listener owned by that server. `install` authorizes its source engine and interpreter,
+plus the stable copy. To include a separate Codex or Claude installation, run `install` from that copy too, or add
+its absolute paths explicitly with repeatable `--trust-engine FILE` and `--trust-python FILE` options on `install`.
+New plugin paths after an upgrade may need this step again. No additional worktree roots are authorized by discovery.
+
+Use the stable helper to inspect or change the setup:
+
+```powershell
+$startupTool = "$env:LOCALAPPDATA/Flightboard/startup/engine/flightboard_startup.py"
+py -3 -I -B $startupTool status
+py -3 -I -B $startupTool forget --repo "$env:USERPROFILE/projects/project-a"
+py -3 -I -B $startupTool disable
+py -3 -I -B $startupTool enable
+```
+
+Replace the example repository with its absolute path. `forget` removes it from the saved list and excludes it from
+future discovery. `disable` removes the startup shortcut and asks the supervisor to exit; both commands leave
+existing dashboard servers running. `enable` restores startup and supervision. `once` runs one supervision pass;
+`run` runs the supervisor in the foreground for diagnosis.
+To watch a forgotten repository again, remove its path from `excluded_repos` in `config.json`, then reopen its dashboard.
+
+Configuration, status and rotating logs stay in `$env:LOCALAPPDATA/Flightboard/startup`. Keep the chosen Python
+installation available. An unavailable repository drive is retried; a port occupied by another process is reported
+and left untouched. A server process that still exists but has stopped responding is reported when it has no
+listener, and is not forcibly terminated. This helper does not merge the repositories into one dashboard.
 
 ## Install
 
@@ -437,12 +493,15 @@ policy and refuses any value JSON cannot hold. Every text read in the repository
 and folder names) is cleaned of control, format and bidi characters and only ever becomes a text node, never markup.
 The page holds no absolute path of your computer and makes no network request but its own state.
 
-**Disk.** Nothing is written but the snapshot: in your cache folder by default (made only outside the repository, and
+**Disk.** Dashboard modes write only the snapshot: in your cache folder by default (made only outside the repository, and
 never through a link planted in its place), or the `--output` file, which must be an `.html` file in an existing
 folder that lies outside the repository and all authorized external roots once its links are resolved, whichever
 folder of the repository the board
 runs from (one it can read: see Paths). It is written whole through a new file, then swapped in, never written through
 an existing file.
+The optional Windows startup helper additionally stores its copied engine, configuration, status and rotating logs
+under your local application-data folder, and manages its shortcut in your user's Startup folder. It does not write
+in an observed repository or authorize additional worktree roots.
 
 **Scope.** The board approves nothing and authorizes nothing: it reads.
 
