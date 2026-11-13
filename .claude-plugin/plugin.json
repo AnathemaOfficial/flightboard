@@ -1,6 +1,6 @@
 {
   "name": "flightboard",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A read-only Git board for parallel Claude Code, Codex and other coding-agent worktrees and branches: declared task progress and what waits for you, without reading conversations.",
   "author": {
     "name": "Technologies CoreXalt Inc."

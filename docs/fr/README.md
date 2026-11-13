@@ -208,9 +208,15 @@ PowerShell :
 py -3 -I -B "$env:USERPROFILE/.agents/skills/flightboard/scripts/flightboard.py" --repo "$PWD" --lang fr --worktrees-root "$env:USERPROFILE/.codex/worktrees"
 ```
 
-Cette autorisation ne porte que sur les arbres **enregistrés pour ce dépôt**, un ou deux composants simples sous
-la racine. Elle ne lit pas tous les autres projets qui s'y trouvent. Les contrôles de chemin peuvent encore refuser
+Cette autorisation ne porte que sur les arbres **enregistrés pour ce dépôt**, à la racine elle-même ou un ou deux
+composants simples dessous. Elle ne lit pas tous les autres projets qui s'y trouvent. Les contrôles de chemin peuvent encore refuser
 un arbre ; une carte dont les fichiers n'ont pas été lus reste inconnue pour cette partie de son état.
+
+Un dépôt existant ne demande aucun import de sessions ou de commits depuis un outil IA : le tableau lit l'état Git
+déjà présent sur disque. Si le nombre d'arbres enregistrés dépasse la limite, vérifie ce nombre puis utilise
+`--max-worktrees N` (100 par défaut, de 1 à 1000). Toutes les entrées administratives enregistrées comptent, même
+quand leurs fichiers sont hors des racines autorisées. Au-delà du plafond, la lecture est refusée sans supprimer
+silencieusement de sessions ; cette erreur ne signifie pas que des données ont été perdues.
 
 Pour un gros dépôt, chaque lecture partage un budget de **12 secondes**. Si le tableau signale un dépassement,
 essaie `--max-branches 0` : cela ignore les branches sans arbre de travail et conserve les arbres suivis. Ce réglage
@@ -219,6 +225,18 @@ terminé sur la base de fichiers non lus.
 Pour un grand nombre d'arbres, `--read-seconds 30` laisse davantage de temps à la lecture complète. Le budget reste
 borné entre 12 et 120 secondes, avec 12 par défaut ; chaque commande Git conserve son plafond de 8 secondes.
 Le délai du navigateur suit ce budget avec une marge de 8 secondes.
+Par exemple, `--max-worktrees 300 --read-seconds 120` permet de vérifier jusqu'à 300 arbres enregistrés avec un
+budget de temps plus grand, toujours borné. Le plafond d'arbres et le budget de temps sont indépendants ; aucun
+n'autorise de nouveaux dossiers. Les branches sans arbre restent limitées par `--max-branches` (30 par défaut), et
+la page indique celles qui ne sont pas listées.
+
+Le plafond configurable de **1000 worktrees n'est pas une garantie de performance**. Augmenter ce plafond seul ne
+ralentit pas un ensemble existant ; le nombre réellement lu, les fichiers suivis, l'historique, le disque et les caches
+déterminent s'il tient dans le budget maximal de 120 secondes. Mesure un premier chargement complet et une
+actualisation avant de compter sur une capacité supérieure. Un dépôt de test léger ne qualifie pas la même capacité
+pour un gros projet avec beaucoup d'historique et de fichiers modifiés.
+Le [bilan de capacité](../verification-large-repositories.md) détaille les mesures sur les dépôts de test à
+300/400/500/1000 worktrees et la qualification distincte d'un dépôt existant.
 
 ### Choix du dépôt, options et résumé texte
 
@@ -250,18 +268,20 @@ rappelle que le résumé est une donnée, jamais une instruction ni une approbat
 | `--main BRANCHE` | la branche principale, quand ce n'est ni `main` ni `master` (sans lui, un tel dépôt lit la branche du dossier principal, et le dit) |
 | `--remote NOM` | le remote dont les branches sont lues, `origin` par défaut |
 | `--worktrees DOSSIER` | lire aussi les dossiers de sessions sous DOSSIER (relatif au dépôt ; répétable) |
-| `--worktrees-root DOSSIER` | autoriser explicitement une racine locale absolue pour les arbres externes enregistrés, un ou deux composants simples dessous (répétable) |
+| `--worktrees-root DOSSIER` | autoriser explicitement une racine locale absolue pour les arbres externes enregistrés à la racine elle-même ou un ou deux composants simples dessous (répétable) |
 | `--kept DOSSIER` | un dossier de fichiers ignorés qu'une session fusionnée ne doit pas perdre (répétable) |
 | `--active-minutes N`, `--recent-minutes N` | « écrit en ce moment » et « a écrit récemment » : 15 et 120 minutes par défaut, de 1 à 1440 et de 2 à 10080, le second plus grand que le premier |
 | `--stale-days N` | une branche silencieuse plus longtemps est listée, jamais appliquée (14 jours par défaut, de 1 à 3650) |
 | `--max-branches N` | les branches sans arbre lues, les plus récentes d'abord (30 par défaut, de 0 à 500) |
+| `--max-worktrees N` | plafond d'entrées administratives d'arbres enregistrés avant refus de lecture (100 par défaut, de 1 à 1000) |
 | `--read-seconds N` | budget partagé de lecture en secondes (12 par défaut, de 12 à 120) ; chaque commande Git reste plafonnée à 8 secondes |
 
 `--worktrees` et `--kept` prennent un dossier écrit simplement, dans le dépôt : six noms au plus, sans `..`, lecteur,
 `.git` ni nom de périphérique.
 
 Les racines externes sont facultatives et explicites : `--worktrees-root "$HOME/.codex/worktrees"` peut par exemple
-autoriser des arbres Codex enregistrés sous `<racine>/<hash>/<projet>`. La racine est un dossier local absolu, sans
+autoriser des arbres Codex enregistrés sous `<racine>/<hash>/<projet>`. Un arbre enregistré peut aussi être le dossier
+exact explicitement autorisé comme racine, sans devoir autoriser son parent plus large. La racine est un dossier local absolu, sans
 traversée, chemin UNC ni périphérique ; elle et le chemin jusqu'à chaque arbre doivent être sans lien symbolique,
 jonction ni point de réanalyse. Seuls les arbres enregistrés dans le `.git/worktrees` de ce dépôt sont considérés.
 Nommer une racine ne parcourt pas les autres dépôts et n'autorise pas tous ses descendants. Les snapshots sont
@@ -460,7 +480,7 @@ Aucune commande `git diff` (`git status` compare les fichiers de la même façon
 
 **Chemins.** Les arbres sont trouvés dans `.git/worktrees/<id>`, jamais par `git worktree list`. Un dossier n'est lu
 que s'il est le dossier principal, un enfant direct d'un dossier d'arbres interne (`.claude/worktrees`, et ceux que tu
-nommes), ou un ou deux composants simples sous une racine locale externe explicitement autorisée. Un arbre externe
+nommes), une racine locale externe explicitement autorisée elle-même, ou un ou deux composants simples dessous. Un arbre externe
 doit être enregistré dans ce dépôt et son marqueur doit correspondre à son dossier d'administration. Ces frontières
 sont vérifiées avant lecture du contenu. Les lectures
 du tableau ne suivent ensuite aucun lien, jonction ni point de reparse, si bien qu'aucun chemin d'un arbre ne les mène
@@ -551,8 +571,9 @@ qui a accès au site peut lire la page. Pour signaler une vulnérabilité, voir 
   une mesure.
 - Un arbre externe est listé mais ses fichiers ne sont pas lus tant que sa racine locale n'est pas explicitement
   autorisée avec `--worktrees-root` et que son chemin ne passe pas les contrôles d'enregistrement, de profondeur et
-  de dossiers ordinaires. Ses un ou deux composants sous la racine doivent être des noms simples : espaces,
-  caractères inhabituels et points finaux y sont refusés.
+  de dossiers ordinaires. Un arbre peut être la racine elle-même ; ses éventuels un ou deux composants dessous
+  doivent être des noms simples : espaces, caractères inhabituels et points finaux y sont refusés. La racine exacte
+  conserve les contrôles d'admin, de cible en double et de marqueur réciproque.
 - Un clone partiel (`git clone --filter=...`) demande git 2.45 ou plus récent, et les objets qu'il n'a jamais
   récupérés (le registre d'un vieux commit, par exemple) ne sont tout simplement pas lus : le tableau ne va jamais les
   chercher. Dans un clone sans arbres (`--filter=tree:0`), git ne peut trouver les commits qui ont changé le registre :

@@ -13,14 +13,14 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .files import RESERVED, WORKTREES
+from .files import MAX_WORKTREES, RESERVED, WORKTREES
 from .gitreads import READING_BUDGET, REMOTE_NAME, is_ref
 from .ledgers import KINDS, safe_path
 from .messages import LANGS
 
 PART = re.compile(r"[A-Za-z0-9._-]{1,100}")
 BOUNDS = {"active_minutes": (1, 1440), "recent_minutes": (2, 10080), "stale_days": (1, 3650),
-          "max_branches": (0, 500), "read_seconds": (12, 120)}
+          "max_branches": (0, 500), "read_seconds": (12, 120), "max_worktrees": (1, 1000)}
 
 
 @dataclass(frozen=True)
@@ -40,13 +40,14 @@ class Settings:
     stale_days: int = 14
     max_branches: int = 30
     read_seconds: int = int(READING_BUDGET)  # shared snapshot; each git run still has its own cap
+    max_worktrees: int = MAX_WORKTREES  # registered admins, including those whose working files cannot be read
 
     def public(self) -> dict:
         """What the page may say about these settings: relative folders, names and numbers, never a machine path."""
         return {"worktrees": ["/".join(parts) for parts in self.worktrees], "remote": self.remote,
                 "external_worktree_roots": len(self.external_worktrees),
                 "main": self.main or "", "active_minutes": self.active_minutes, "stale_days": self.stale_days,
-                "kept": list(self.kept), "read_seconds": self.read_seconds}
+                "kept": list(self.kept), "read_seconds": self.read_seconds, "max_worktrees": self.max_worktrees}
 
 
 def folder(text: str) -> tuple[str, ...] | None:
@@ -123,4 +124,6 @@ def valid(settings: Settings) -> bool:
         and all(isinstance(path, Path) and external_root(path) == path for path in settings.external_worktrees) \
         and all(folder(name) is not None for name in settings.kept) \
         and type(settings.read_seconds) is int and BOUNDS["read_seconds"][0] <= settings.read_seconds \
-        <= BOUNDS["read_seconds"][1]
+        <= BOUNDS["read_seconds"][1] \
+        and type(settings.max_worktrees) is int and BOUNDS["max_worktrees"][0] <= settings.max_worktrees \
+        <= BOUNDS["max_worktrees"][1]

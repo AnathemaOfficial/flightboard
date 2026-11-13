@@ -8,9 +8,10 @@
 
 and, for any of them: --repo DIR, --lang en|fr, --ledger auto|none|tasks|roadmap, --ledger-path PATH, --main BRANCH,
 --remote NAME, --worktrees DIR, --worktrees-root DIR, --kept DIR (repeatable), --active-minutes N, --recent-minutes N,
---stale-days N, --max-branches N, --read-seconds N. It prints one JSON line (except --resume); a usage error exits with
-code 2, a busy port or a write error with code 1. It reads; it never approves nor authorizes anything. Nothing is
-written but the snapshot, in the user's cache folder or the --output file, never inside the observed repository.
+--stale-days N, --max-branches N, --max-worktrees N, --read-seconds N. It prints one JSON line (except --resume); a
+usage error exits with code 2, a busy port or a write error with code 1. It reads; it never approves nor authorizes
+anything. Nothing is written but the snapshot, in the user's cache folder or the --output file, never inside the
+observed repository.
 """
 from __future__ import annotations
 
@@ -42,13 +43,14 @@ USAGE = ("usage: flightboard.py [--port N] | --resume | --snapshot [--output FIL
          "       [--main BRANCH] [--remote NAME] [--worktrees DIR]... [--kept DIR]...\n"
          "       [--worktrees-root DIR]... (explicit absolute local roots for external worktrees)\n"
          "       [--active-minutes N] [--recent-minutes N] [--stale-days N] [--max-branches N]\n"
+         "       [--max-worktrees N] (1 to 1000 registered worktrees; default 100)\n"
          "       [--read-seconds N] (12 to 120 seconds; default 12 for one whole snapshot)")
 SWITCHES = ("--resume", "--snapshot", "--help", "-h", "--version")
 VALUES = ("--port", "--output", "--repo", "--lang", "--ledger", "--ledger-path", "--main", "--remote",
-          "--active-minutes", "--recent-minutes", "--stale-days", "--max-branches", "--read-seconds")
+          "--active-minutes", "--recent-minutes", "--stale-days", "--max-branches", "--read-seconds", "--max-worktrees")
 REPEATED = ("--worktrees", "--kept", "--worktrees-root")
 NUMBERS = {"--active-minutes": "active_minutes", "--recent-minutes": "recent_minutes", "--stale-days": "stale_days",
-           "--max-branches": "max_branches", "--read-seconds": "read_seconds"}
+           "--max-branches": "max_branches", "--read-seconds": "read_seconds", "--max-worktrees": "max_worktrees"}
 RESUME_NOTES = ("guessed", "remote_ahead", "diverged", "remote_only")  # the notes on main --resume says, in fixed words
 
 

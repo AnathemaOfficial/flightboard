@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "flightboard",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A read-only Git board for parallel coding-agent worktrees and branches: declared task progress and what waits for you, without reading conversations.",
   "author": {
     "name": "Technologies CoreXalt Inc."

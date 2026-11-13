@@ -5,8 +5,8 @@
 Worktrees are found in the repository's own admin folders (.git/worktrees/<id>), never through `git worktree list`,
 which checks every path it prints. A worktree folder is checked as text before anything touches it: it must be the
 main checkout, a direct child of one of the worktree folders (.claude/worktrees unless the owner names others), or
-one or two plain components below an explicitly authorized local external root. It must be written plainly (no
-network share, no device path, no "..", no stream, no reserved name). Then every
+an explicitly authorized local external root itself or one or two plain components below it. It must be written
+plainly (no network share, no device path, no "..", no stream, no reserved name). Then every
 folder on the way is checked for links, junctions and other reparse points. A folder that cannot be read stays listed
 with its reason, its branch read from the object database alone. Before git runs on the repository, its own .git is
 checked for what would lead every git command elsewhere (git_dir_problem; the installed git reads only a byte copy of
@@ -114,7 +114,7 @@ def check_worktree(text: str, root: Path, admin: Path | None = None,
             continue
         key, prefix = _key(folder), _key(boundary)
         parts = folder.parts[len(prefix):]
-        if key[:len(prefix)] == prefix and len(parts) in (1, 2) and all(SAFE_NAME.fullmatch(part) for part in parts):
+        if key[:len(prefix)] == prefix and len(parts) in (0, 1, 2) and all(SAFE_NAME.fullmatch(part) for part in parts):
             return Path(allowed).joinpath(*parts)
     return None
 
@@ -1109,9 +1109,13 @@ def _admin_state(admin: Path, root: Path, budget: Budget | None = None) -> str:
 
 
 def discover(root: Path, parents: tuple[tuple[str, ...], ...] = WORKTREES,
-             external_roots: tuple[Path, ...] = (), budget: Budget | None = None) -> list[dict] | None:
+             external_roots: tuple[Path, ...] = (), budget: Budget | None = None, *,
+             max_worktrees: int | None = None) -> list[dict] | None:
     """The worktrees of the repository, main checkout first: {id, name, path (None when not read), git_dir, head,
-    operation, created, main, reason}."""
+    operation, created, main, reason}. The explicit entry limit remains bounded; no excess session is dropped."""
+    if max_worktrees is not None and (type(max_worktrees) is not int or not 1 <= max_worktrees <= 1000):
+        raise ValueError("max_worktrees must be an integer from 1 to 1000")
+    limit = MAX_WORKTREES if max_worktrees is None else max_worktrees
     root = Path(root)
     budget = budget or Budget()
     budget.check()
@@ -1128,7 +1132,7 @@ def discover(root: Path, parents: tuple[tuple[str, ...], ...] = WORKTREES,
     listed = _entries(admins) if state == "plain" else None
     if listed is None:
         return None
-    if len(listed) > MAX_WORKTREES:
+    if len(listed) > limit:
         raise TooManyWorktrees("too many entries in .git/worktrees")
     external_roots = tuple(path for path in external_roots if local_root(path))
     for number, entry in enumerate(sorted(listed, key=lambda item: item.name), 1):

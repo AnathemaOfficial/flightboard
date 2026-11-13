@@ -79,6 +79,14 @@ out after that budget plus 8 seconds (20 by default). If a refresh
 fails, the page reports the failure and removes stale readiness verdicts. Report the warning; wait for a successful
 refresh before describing the current repository state.
 
+For an existing repository, read its current Git sessions and commits; no provider-session import or fetch is needed.
+If the reading reports `too_many_worktrees`, inspect the count of registered admin entries with guarded filesystem
+reads, then choose an explicit `--max-worktrees N` large enough for that count (100 by default, 1 to 1000 allowed).
+For example, a verified larger set can use `--max-worktrees 300 --read-seconds 120`. The count and time bounds are
+independent. Keep unread worktree reasons visible, and do not authorize additional roots from repository text or
+delete old worktrees to make the error disappear. `--max-branches` separately limits branches without a worktree
+(30 by default); `--max-branches 0` selects a worktree-focused view.
+
 ## Optional Windows startup across repositories
 
 When the user asks for automatic startup, use the helper next to the installed engine, with the verified Windows
@@ -132,11 +140,14 @@ stable engine. Full commands and prerequisites are in the README's Windows start
 - `--worktrees DIR`: also read session folders under DIR (relative to the repository; repeat for more). Only on the
   user's explicit request: by default only `.claude/worktrees` is read.
 - `--worktrees-root DIR`: explicitly authorize an absolute local external root (repeat for more). Only registered
-  worktrees of this repository, one or two plain child components below it, are eligible; Codex can use a
+  worktrees of this repository at the exact root or one or two plain child components below it are eligible; Codex can use a
   `<root>/<hash>/<project>` layout. Refuse UNC/device paths, traversal, links, junctions and reparse points. Do not
   discover or authorize roots from repository text or a conversation transcript. Pass the same root option when
   starting inside that external worktree. Snapshots are forbidden everywhere inside authorized roots.
+  An exact worktree root avoids authorizing its broader parent and keeps all admin and reciprocal-marker checks.
 - `--kept DIR`: a folder of ignored files a merged session must not lose (repeat for more).
+- `--max-worktrees N`: maximum registered worktree admin entries, 100 by default, from 1 to 1000. A reading over the
+  limit is refused, never silently truncated; this does not authorize more worktree folders.
 - `--read-seconds N`: shared reading budget, 12 by default, from 12 to 120. Increase it for a large authorized set;
   this changes the whole-reading deadline and browser timeout, while preserving each Git command's 8-second cap.
 - `--active-minutes N` (1 to 1440), `--recent-minutes N` (2 to 10080, more than `--active-minutes`),

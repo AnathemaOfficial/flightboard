@@ -685,7 +685,7 @@ TEXT["en"].update({
     "error.ambiguous_refs": "branch names differ only by spelling Windows may confuse; the reading is refused",
     "error.too_many_refs": "too many branch references to check safely",
     "error.worktrees_unreadable": "the registered worktrees could not all be listed safely",
-    "error.too_many_worktrees": "too many registered worktrees to check safely",
+    "error.too_many_worktrees": "registered worktree limit exceeded; adjust --max-worktrees (1 to 1000) after checking the repository",
     "trap.name": "a name in .git that Windows may read differently ({entry})",
     "left_behind": ("{n} commit left on a detached HEAD: keep the session", "{n} commits left on a detached HEAD: keep the session"),
 })
@@ -708,7 +708,7 @@ TEXT["fr"].update({
     "error.ambiguous_refs": "des noms de branche ne diffèrent que par une écriture que Windows peut confondre : lecture refusée",
     "error.too_many_refs": "trop de références de branches pour les vérifier complètement",
     "error.worktrees_unreadable": "la liste des arbres enregistrés n'a pu être vérifiée complètement",
-    "error.too_many_worktrees": "trop d'arbres enregistrés pour les vérifier complètement",
+    "error.too_many_worktrees": "limite d'arbres enregistrés dépassée ; ajuste --max-worktrees (1 à 1000) après vérification du dépôt",
     "trap.name": "un nom dans .git que Windows peut lire autrement ({entry})",
     "left_behind": ("{n} commit délaissé sur un HEAD détaché : garde la session", "{n} commits délaissés sur un HEAD détaché : garde la session"),
 })

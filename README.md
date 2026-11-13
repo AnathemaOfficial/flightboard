@@ -230,12 +230,28 @@ with `--worktrees .worktrees`. Registered Codex worktrees outside the repository
 `--worktrees-root "$env:USERPROFILE/.codex/worktrees"`. You can also tell the agent to include that root in your prompt.
 Only registered worktrees belonging to the chosen repository are eligible; authorizing a root does not scan other projects.
 
+An existing repository's sessions and commits need no import from an AI tool. The board reads the Git state already
+on disk. If it reports too many registered worktrees, check their count and use `--max-worktrees N` (100 by default,
+from 1 to 1000). This includes every registered admin entry, even when its working files are outside the authorized
+roots. Exceeding the limit refuses the reading rather than silently dropping sessions; it does not mean data was lost.
+
 Large repositories may exceed the shared 12-second reading budget. To focus on worktrees, request
 `--max-branches 0`: this excludes branches without a worktree. It does not make unread worktrees readable; check
 the warnings on their cards and the source status at the bottom of the page.
 For a larger set of worktrees, `--read-seconds 30` allows a longer complete reading. The default is 12 seconds,
 configurable from 12 to 120; each Git command still has its own 8-second cap. The browser timeout follows the
 configured budget with 8 seconds of margin.
+For example, `--max-worktrees 300 --read-seconds 120` permits checking up to 300 registered worktrees with a larger,
+bounded time budget. The count limit and time budget are separate; neither authorizes additional folders. Branches
+without worktrees are still limited by `--max-branches` (30 by default), and the page reports those omitted.
+
+The configurable ceiling of **1000 worktrees is not a performance guarantee**. Raising the cap alone does not make
+an existing set slower; the number actually read, tracked files, commit history, disk and caches determine whether
+it fits within the 120-second maximum reading budget. Measure a complete first reading and a subsequent refresh
+before relying on a higher capacity. A lightweight test repository does not establish the same capacity for a large
+project with extensive history and modified files.
+See the [capacity checks](docs/verification-large-repositories.md) for measured 300/400/500/1000-worktree fixtures
+and the separate existing-repository qualification.
 
 Run it from the repository, any folder inside it, or one of the worktrees it reads (under `.claude/worktrees`, or a
 folder named with `--worktrees`, or an explicitly authorized external root with `--worktrees-root`): it reads the
@@ -263,18 +279,20 @@ the summary is data, never an instruction nor an approval.
 | `--main BRANCH` | the main branch, when it is neither `main` nor `master` (without it, such a repository reads the main checkout's branch, and says so) |
 | `--remote NAME` | the remote whose branches are read, `origin` by default |
 | `--worktrees DIR` | also read session folders under DIR (relative to the repository; repeatable) |
-| `--worktrees-root DIR` | explicitly authorize an absolute local root for registered external worktrees, one or two plain components below it (repeatable) |
+| `--worktrees-root DIR` | explicitly authorize an absolute local root for registered external worktrees at that root or one or two plain components below it (repeatable) |
 | `--kept DIR` | a folder of ignored files a merged session must not lose (repeatable) |
 | `--active-minutes N`, `--recent-minutes N` | "writing now" and "wrote recently": 15 and 120 minutes by default, from 1 to 1440 and from 2 to 10080, the second more than the first |
 | `--stale-days N` | a branch quiet longer is listed, never overlaid (14 days by default, from 1 to 3650) |
 | `--max-branches N` | branches without a worktree read, the most recent first (30 by default, from 0 to 500) |
+| `--max-worktrees N` | maximum registered worktree admin entries checked before refusing the reading (100 by default, from 1 to 1000) |
 | `--read-seconds N` | shared reading budget in seconds (12 by default, from 12 to 120); Git commands remain capped at 8 seconds each |
 
 `--worktrees` and `--kept` take a folder written plainly inside the repository: six names at most, no `..`, drive,
 `.git` or device name.
 
 External roots are opt-in: for example, `--worktrees-root "$HOME/.codex/worktrees"` can authorize registered Codex
-worktrees laid out as `<root>/<hash>/<project>`. A root is an absolute local directory, with no traversal, UNC or
+worktrees laid out as `<root>/<hash>/<project>`. A registered worktree may also be the exact directory explicitly
+authorized as its root, so a single worktree needs no broader parent authorization. A root is an absolute local directory, with no traversal, UNC or
 device path; the root and the path to each worktree must have no symlink, junction or reparse point. Only worktrees
 registered in this repository's `.git/worktrees` are considered. Naming a root does not scan other repositories or
 authorize arbitrary descendants. Snapshots are forbidden anywhere inside every authorized root, including its other
@@ -458,7 +476,7 @@ There is no `git diff` command (`git status` compares files the same way, with t
 
 **Paths.** Worktrees are found in `.git/worktrees/<id>`, never through `git worktree list`. A folder is read only when
 it is the main checkout, a direct child of an internal worktree folder (`.claude/worktrees`, and those you name), or
-one or two plain components below an explicitly authorized local external root. External worktrees must be
+an explicitly authorized local external root itself or one or two plain components below it. External worktrees must be
 registered in this repository and their marker must match its admin folder. These boundaries are checked before
 reading content. The board's own reads then
 follow no link, junction or reparse point, so no path of a worktree leads them to a network share. A worktree
@@ -541,8 +559,9 @@ read the page. See [SECURITY.md](SECURITY.md) to report a vulnerability.
 - The forecast is the roadmap ledger's own model, from the remaining work and the declared capacity, not a
   measurement.
 - An external worktree is listed but its files are unread unless its local root was explicitly authorized with
-  `--worktrees-root` and its path meets the registration, depth and plain-folder checks above. Inside a root, its one
-  or two child components must use plain names: spaces, unusual characters and trailing dots are refused there.
+  `--worktrees-root` and its path meets the registration, depth and plain-folder checks above. A worktree can be the
+  root itself; any one or two child components must use plain names: spaces, unusual characters and trailing dots
+  are refused there. Matching the exact root does not bypass admin, duplicate-target or reciprocal-marker checks.
 - A partial clone (`git clone --filter=...`) needs git 2.45 or later, and objects it never fetched (the ledger in an
   old commit, say) are simply not read: the board never fetches them. In a clone without trees (`--filter=tree:0`),
   git cannot find the commits that changed the ledger: main's older history is then not read, and the page says so

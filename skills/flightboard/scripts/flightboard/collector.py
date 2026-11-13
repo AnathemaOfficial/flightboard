@@ -315,7 +315,8 @@ class Collector:
             return self._error(now, mode, "git_trap", problem)
         self.git.graph = FILES.commit_graph_plain(self.root)  # a long history is then walked as fast as git can
         try:
-            trees = FILES.discover(self.root, self.settings.worktrees, self.settings.external_worktrees, budget)
+            trees = FILES.discover(self.root, self.settings.worktrees, self.settings.external_worktrees, budget,
+                                   max_worktrees=self.settings.max_worktrees)
         except FILES.TooManyWorktrees:
             return self._error(now, mode, "too_many_worktrees", git_ok=True)
         if trees is None:

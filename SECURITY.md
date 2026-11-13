@@ -56,10 +56,11 @@ they are not an isolation boundary against a process that can rewrite `.git` whi
   name may be one a session chose (a branch or a worktree folder: letters, digits, `.` `_` `/` `-`, 100 characters at
   most); titles, quotes and commit messages read in a branch stay on the page.
 - **External worktrees require explicit scope.** `--worktrees-root DIR` authorizes a local absolute root supplied
-  by the user; it is repeatable. Only this repository's registered worktrees, one or two plain components below that
-  root, can be read. Root and worktree paths must pass the plain-directory and marker checks: UNC/device paths,
+  by the user; it is repeatable. Only this repository's registered worktrees at that exact root or one or two plain
+  components below it can be read. Root and worktree paths must pass the plain-directory and marker checks: UNC/device paths,
   symlinks, junctions and reparse points are refused. A root does not authorize scanning other repositories or
   arbitrary descendants. It can cover Codex's `<root>/<hash>/<project>` layout without trusting a path found in a chat.
+  An exact-root match keeps the same admin, duplicate-target and reciprocal-marker checks.
 - **Dashboard modes write only the snapshot**, outside the repository and every authorized external root, through a new
   file, never through a link. Run
   from a folder whose `.git` is not a plain git folder of its own (a worktree the board does not read, a submodule, a
@@ -67,6 +68,9 @@ they are not an isolation boundary against a process that can rewrite `.git` whi
   writes the snapshot only to the cache folder.
 - **Incomplete evidence does not prove completion.** Unreadable HEADs, symbolic chains, distances or file listings
   remain unknown. Stashed work and detached commits can hold back relevant cards. A complete reading has a shared
+  registered-worktree limit of 100 by default (`--max-worktrees` accepts 1 to 1000); exceeding it refuses the whole
+  reading, without silently omitting a registered session. This count limit does not widen authorized roots or replace
+  the shared filesystem-entry and time budgets. A complete reading also has a shared
   12-second budget by default (`--read-seconds` accepts 12 to 120) and git runs keep their 8-second cap. The browser
   aborts a state request after the configured budget plus 8 seconds, or 20 seconds by default. The
   server's separate socket timeout is 10 seconds. If a live refresh fails, old session verdicts are removed and the

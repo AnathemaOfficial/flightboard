@@ -9,5 +9,5 @@ point is ../flightboard.py.
 """
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 TOOL = {"name": "flightboard", "version": __version__}
