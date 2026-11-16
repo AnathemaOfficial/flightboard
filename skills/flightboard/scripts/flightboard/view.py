@@ -616,3 +616,14 @@ def error_view(now: datetime, mode: str, reason: str, detail: str = "", lang: st
         "i18n": M.page(lang),
     }
 
+
+def loading_view(now: datetime, lang: str = "en", tool: dict | None = None, repository: str = "",
+                 settings: dict | None = None) -> dict:
+    """The first live page, with no session verdicts until an actual reading completes."""
+    view = error_view(now, "live", "unavailable", lang=lang, tool=tool, repository=clean(repository, 100))
+    view["main"].update(state="loading", reason="", reason_text="")
+    view["resume"] = M.say(lang, "summary.loading")
+    view["sources"] = [{"key": "git", "label": M.say(lang, "source.git"), "state": "loading",
+                        "detail": M.say(lang, "summary.loading")}]
+    view["settings"] = settings or {}
+    return view

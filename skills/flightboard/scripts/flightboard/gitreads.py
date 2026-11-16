@@ -326,6 +326,12 @@ class Git:
             raise ReadingTooLong("the whole reading exceeded its time budget")
         return min(GIT_TIMEOUT, left)
 
+    def fork(self) -> Git:
+        """An independent runner with this snapshot's fixed filters, graph policy and absolute deadline."""
+        child = Git(self.remote)
+        child.blank, child.graph, child.deadline = self.blank, self.graph, self.deadline
+        return child
+
     def execute(self, git_dir: Path, args: tuple[str, ...], work_tree: Path | None = None,
                 stdin: bytes | None = None, codes: tuple[int, ...] = (0,), literal: bool = True) -> tuple[int, bytes]:
         """(exit code, output) of one of the reads; a command outside VERBS is refused before git starts."""

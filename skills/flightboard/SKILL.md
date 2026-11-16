@@ -71,7 +71,11 @@ browser if no pane is available. If the default port is occupied, reuse a server
 session and know its repository path and options match this request. `/state.json` exposes only the repository's
 folder name, which cannot distinguish two clones with the same name. Otherwise start a separate server with
 `--port N`. Never stop an unrelated process to free a port. Tell the user the URL and how to stop the server you started.
-The page refreshes itself every 10 seconds; stop the process to stop it. `--snapshot` writes the page once to the user's cache folder instead
+The page opens immediately. Without a fresh completed reading it shows a neutral loading screen, then requests the
+state immediately. Loading is not a failed reading and supplies no session verdicts; wait for the actual result
+before reporting repository state. Later refresh requests start 10 seconds after the preceding request finishes,
+so a long reading does not imply a new full read every 10 seconds. Stop the process to stop the page's server.
+`--snapshot` still waits for a complete reading and writes the static page once to the user's cache folder instead
 and prints its path (`--output FILE.html` names another file, outside the repository and all authorized external
 roots). A reading has a shared 12-second budget by default. For a large authorized set of worktrees, use
 `--read-seconds 30` (12 to 120 allowed); each Git command remains capped at 8 seconds. A browser state request times

@@ -109,8 +109,33 @@ const checks = new AsyncFunction('assert', `
   fetch=async()=>response(state('recovered','done',120)); await refresh();
   assert.equal(lost,false); assert.equal(failed,''); assert.equal(requestTimeout(),128000);
 
+  // The first HTML shell is neutral and fetches immediately with its known large-repository deadline.
+  data=state('loading','planned',120); data.main={state:'loading',reason_text:''};
+  data.tasks={}; data.waiting=[]; lastOk=null; failed=''; lost=false; openedTask=null;
+  renderLive();
+  assert.equal($('live').className,'live loading');
+  assert.equal($('live-state').textContent,'page.spoken_loading');
+  assert.equal(document.stale,false);
+  let immediateCalls=0;
+  fetch=async()=>{immediateCalls++;return response(state('first result','done',120));};
+  await startPolling();
+  assert.equal(immediateCalls,1);
+  assert.equal(data.main.state,'ok'); assert.equal($('live').className,'live on');
+  assert.notEqual(lastOk,null); assert.equal(requestTimeout(),128000);
+
+  // An initial failure does not pretend that any repository data was read successfully.
+  data=state('loading','planned',120); data.main={state:'loading',reason_text:''};
+  data.tasks={}; data.waiting=[]; lastOk=null; failed=''; lost=false;
+  fetch=async()=>{throw new Error('initial transport failure');};
+  await startPolling();
+  assert.equal(lastOk,null); assert.equal(lost,true);
+  assert.equal($('live').className,'live lost');
+  assert.match($('banner').textContent,/page.initial_failed/);
+  fetch=async()=>response(state('eventual result','done',120)); await refresh();
+  assert.equal(lost,false); assert.equal(failed,''); assert.equal($('live').className,'live on');
+
   document.hidden=true; let calls=0; fetch=async()=>{calls++;return response(state());}; await refresh();
   assert.equal(calls,0);
-  return '9 live-page checks passed';
+  return '11 live-page checks passed';
 `);
 checks(assert).then(result => console.log(result)).catch(error => { console.error(error); process.exitCode=1; });

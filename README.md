@@ -70,7 +70,9 @@ Ask for a **live dashboard** to open the page, or for a **text summary** to get 
 
 Click the URL returned by the agent, or paste it into Chrome, Edge, Firefox or another browser. The default address
 is [http://127.0.0.1:8790/](http://127.0.0.1:8790/); it works while the server is running on this computer. You can
-bookmark it. The page refreshes every 10 seconds.
+bookmark it. The page opens immediately. If no fresh reading is available yet, it shows **Reading the repository…**
+and fills automatically when the browser's state request completes. That loading screen contains no session verdicts.
+The next refresh request starts 10 seconds after the preceding one finishes; a large repository can take longer to read.
 
 English is the default. Ask `Open Flightboard for this repository, in French` for French; the corresponding command
 options are `--lang en` and `--lang fr`. They select the language of both the dashboard and the text summary.
@@ -252,6 +254,8 @@ before relying on a higher capacity. A lightweight test repository does not esta
 project with extensive history and modified files.
 See the [capacity checks](docs/verification-large-repositories.md) for measured 300/400/500/1000-worktree fixtures
 and the separate existing-repository qualification.
+The [loading verification](docs/verification-large-repository-loading.md) records the later loading optimizations,
+reader-count comparison and live-server checks for an existing 267-worktree repository.
 
 Run it from the repository, any folder inside it, or one of the worktrees it reads (under `.claude/worktrees`, or a
 folder named with `--worktrees`, or an explicitly authorized external root with `--worktrees-root`): it reads the
@@ -259,7 +263,8 @@ main checkout either way. A folder whose `.git` is a
 file the board does not follow (a worktree elsewhere, a submodule) gives "no git repository here": run it from the main
 checkout, or name it with `--repo`. As with git, a folder stands for the nearest repository above it: run from a plain
 folder that lies inside another repository (a dotfiles repository in your home, say), it reads that one, and the page
-names it. The live page reads the repository again every 10 seconds. `--resume` prints one summary sentence; a `Note:`
+names it. The live page requests another reading 10 seconds after its previous request finishes. `--resume` prints
+one summary sentence; a `Note:`
 line, in fixed words, when main is guessed, has diverged from its remote, or the fetched remote main is ahead but has
 not been pulled (the local main remains the baseline); when no local main exists, the remote main is followed. A note
 also appears when main's ledger
@@ -498,6 +503,9 @@ no other program can answer there in its place), and checks every request before
 than `127.0.0.1:<port>`, `localhost:<port>` or `[::1]:<port>` (DNS rebinding), an `Origin` from elsewhere (`null` included), a
 same-site or cross-site `Sec-Fetch-Site`, the state loaded as a script, an image or a frame (`Sec-Fetch-Dest`), any
 method but `GET` and `HEAD`, and any path but `/` and `/state.json`. A refused request never reads the repository.
+The HTML response does not start or wait for a Git reading. It uses a fresh completed view when available, otherwise
+a neutral loading view; the browser requests `/state.json` immediately for that initial loading view. A static
+`--snapshot` is still produced only after its full reading completes and does not poll.
 The repository is read at most once every 5 seconds, counted from the end of the last reading, however many pages are
 open; a failed reading is not repeated within that time. A reading shares a budget of 12 seconds by default
 (`--read-seconds` accepts 12 to 120), with an 8-second cap per git run. The browser aborts a state request after the
@@ -506,6 +514,13 @@ socket timeout bounds incoming HTTP handling separately. A failed live reading d
 the previous session verdicts until a successful refresh. An open task detail is refreshed or marked unavailable.
 The IPv4 and IPv6 listeners share a limit of 32 accepted connections; additional connections receive HTTP 503
 without starting another handler thread.
+
+For larger sets, independent guarded reads use at most four workers with the same total deadline and per-command
+limits. Commit relationships and history keyed by full object IDs can be reused; working-file results are not
+reused across readings. Indexes, ignore rules, mutable files and path checks are checked again. Repository preflight
+keeps its shared entry budget, results are combined by the collector, and its workers finish before that reading
+returns. Globally bounded path caches retain only text components and parent-name plans, never filesystem state.
+Smaller sets and custom Git readers retain the sequential path.
 
 **Page.** A Content Security Policy starting from `default-src 'none'` lets only the page's own script run, named by
 its SHA-256, and only its own requests (`connect-src 'self'`); Trusted Types are required, no frame is allowed, and

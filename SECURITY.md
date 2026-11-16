@@ -77,6 +77,17 @@ they are not an isolation boundary against a process that can rewrite `.git` whi
   aborts a state request after the configured budget plus 8 seconds, or 20 seconds by default. The
   server's separate socket timeout is 10 seconds. If a live refresh fails, old session verdicts are removed and the
   failure is announced visually and accessibly. The next successful reading restores the current view.
+- **Loading HTML contains no provisional verdicts.** The HTML request does not run Git or wait for a running
+  reading. It returns a fresh completed view if available, otherwise an empty loading view with the configured
+  request budget. The browser then requests the state immediately. A completed error still replaces prior verdicts;
+  a pending view never certifies readiness. Static snapshots continue to wait for their complete reading.
+- **Parallel reads remain bounded.** Larger sets use at most four independent Git readers sharing the same absolute
+  deadline and filters. Repository preflight and its shared entry budget still apply; results enter the Collector's
+  caches only in its own thread, and workers are drained before a reading returns. Commit relationships and history may
+  be reused only by immutable object IDs. Working-file results are discarded between readings; index guards,
+  ignore rules, path checks and working-tree status are checked again. Separate, globally bounded text-only caches
+  may be filled by workers for path components and parent-name plans; they hold no filesystem state. Smaller sets
+  and custom readers use the sequential path.
 
 The full model, and what it does not cover, is in the [README](README.md#security-model).
 

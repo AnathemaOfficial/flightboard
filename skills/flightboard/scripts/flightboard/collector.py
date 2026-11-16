@@ -19,6 +19,7 @@ import os
 import threading
 import time
 from collections import deque
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -42,6 +43,8 @@ CHECKOUT_ID = "@checkout"  # no admin folder can take it: their names start with
 MAX_INFERRED = 3
 MAX_REFS = 5000
 MAX_WALK = 200_000
+READ_WORKERS = 4
+PARALLEL_MIN = 8  # small repositories and custom readers retain the simple sequential path
 UNREADABLE = "unreadable"  # a ledger that exists at a commit but cannot be read, unlike an absent one (None)
 # why an index is never handed to git (files.index_state), as the issue a session shows
 INDEX_ISSUES = {"sparse": "sparse_index", "split": "split_index", "too_big": "index_too_big"}
@@ -87,9 +90,12 @@ class Collector:
         self._used_full: set = set()  # commits whose full ledger this reading needs (main, tips, bases)
         self._used_slim: set = set()  # commits whose slim ledger it needs (history, dating)
         self._remote_main: str | None = None
+        self._prefetched_files: dict[str, tuple[object, Exception | None]] = {}
 
     def snapshot(self, now: datetime, mode: str = "live") -> dict:
         with self._lock:
+            self._prefetched_files = {}
+            self._tracked.clear()  # names belong to this reading; keep no previous set beside the parallel results
             self._used, self._used_full, self._used_slim = set(), set(), set()
             self.git.blank = ()  # the filter drivers are read again by this reading: none carried over
             self.git.graph = False  # and the commit-graph stays off until this reading finds its chain plain
@@ -103,6 +109,7 @@ class Collector:
             except Exception as exc:  # an odd repository must never take the page or the command down
                 return self._error(now, mode, "read_failed", type(exc).__name__)
             finally:
+                self._prefetched_files = {}
                 self.git.deadline = None
             self._prune()
             return view
@@ -113,6 +120,102 @@ class Collector:
         return view
 
     # -------- cached reads
+
+    def _parallel_allowed(self) -> bool:
+        """A custom reader or an instance-level spy may carry state a fork cannot safely reproduce."""
+        return type(self) is Collector and type(self.git) is GIT.Git \
+            and set(vars(self.git)) <= {"remote", "blank", "graph", "deadline"} \
+            and not any(callable(value) for value in vars(self).values())
+
+    def _parallel_results(self, jobs: list, read) -> list[tuple[object, object, Exception | None]]:
+        """Bounded, ordered reads; workers return values and only this thread publishes caches.
+
+        At most READ_WORKERS jobs are submitted at once. The pool is drained before a deadline or any other
+        failure can return from snapshot: no worker outlives the filters, deadline or cache-pruning phase.
+        """
+        if len(jobs) < PARALLEL_MIN or not self._parallel_allowed():
+            return []
+        results, pending = [None] * len(jobs), {}
+        remaining = iter(enumerate(jobs))
+        with ThreadPoolExecutor(max_workers=READ_WORKERS, thread_name_prefix="flightboard-read") as pool:
+            def submit() -> bool:
+                try:
+                    index, job = next(remaining)
+                except StopIteration:
+                    return False
+                self.git.time_left()
+                pending[pool.submit(read, job, self.git.fork())] = (index, job)
+                return True
+
+            for _ in range(READ_WORKERS):
+                if not submit():
+                    break
+            try:
+                while pending:
+                    completed, _ = wait(pending, return_when=FIRST_COMPLETED)
+                    for future in completed:
+                        index, job = pending.pop(future)
+                        try:
+                            value, error = future.result(), None
+                        except Exception as exc:
+                            value, error = None, exc
+                        results[index] = (job, value, error)
+                    for _ in completed:
+                        if not submit():
+                            break
+            finally:
+                for future in pending:
+                    future.cancel()
+        if any(result is None for result in results):
+            raise RuntimeError("the reading pool did not finish every submitted item")
+        return results
+
+    def _prefetch_pairs(self, main: str, tips) -> None:
+        jobs = [(main, tip) for tip in dict.fromkeys(tips) if tip != main and (main, tip) not in self._pairs]
+
+        def read(pair, git):
+            base, tip = pair
+            behind, ahead = git.counts(self.common, base, tip)
+            return behind, ahead, git.merge_bases(self.common, base, tip)
+
+        for pair, value, error in self._parallel_results(jobs, read):
+            if error is None:
+                self._pairs[pair] = value
+
+    def _prefetch_remote_relations(self, relations) -> None:
+        jobs = [pair for pair in dict.fromkeys(relations) if pair[0] != pair[1]
+                and self._ancestors.get(pair) is not True
+                and (pair not in self._ancestors or (pair[1], pair[0]) not in self._ancestors)]
+
+        def read(pair, git):
+            older, newer = pair
+            ahead = self._ancestors.get(pair)
+            if ahead is None:
+                ahead = git.is_ancestor(self.common, older, newer)
+            if ahead:
+                return True, None
+            reverse = self._ancestors.get((newer, older))
+            return False, reverse if reverse is not None else git.is_ancestor(self.common, newer, older)
+
+        for pair, value, error in self._parallel_results(jobs, read):
+            if error is None:
+                self._ancestors[pair] = value[0]
+                if value[1] is not None:
+                    self._ancestors[(pair[1], pair[0])] = value[1]
+
+    def _prefetch_ranges(self, items: list[dict]) -> None:
+        jobs = list(dict.fromkeys((item["bases"][0], item["tip"], GIT.MAX_SESSION_COMMITS)
+                                 for item in items if len(item["bases"]) == 1 and item["ahead"]
+                                 and (item["bases"][0], item["tip"], GIT.MAX_SESSION_COMMITS) not in self._ranges))
+        for key, value, error in self._parallel_results(jobs, lambda key, git: git.commits(
+                self.common, key[0], key[1], GIT.MAX_SESSION_COMMITS + 1)):
+            if error is None:
+                self._ranges[key] = value
+
+    def _prefetch_working_files(self, items: list[dict], planted: bool) -> None:
+        jobs = [item for item in items if item["path"] is not None and not item.get("broken")]
+        for item, value, error in self._parallel_results(jobs, lambda item, git: self._read_files_of(item, planted, git)):
+            self._prefetched_files[item["id"]] = (value, error)
 
     def _use(self, *keys) -> None:
         self._used.update(keys)
@@ -348,6 +451,7 @@ class Collector:
             if main_ledger is None:  # main's ledger is unreadable: this reading is git's alone, and says so
                 missing, adapter = adapter.path, None
         entries, cut, unread = self._history_entries(main_ref, main, adapter.path if adapter else None)
+        self._prefetch_ranges(readable)
         ranges = {}
         for item in readable:
             if len(item["bases"]) == 1 and item["ahead"]:
@@ -360,6 +464,7 @@ class Collector:
         # every filter driver is switched off for the reads to come, whatever attributes appear meanwhile; the
         # repository's own info/attributes stops the reads of modified files altogether
         planted = not self.git.disarm_filters(self.common) or FILES.attributes_planted(self.root)
+        self._prefetch_working_files(candidates, planted)
         sessions = [self._guarded(item, adapter, main_ledger, main, ranges.get(item["id"], []), planted, now)
                     for item in candidates]
         sessions = HELD.hold_back(candidates, sessions, self._stash(), self._reaches, self.remote_prefix)
@@ -452,6 +557,13 @@ class Collector:
                     now: datetime) -> tuple[list[dict], dict]:
         tips = [HELD.tip(tree, refs) for tree in trees]
         existing = self._existing([tip for tip in tips if tip])
+        self._prefetch_pairs(main, [tip for tip in tips if tip in existing])
+        self._prefetch_remote_relations([
+            (refs[self.remote_prefix + branch[len(HEADS):]]["sha"], tip)
+            for tree, tip in zip(trees, tips)
+            if (branch := tree["head"].get("ref") or tree["operation"]["branch"])
+            and branch.startswith(HEADS) and tip in existing
+            and self.remote_prefix + branch[len(HEADS):] in refs])
         items, used, unknown = [], {main_ref}, False
         for tree, tip in zip(trees, tips):
             held = HELD.held(tree, refs)
@@ -485,9 +597,17 @@ class Collector:
                            name, kind, short, info))
         others.sort(key=lambda entry: (entry[0], entry[1]), reverse=True)
         cap = self.settings.max_branches
+        self._prefetch_remote_relations([
+            (refs[self.remote_prefix + short]["sha"], info["sha"])
+            for _, _, kind, short, info in others[:cap]
+            if kind == "branch" and self.remote_prefix + short in refs])
+        selected = []
         for _, name, kind, short, info in others[:cap]:
             remote = "pushed" if kind == "remote" else self._remote(refs, name, info["sha"])
             front = refs[self.remote_prefix + short] if remote == "behind" else info
+            selected.append((name, kind, short, front, remote))
+        self._prefetch_pairs(main, [front["sha"] for _, _, _, front, _ in selected])
+        for name, kind, short, front, remote in selected:
             base = {"id": "ref:" + name, "kind": kind, "name": safe_branch(short), "ref": name, "tip": front["sha"],
                     "path": None, "git_dir": None, "created": None, "operation": "",
                     "reason": "held_unknown" if unknown else "",
@@ -545,6 +665,18 @@ class Collector:
         return (parsed, "ok", written) if parsed is not None else (tip_ledger, "writing", None)
 
     def _files_of(self, item: dict, planted: bool) -> tuple[list[dict], list[str], str]:
+        prefetched = self._prefetched_files.pop(item["id"], None)
+        if prefetched is not None:
+            value, error = prefetched
+            if error is not None:
+                raise error
+        else:
+            value = self._read_files_of(item, planted, self.git)
+        entries, candidates, issue, tracked = value
+        self._tracked[item["id"]] = tracked
+        return entries, candidates, issue
+
+    def _read_files_of(self, item: dict, planted: bool, git: GIT.Git) -> tuple[list[dict], list[str], str, set[str]]:
         """A worktree's modified tracked files (git, without walking anything), its untracked candidates (listed
         here, never by git, the ignored ones left out), and why the modified files were not read (a code), if they
         were not. Before git status runs, every tracked path is checked: a .git where the index expects a file or a
@@ -553,22 +685,20 @@ class Collector:
         handed to git, which would write its trees into .git/objects to read it: nothing of that worktree is asked."""
         state = FILES.index_state(item["git_dir"], self.root)
         if state:  # nothing of that worktree is asked of git: neither its modified files nor its new ones
-            self._tracked[item["id"]] = set()
-            return [], [], INDEX_ISSUES.get(state, "tracked_unreadable")
-        staged = self.git.staged(item["git_dir"], item["path"])
+            return [], [], INDEX_ISSUES.get(state, "tracked_unreadable"), set()
+        staged = git.staged(item["git_dir"], item["path"])
         names = {entry[-1] for entry in staged if FILES.safe_relative(entry[-1])}
         boundary = item.get("boundary", self.root)
-        self._tracked[item["id"]] = names
         if planted:
             issue = "planted"
         elif len(staged) > GIT.MAX_STAGED:
             issue = "too_many_tracked"
         else:
             issue = FILES.tracked_problem(item["path"], boundary, staged)
-        entries = [] if issue else self.git.status(item["git_dir"], item["path"])
+        entries = [] if issue else git.status(item["git_dir"], item["path"])
         candidates = FILES.untracked(item["path"], boundary, names)
         if candidates is None:  # a folder holding tracked files cannot be listed: its new files are unknown
-            return entries, [], issue or "folder_unlisted"
+            return entries, [], issue or "folder_unlisted", names
         if item["kind"] == "checkout":  # the worktree folders, and the folders that hold them, are the sessions' own
             candidates = [name for name in candidates if not _sessions_folder(name, self.settings.worktrees)]
         nested = [name for name in candidates if name.endswith("/") and _holds_git(item["path"] / name)]
@@ -581,7 +711,7 @@ class Collector:
         ignored: set[str] = set()
         if asked and not FILES.ignore_file_special(item["path"], boundary, asked):  # git would wait on a pipe
             try:
-                ignored = self.git.ignored(item["git_dir"], item["path"], asked)
+                ignored = git.ignored(item["git_dir"], item["path"], asked)
             except GitFailed:  # git cannot tell (a path inside a submodule, say): every candidate counts
                 ignored = set()
         kept = []
@@ -590,7 +720,7 @@ class Collector:
             if name in ignored or (found is not None and FILES.all_ignored(found, ignored)):
                 continue  # ignored, or a new folder whose whole content is ignored (or empty): git would not show it
             kept.append(name)
-        return entries, kept, issue
+        return entries, kept, issue, names
 
     def _kept_count(self, item: dict, tracked: set[str]) -> int:
         """Ignored work an agent must not lose (in the kept folders the owner named), counted at every reading: a file

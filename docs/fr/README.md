@@ -55,7 +55,10 @@ Le deuxième tableau sera alors à [http://localhost:8791/](http://localhost:879
 [http://localhost:8792/](http://localhost:8792/). Un port occupé demande de choisir un autre port ; le serveur ne
 bascule pas automatiquement.
 
-La page se rafraîchit toutes les **10 secondes**. **Fermer l'onglet n'arrête pas le serveur** : tu peux rouvrir son
+La page s'ouvre immédiatement. Si aucune lecture fraîche n'est disponible, elle affiche **Lecture du dépôt en cours…**
+puis se remplit automatiquement quand la requête d'état du navigateur se termine. Cet écran d'attente ne présente
+aucun verdict sur les sessions. La prochaine actualisation est demandée **10 secondes après la fin de la précédente** ;
+la lecture d'un gros dépôt peut prendre davantage de temps. **Fermer l'onglet n'arrête pas le serveur** : tu peux rouvrir son
 adresse tant qu'il tourne. Pour l'arrêter, utilise `Ctrl+C` dans le terminal qui l'a lancé. Si l'agent l'a lancé en
 arrière-plan, demande-lui d'arrêter le processus Flightboard qu'il a démarré pour ce dépôt et ce port. Après un arrêt
 ou un redémarrage de l'ordinateur, redemande l'ouverture du tableau, ou active le démarrage Windows facultatif
@@ -237,6 +240,8 @@ actualisation avant de compter sur une capacité supérieure. Un dépôt de test
 pour un gros projet avec beaucoup d'historique et de fichiers modifiés.
 Le [bilan de capacité](../verification-large-repositories.md) détaille les mesures sur les dépôts de test à
 300/400/500/1000 worktrees et la qualification distincte d'un dépôt existant.
+Le [bilan du chargement](../verification-large-repository-loading.md) présente les optimisations suivantes,
+la comparaison du nombre de lecteurs et les vérifications du serveur sur un dépôt existant de 267 worktrees.
 
 ### Choix du dépôt, options et résumé texte
 
@@ -247,7 +252,8 @@ tous les cas. Un dossier dont le `.git` est un fichier que le tableau ne suit pa
 donne « aucun dépôt git ici » : lance-le depuis le dossier principal, ou nomme celui-ci avec `--repo`. Comme pour git,
 un dossier vaut pour le dépôt le plus proche au-dessus de lui : lancé depuis un dossier ordinaire placé dans un autre
 dépôt (un dépôt de fichiers de configuration dans ton dossier personnel, par exemple), il lit celui-là, et la page le
-nomme. La page en direct relit le dépôt toutes les 10 secondes. `--resume` écrit une phrase de tête ; une ligne « À
+nomme. La page en direct demande une nouvelle lecture 10 secondes après la fin de la requête précédente. `--resume`
+écrit une phrase de tête ; une ligne « À
 noter : », en mots fixes, quand main est déduit, a divergé de son remote, ou que le main du remote récupéré a de
 l'avance sans avoir été tiré (le main local reste la référence) ; sans main local, le tableau suit celui du remote.
 Une note apparaît aussi quand le registre de main est illisible ou ne passe pas son validateur ; une liste
@@ -503,7 +509,10 @@ d'erreur, ne peut aller que dans le dossier de cache.
 refuse un `Host` autre que `127.0.0.1:<port>`, `localhost:<port>` ou `[::1]:<port>` (rebinding DNS), une `Origin` d'ailleurs (`null`
 compris), un `Sec-Fetch-Site` same-site ou cross-site, l'état chargé comme script, image ou cadre (`Sec-Fetch-Dest`),
 toute méthode autre que `GET` et `HEAD`, et tout chemin autre que `/` et `/state.json`. Une requête refusée ne lit
-jamais le dépôt. Le dépôt est lu au plus une fois toutes les 5 secondes, comptées depuis la fin de la lecture
+jamais le dépôt. La réponse HTML ne lance pas de lecture Git et ne l'attend pas. Elle utilise une vue complète
+encore fraîche si elle existe, sinon un écran d'attente neutre ; pour cet écran initial, le navigateur demande
+immédiatement `/state.json`. Un instantané `--snapshot` est toujours produit après sa lecture complète, sans
+actualisation automatique. Le dépôt est lu au plus une fois toutes les 5 secondes, comptées depuis la fin de la lecture
 précédente, quel que soit le nombre de pages ouvertes ; une lecture ratée n'est pas répétée dans ce délai. Une lecture
 partage un budget de 12 secondes par défaut entre ses opérations contrôlées (`--read-seconds` accepte 12 à 120),
 avec un plafond de 8 secondes par commande git. Le navigateur interrompt une requête d'état après ce budget plus
@@ -512,6 +521,15 @@ séparément la réception HTTP. Une lecture complète ratée affiche une erreur
 des sessions jusqu'au prochain succès. Une fiche de tâche ouverte est actualisée ou marquée indisponible.
 Les serveurs IPv4 et IPv6 partagent un plafond de 32 connexions admises ; les connexions supplémentaires reçoivent
 HTTP 503 sans démarrer un autre thread de traitement.
+
+Pour les grands ensembles, les lectures contrôlées indépendantes utilisent au plus quatre lecteurs, avec le même
+budget total et les mêmes délais par commande. Les relations entre commits et l'historique désignés par leurs
+identifiants d'objets complets peuvent être réutilisés ; les résultats des fichiers de travail ne le sont pas entre
+lectures. Les index, règles d'exclusion, fichiers modifiables et contrôles de chemins sont revérifiés. Le contrôle
+préalable du dépôt conserve son budget partagé d'entrées, le collecteur rassemble les résultats, et ses lecteurs
+terminent avant le retour de la lecture. Des caches globaux bornés conservent seulement les composants textuels des
+chemins et les noms de leurs parents, jamais l'état du système de fichiers. Les petits ensembles et lecteurs Git
+personnalisés restent séquentiels.
 
 **Page.** Une politique de sécurité (CSP) qui part de `default-src 'none'` n'autorise que le script de la page, désigné
 par son empreinte SHA-256, et ses propres requêtes (`connect-src 'self'`) ; Trusted Types est exigé, aucun cadre n'est

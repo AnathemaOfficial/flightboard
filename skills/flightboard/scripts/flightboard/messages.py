@@ -732,6 +732,22 @@ PAGE["fr"].update({
     "page.task_conflict": "Déclarations en conflit : aucun statut de branche n'est appliqué tant que le conflit n'est pas résolu.",
     "page.left_behind": ["{n} commit délaissé sur un HEAD détaché : garde la session", "{n} commits délaissés sur un HEAD détaché : garde la session"],
 })
+TEXT["en"]["summary.loading"] = "Reading the repository…"
+TEXT["fr"]["summary.loading"] = "Lecture du dépôt en cours…"
+LABELS["en"]["source"]["loading"] = "reading"
+LABELS["fr"]["source"]["loading"] = "lecture en cours"
+PAGE["en"].update({
+    "page.loading": "Reading the repository…", "page.mode_loading": "reading",
+    "page.loading_detail": "The board will fill automatically when the reading completes. Large repositories may take longer.",
+    "page.spoken_loading": "Reading the repository: session states are not available yet",
+    "page.initial_failed": "The initial reading has not completed. Retrying automatically.",
+})
+PAGE["fr"].update({
+    "page.loading": "Lecture du dépôt en cours…", "page.mode_loading": "lecture en cours",
+    "page.loading_detail": "Le tableau se remplira automatiquement à la fin de la lecture. Un gros dépôt peut demander davantage de temps.",
+    "page.spoken_loading": "Lecture du dépôt : les états des sessions ne sont pas encore disponibles",
+    "page.initial_failed": "La première lecture n'est pas terminée. Nouvel essai automatique.",
+})
 
 
 def _lang(lang: str) -> str:
