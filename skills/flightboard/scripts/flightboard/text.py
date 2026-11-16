@@ -23,22 +23,29 @@ CLEAN_CHUNK = 4096  # a huge value is walked in pieces, and padding never hides 
 def clean(value: object, limit: int = 200) -> str:
     """Text safe to show: control, format (bidi, zero-width), private and unassigned characters become spaces,
     spaces collapse, and the text is cut at limit; padding no longer hides the text that follows it."""
-    if value is None:
+    if value is None or limit <= 0:
         return ""
-    words: list[str] = []
-    size = 0
+    visible: list[str] = []
+    separated = False
     text = str(value)
     for start in range(0, len(text), CLEAN_CHUNK):
         piece = _INVISIBLE.sub(" ", text[start:start + CLEAN_CHUNK])
         if not piece.strip():
+            separated = bool(visible)
             continue  # padding only: no visible word to keep, and nothing to scan one character at a time
-        piece = "".join(" " if unicodedata.category(char).startswith("C") else char for char in piece)
-        for word in piece.split():
-            words.append(word)
-            size += len(word) + 1
-            if size > limit:
-                return " ".join(words)[:limit]
-    return " ".join(words)[:limit]
+        for char in piece:
+            if char.isspace() or unicodedata.category(char).startswith("C"):
+                separated = bool(visible)
+                continue
+            if separated:
+                visible.append(" ")
+                if len(visible) == limit:
+                    return "".join(visible)
+            visible.append(char)
+            separated = False
+            if len(visible) == limit:
+                return "".join(visible)
+    return "".join(visible)
 
 
 def safe_branch(value: object) -> str:

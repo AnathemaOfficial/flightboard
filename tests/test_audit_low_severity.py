@@ -111,7 +111,7 @@ class ImpossibleDateTest(unittest.TestCase):
 
 
 class DependencyListTest(unittest.TestCase):
-    """B7: a dependency declared twice is refused, and the declared list stays bounded."""
+    """B7: duplicated dependencies are refused; format limits never silently remove decision inputs."""
 
     def test_a_duplicate_dependency_is_refused(self) -> None:
         data = json.dumps({"version": 1, "tasks": [
@@ -121,9 +121,10 @@ class DependencyListTest(unittest.TestCase):
         self.assertFalse(parsed["valid"])
         self.assertIn("declared twice", parsed["error"])
 
-    def test_the_list_is_deduplicated_and_bounded(self) -> None:
+    def test_dependency_decisions_are_deduplicated_without_omissions(self) -> None:
         self.assertEqual(base.dependencies(["a", "a", "b"]), ["a", "b"])
-        self.assertEqual(len(base.dependencies([f"t{index}" for index in range(500)])), base.MAX_DEPENDENCIES)
+        declared = [f"t{index}" for index in range(500)]
+        self.assertEqual(base.dependencies(declared), declared)
 
 
 class RefFolderBudgetTest(unittest.TestCase):
@@ -179,6 +180,23 @@ class CycleDisabledTest(unittest.TestCase):
             paths.disabled.touch()
             with mock.patch.object(startup, "launch", side_effect=AssertionError("no launch")) as launch:
                 states = startup.cycle(settings, paths, {"processes": [], "listeners": []})
+            self.assertEqual(states[0]["state"], "disabled")
+            launch.assert_not_called()
+
+    def test_disable_during_inventory_prevents_the_pending_launch(self) -> None:
+        settings = {"discover_running_boards": False,
+                    "boards": [{"name": "board", "repo": str(Path.cwd()), "port": 8791, "command": ["python"]}]}
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name).resolve()
+            paths = startup.Paths(root, root, root / "Flightboard.lnk")
+
+            def disable_during_inventory():
+                paths.disabled.touch()
+                return {"processes": [], "listeners": []}
+
+            with mock.patch.object(startup, "inventory", side_effect=disable_during_inventory), \
+                    mock.patch.object(startup, "launch") as launch:
+                states = startup.cycle(settings, paths)
             self.assertEqual(states[0]["state"], "disabled")
             launch.assert_not_called()
 

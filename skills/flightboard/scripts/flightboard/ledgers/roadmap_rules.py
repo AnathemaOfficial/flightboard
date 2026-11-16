@@ -150,7 +150,10 @@ def _downstream(tasks: dict, start: str) -> set[str]:
 
 
 def _track(milestones: dict, mid: Any) -> str | None:
-    return TRACKS.get(milestones[mid]["data"].get("track")) if isinstance(mid, str) and mid in milestones else None
+    if not isinstance(mid, str) or mid not in milestones:
+        return None
+    track = milestones[mid]["data"].get("track")
+    return TRACKS.get(track) if isinstance(track, str) else None
 
 
 # ---------------------------------------------------------------- validation
@@ -230,8 +233,9 @@ def _check_milestones(items: list, errors: list[str]) -> dict[str, dict]:
         for key in ("title_fr", "goal_fr", "value_fr"):
             if not _is_text(milestone.get(key)):
                 errors.append(f"{where}: empty {key}")
-        if milestone.get("track") not in TRACKS:
-            errors.append(f"{where}: unknown track {shown(milestone.get('track'))}")
+        track = milestone.get("track")
+        if not isinstance(track, str) or track not in TRACKS:
+            errors.append(f"{where}: unknown track {shown(track)}")
         if not _is_count(milestone.get("timebox_weeks"), 1):
             errors.append(f"{where}: timebox_weeks must be a positive integer")
         if not _is_count(milestone.get("dogfood_min"), 0):
@@ -449,7 +453,8 @@ def _dep_ok(dep: str, tasks: dict, externals: dict, strict: bool) -> bool:
 
 
 def _evidence_kinds(task: dict) -> set:
-    return {e.get("kind") for e in _as_list(task.get("evidence")) if isinstance(e, dict)}
+    return {e["kind"] for e in _as_list(task.get("evidence"))
+            if isinstance(e, dict) and isinstance(e.get("kind"), str)}
 
 
 def _check_statuses(tasks: dict, externals: dict, errors: list[str]) -> None:

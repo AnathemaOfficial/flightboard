@@ -27,7 +27,7 @@ GOVERNED = ("owner", "reviewer")  # their tasks move only in main: a branch neve
 OWNER = re.compile(r"[a-z][a-z0-9_-]{0,30}")
 PATH = re.compile(r"[A-Za-z0-9._-]{1,100}(?:/[A-Za-z0-9._-]{1,100}){0,9}")
 DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
-MAX_DEPENDENCIES = 100  # a task file past this is refused: its dependency list is not a decision input any more
+MAX_DEPENDENCIES = 100  # simple task files refuse longer lists; decision inputs themselves are never truncated
 TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,39}")
 
 
@@ -70,9 +70,9 @@ def texts(value: object, count: int, limit: int) -> list[str]:
 
 
 def dependencies(value: object) -> list[str]:
-    """Dependency ids are decision inputs: every distinct id, in order, within one bounded list."""
+    """Dependency ids are decision inputs: preserve every distinct id, in order, without display truncation."""
     found = [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
-    return list(dict.fromkeys(found))[:MAX_DEPENDENCIES]
+    return list(dict.fromkeys(found))
 
 
 def plain_date(value: object) -> str:

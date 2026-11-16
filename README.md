@@ -358,7 +358,8 @@ status = "done"
 ```
 
 Its validator is small and structural: unique ids, statuses that map to flightboard's, dependencies that resolve, no
-cycle. A branch whose file fails it is listed, never overlaid; so is one declaring more than 2000 tasks, read in
+cycle. Each task may name at most 100 dependencies; repeated dependencies are refused.
+A branch whose file fails it is listed, never overlaid; so is one declaring more than 2000 tasks, read in
 part. A task file whose tasks cannot be used says why on the page, and `--resume` says that it does; in main's
 history, a version without one usable task (every status unknown, say) is skipped, never read as every task
 removed. "Next to start" lists tasks owned by any safely named agent or by nobody; `owner` and `reviewer` are human
@@ -503,6 +504,8 @@ open; a failed reading is not repeated within that time. A reading shares a budg
 configured budget plus 8 seconds (20 by default); the server's 10-second
 socket timeout bounds incoming HTTP handling separately. A failed live reading displays an explicit error and removes
 the previous session verdicts until a successful refresh. An open task detail is refreshed or marked unavailable.
+The IPv4 and IPv6 listeners share a limit of 32 accepted connections; additional connections receive HTTP 503
+without starting another handler thread.
 
 **Page.** A Content Security Policy starting from `default-src 'none'` lets only the page's own script run, named by
 its SHA-256, and only its own requests (`connect-src 'self'`); Trusted Types are required, no frame is allowed, and

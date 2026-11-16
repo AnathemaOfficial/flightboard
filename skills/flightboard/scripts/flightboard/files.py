@@ -393,6 +393,8 @@ def _linked_entry(folder: Path, root: Path, prefix: str = "", cap: int | None = 
     entry gone since the listing is skipped, and a folder that fails to list is looked at again a little later
     (Windows denies a folder git is deleting), refused only when every look fails."""
     for wait in LIST_WAITS:
+        if budget is not None:
+            budget.check()
         if wait:
             time.sleep(wait)
         if _folder_state(folder, root) != "plain":
@@ -402,10 +404,10 @@ def _linked_entry(folder: Path, root: Path, prefix: str = "", cap: int | None = 
                 for count, entry in enumerate(found):
                     if cap is not None and count >= cap:
                         return "many"
-                    if budget is not None:  # a folder of loose refs costs the shared budget too, never unbounded time
+                    if budget is not None:
                         budget.check()
-                        budget.left -= 1
-                        if budget.left < 0:
+                        # Preinspection must fit the remaining quota; the canonical walk charges it once.
+                        if count >= budget.left:
                             return "many"
                     if not entry.name.casefold().startswith(prefix):
                         continue
