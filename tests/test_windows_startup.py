@@ -442,6 +442,7 @@ class StartupTest(unittest.TestCase):
             startup.install(self.paths)
         self.assertTrue(self.paths.disabled.exists())  # the owner's disable stays in force
 
+    @unittest.skipUnless(os.name == "nt", "install needs the Windows python.exe/pythonw.exe layout")
     def test_a_failed_engine_copy_leaves_the_previous_engine_intact(self) -> None:
         before = self.paths.engine.read_text(encoding="utf-8")
         with mock.patch.object(startup, "singleton", return_value=contextlib.nullcontext(True)), \
