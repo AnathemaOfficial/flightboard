@@ -564,7 +564,7 @@ def run(paths: Paths, once: bool = False) -> dict:
                     _write(paths.root / "status.json", status)
                 except Exception as error:
                     LOG.exception("Supervision failed; will retry")
-                    status = {"status": "error", "error": str(error)}
+                    status = {"status": "error", "error": str(error), "supervisor_pid": os.getpid()}
                     try:
                         _write(paths.root / "status.json", status)
                     except (OSError, ValueError):  # a status that cannot be written must not end the supervision

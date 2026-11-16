@@ -459,7 +459,9 @@ class StartupTest(unittest.TestCase):
 
     def test_failed_install_restores_the_previous_autostart_state(self) -> None:
         self._stuck_supervisor()
-        with mock.patch.object(startup, "enable") as enable, self.assertRaises(ValueError):
+        with mock.patch.object(startup.sys, "executable", str(self.python)), \
+                mock.patch.object(startup, "enable") as enable, \
+                self.assertRaisesRegex(ValueError, "the supervisor is still running"):
             startup.install(self.paths)
         enable.assert_not_called()
         self.assertFalse(self.paths.disabled.exists())  # an installation that fails never cuts autostart silently
@@ -467,7 +469,8 @@ class StartupTest(unittest.TestCase):
     def test_failed_install_keeps_a_previously_disabled_installation_disabled(self) -> None:
         self.paths.disabled.touch()
         self._stuck_supervisor()
-        with self.assertRaises(ValueError):
+        with mock.patch.object(startup.sys, "executable", str(self.python)), \
+                self.assertRaisesRegex(ValueError, "the supervisor is still running"):
             startup.install(self.paths)
         self.assertTrue(self.paths.disabled.exists())  # the owner's disable stays in force
 
@@ -632,12 +635,12 @@ class StartupTest(unittest.TestCase):
         self.assertFalse((paths.root / "engine.previous").exists())
         self.assertFalse(list(paths.root.glob("engine-*")))
 
-    @unittest.skipUnless(os.name == "nt", "install needs the Windows python.exe/pythonw.exe layout")
     def test_a_failed_engine_copy_leaves_the_previous_engine_intact(self) -> None:
         before = self.paths.engine.read_text(encoding="utf-8")
-        with mock.patch.object(startup, "singleton", return_value=contextlib.nullcontext(True)), \
+        with mock.patch.object(startup.sys, "executable", str(self.python)), \
+                mock.patch.object(startup, "singleton", return_value=contextlib.nullcontext(True)), \
                 mock.patch.object(startup.shutil, "copyfile", side_effect=OSError("disk full")), \
-                self.assertRaises(OSError):
+                self.assertRaisesRegex(OSError, "disk full"):
             startup.install(self.paths)
         self.assertEqual(self.paths.engine.read_text(encoding="utf-8"), before)
         self.assertFalse(list(self.paths.root.glob("engine-*")))
@@ -667,6 +670,19 @@ class StartupTest(unittest.TestCase):
             result = startup.run(self.paths)
         stopper.join(5)
         self.assertEqual(result, {"status": "disabled"})  # the loop survived a status it could not write
+
+    def test_an_error_status_keeps_the_supervisor_identity(self) -> None:
+        startup.save_config(self.settings, self.paths)
+        with mock.patch.object(startup, "singleton", return_value=contextlib.nullcontext(True)), \
+                mock.patch.object(startup, "inventory", side_effect=OSError("inventory unavailable")), \
+                self.assertRaisesRegex(OSError, "inventory unavailable"):
+            startup.run(self.paths, once=True)
+        with mock.patch.object(startup, "_alive", return_value=True) as alive:
+            result = startup.status(self.paths)
+        alive.assert_called_once_with(os.getpid())
+        self.assertTrue(result["supervisor_running"])
+        self.assertEqual(result["last_check"]["status"], "error")
+        self.assertEqual(result["last_check"]["error"], "inventory unavailable")
 
     @unittest.skipUnless(os.name == "nt", "Windows startup status")
     def test_status_reports_whether_the_supervisor_still_runs(self) -> None:
