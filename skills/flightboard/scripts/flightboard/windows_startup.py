@@ -493,6 +493,7 @@ def install(paths: Paths, trust_engines=(), trust_python=()) -> dict:
     paths.disabled.touch()
     saved_files: dict[Path, bytes | None] = {}
     committed = False
+    resume_previous = False
     try:
         with ExitStack() as transaction:
             limit = time.monotonic() + 10
@@ -503,6 +504,8 @@ def install(paths: Paths, trust_engines=(), trust_python=()) -> dict:
                         saved_files = {path: path.read_bytes() if path.exists() else None
                                        for path in (paths.config, paths.startup_link)}
                         settings = load_config(paths) if paths.config.exists() else initial
+                        resume_previous = (not was_disabled and saved_files[paths.config] is not None
+                                           and saved_files[paths.startup_link] is not None)
                         transaction.enter_context(_copy_engine(paths))
                         for name, additions in (("trusted_engines", [*engines, paths.engine]),
                                                 ("trusted_python", runtimes)):
@@ -533,6 +536,13 @@ def install(paths: Paths, trust_engines=(), trust_python=()) -> dict:
             paths.disabled.touch()
         else:
             paths.disabled.unlink(missing_ok=True)
+        if resume_previous:
+            try:
+                enable(paths)
+            except BaseException as recovery:
+                paths.disabled.touch()
+                raise _RecoveryError(f"installation failed ({error}); could not resume the previous supervisor "
+                                     f"({recovery}); autostart remains disabled") from recovery
         raise
     return settings
 
