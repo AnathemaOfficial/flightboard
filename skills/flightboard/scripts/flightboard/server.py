@@ -71,11 +71,12 @@ def refusal(method: str, target: str, headers, port: int) -> str | None:
     """Why a request is refused (a code), or None; checked before any work. Host alone stops DNS rebinding; Origin,
     Sec-Fetch-Site and Sec-Fetch-Dest stop other sites and other local pages (other ports included) and keep the
     state from being loaded as a script, an image or a frame."""
+    names = (f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}")  # the addresses this server holds
     hosts = headers.get_all("Host") or []
-    if len(hosts) != 1 or hosts[0] not in (f"127.0.0.1:{port}", f"localhost:{port}"):
+    if len(hosts) != 1 or hosts[0] not in names:
         return "host"
     origins = headers.get_all("Origin") or []
-    if len(origins) > 1 or (origins and origins[0] not in (f"http://127.0.0.1:{port}", f"http://localhost:{port}")):
+    if len(origins) > 1 or (origins and origins[0] not in [f"http://{name}" for name in names]):
         return "origin"
     sites = headers.get_all("Sec-Fetch-Site") or []
     if len(sites) > 1 or (sites and sites[0] not in ("same-origin", "none")):

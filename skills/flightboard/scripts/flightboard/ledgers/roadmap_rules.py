@@ -4,8 +4,8 @@
 
 This validator is part of flightboard and is never loaded from the repository flightboard observes: a branch could
 otherwise change the code that judges it. Ids take any uppercase prefix (ABC-123, ABC-M1-02, ADR-0001, EXT:name), and
-an epic is any short slug. Messages are English and name ids only, plus the odd value that broke a rule. Standard
-library only, safe under -I.
+an epic is any short slug. Messages are English and name ids only, plus a plain token naming the value that broke a
+rule: prose a branch wrote is never echoed. Standard library only, safe under -I.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from collections import Counter
 from datetime import date, timedelta
 from typing import Any
 
-from .base import OWNER
+from .base import OWNER, TOKEN, shown
 
 SCHEMA_VERSION = 2
 STALE_DAYS = 14
@@ -37,6 +37,7 @@ TOP_REQUIRED = ("schema_version", "updated_at", "capacity", "launch_gate", "mile
 TOP_OPTIONAL = ("project", "decisions")
 CAPACITY_FIELDS = ("start_date", "review_slots_per_week", "owner_hours_per_week")
 AGENT_CAPACITY_FIELDS = ("agent_sessions_per_week", "claude_sessions_per_week")
+MAX_WEEKLY = 10_000  # a weekly capacity past this is refused: no line of a summary may carry an arbitrary number
 MILESTONE_FIELDS = ("id", "title_fr", "track", "goal_fr", "value_fr", "timebox_weeks", "dogfood_min",
                     "cut_list", "exit_criteria")
 CRITERION_FIELDS = ("text_fr", "tasks")
@@ -106,13 +107,15 @@ def _is_date(value: Any) -> bool:
     return True
 
 
-def _is_count(value: Any, minimum: int) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value >= minimum
+def _is_count(value: Any, minimum: int, maximum: int | None = None) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= minimum \
+        and (maximum is None or value <= maximum)
 
 
-def _shown(value: Any) -> str:
-    """A value that broke a rule, short and quoted."""
-    return repr(value)[:60]
+def _shown_list(values: list[str]) -> str:
+    """Keep identifiers and plain tokens readable without quoting arbitrary prose."""
+    return ", ".join(value if TOKEN.fullmatch(value) or TASK_ID.fullmatch(value) or EXTERNAL_ID.fullmatch(value)
+                     else shown(value) for value in values)
 
 
 def _check_keys(obj: dict, required: tuple, optional: tuple, where: str, errors: list[str]) -> None:
@@ -120,8 +123,9 @@ def _check_keys(obj: dict, required: tuple, optional: tuple, where: str, errors:
     unknown = sorted(str(key) for key in set(obj) - set(required) - set(optional))
     if missing:
         errors.append(f"{where}: missing field(s) {', '.join(missing)}")
-    if unknown:
-        errors.append(f"{where}: unknown field(s) {', '.join(name[:40] for name in unknown[:5])}")
+    if unknown:  # a field name a branch chose: named only when it reads as a plain token, never as prose
+        named = [name for name in unknown if TOKEN.fullmatch(name)][:5]
+        errors.append(f"{where}: unknown field(s) {', '.join(named) or '(names not plain)'}")
 
 
 def _task_deps(tasks: dict, tid: str) -> list[str]:
@@ -192,14 +196,14 @@ def _check_top(ledger: dict, errors: list[str]) -> None:
     if not _is_date(capacity.get("start_date")):
         errors.append("capacity: start_date must be a YYYY-MM-DD date")
     for key in CAPACITY_FIELDS[1:]:
-        if not _is_count(capacity.get(key), 1):
-            errors.append(f"capacity: {key} must be a positive integer")
+        if not _is_count(capacity.get(key), 1, MAX_WEEKLY):
+            errors.append(f"capacity: {key} must be an integer from 1 to {MAX_WEEKLY}")
     present = [key for key in AGENT_CAPACITY_FIELDS if key in capacity]
     if not present:
         errors.append("capacity: missing field(s) agent_sessions_per_week")
     for key in present:
-        if not _is_count(capacity[key], 1):
-            errors.append(f"capacity: {key} must be a positive integer")
+        if not _is_count(capacity[key], 1, MAX_WEEKLY):
+            errors.append(f"capacity: {key} must be an integer from 1 to {MAX_WEEKLY}")
     if len(present) == 2 and capacity[present[0]] != capacity[present[1]]:
         errors.append("capacity: agent_sessions_per_week and claude_sessions_per_week must agree")
 
@@ -211,7 +215,7 @@ def _check_milestones(items: list, errors: list[str]) -> dict[str, dict]:
         where = f"milestone #{index + 1}"
         mid = milestone.get("id") if isinstance(milestone, dict) else None
         if not (isinstance(mid, str) and MILESTONE_ID.fullmatch(mid)):
-            errors.append(f"{where}: invalid id {_shown(mid)} (expected M0, M1, ...)")
+            errors.append(f"{where}: invalid id {shown(mid)} (expected M0, M1, ...)")
             continue
         where = f"milestone {mid}"
         _check_keys(milestone, MILESTONE_FIELDS, (), where, errors)
@@ -227,7 +231,7 @@ def _check_milestones(items: list, errors: list[str]) -> dict[str, dict]:
             if not _is_text(milestone.get(key)):
                 errors.append(f"{where}: empty {key}")
         if milestone.get("track") not in TRACKS:
-            errors.append(f"{where}: unknown track {_shown(milestone.get('track'))}")
+            errors.append(f"{where}: unknown track {shown(milestone.get('track'))}")
         if not _is_count(milestone.get("timebox_weeks"), 1):
             errors.append(f"{where}: timebox_weeks must be a positive integer")
         if not _is_count(milestone.get("dogfood_min"), 0):
@@ -262,7 +266,7 @@ def _check_externals(items: list, updated: Any, errors: list[str]) -> dict[str, 
     for index, ext in enumerate(items):
         eid = ext.get("id") if isinstance(ext, dict) else None
         if not (isinstance(eid, str) and EXTERNAL_ID.fullmatch(eid)):
-            errors.append(f"external dependency #{index + 1}: invalid id {_shown(eid)} (expected NAME:item)")
+            errors.append(f"external dependency #{index + 1}: invalid id {shown(eid)} (expected NAME:item)")
             continue
         _check_keys(ext, EXTERNAL_FIELDS, (), eid, errors)
         if eid in externals:
@@ -272,9 +276,9 @@ def _check_externals(items: list, updated: Any, errors: list[str]) -> dict[str, 
         if not _is_text(ext.get("title_fr")):
             errors.append(f"{eid}: empty title_fr")
         if not (isinstance(ext.get("owner"), str) and OWNER.fullmatch(ext["owner"])):
-            errors.append(f"{eid}: invalid owner {_shown(ext.get('owner'))}")
+            errors.append(f"{eid}: invalid owner {shown(ext.get('owner'))}")
         if ext.get("status") not in EXTERNAL_STATUSES:
-            errors.append(f"{eid}: unknown status {_shown(ext.get('status'))}")
+            errors.append(f"{eid}: unknown status {shown(ext.get('status'))}")
         if not isinstance(ext.get("observed_fr"), str):
             errors.append(f"{eid}: observed_fr must be a text")
         if not _is_text(ext.get("observed_ref")):
@@ -302,7 +306,7 @@ def _check_tasks(items: list, milestones: dict, errors: list[str]) -> dict[str, 
     for index, task in enumerate(items):
         tid = task.get("id") if isinstance(task, dict) else None
         if not (isinstance(tid, str) and TASK_ID.fullmatch(tid)):
-            errors.append(f"task #{index + 1}: invalid id {_shown(tid)} (expected ABC-M1-03 or ABC-123)")
+            errors.append(f"task #{index + 1}: invalid id {shown(tid)} (expected ABC-M1-03 or ABC-123)")
             continue
         if tid in tasks:
             errors.append(f"{tid}: duplicate id")
@@ -310,7 +314,7 @@ def _check_tasks(items: list, milestones: dict, errors: list[str]) -> dict[str, 
         tasks[tid] = task
         _check_keys(task, TASK_REQUIRED, TASK_OPTIONAL, tid, errors)
         if task.get("milestone") not in milestones:
-            errors.append(f"{tid}: unknown milestone {_shown(task.get('milestone'))}")
+            errors.append(f"{tid}: unknown milestone {shown(task.get('milestone'))}")
         _check_task_enums(task, tid, errors)
         _check_task_lists(task, tid, errors)
         if "evidence" in task:
@@ -324,13 +328,13 @@ def _check_task_enums(task: dict, tid: str, errors: list[str]) -> None:
     if not isinstance(task.get("notes_fr"), str):
         errors.append(f"{tid}: notes_fr must be a text")
     if not (isinstance(task.get("epic"), str) and EPIC.fullmatch(task["epic"])):
-        errors.append(f"{tid}: invalid epic {_shown(task.get('epic'))}")
+        errors.append(f"{tid}: invalid epic {shown(task.get('epic'))}")
     if not (isinstance(task.get("owner"), str) and OWNER.fullmatch(task["owner"])):
-        errors.append(f"{tid}: invalid owner {_shown(task.get('owner'))}")
+        errors.append(f"{tid}: invalid owner {shown(task.get('owner'))}")
     for key, allowed in (("priority", PRIORITIES), ("size", tuple(SIZE_UNITS)),
                          ("status", STATUSES), ("release", RELEASES)):
         if task.get(key) not in allowed:
-            errors.append(f"{tid}: unknown {key} {_shown(task.get(key))}")
+            errors.append(f"{tid}: unknown {key} {shown(task.get(key))}")
 
 
 def _check_task_lists(task: dict, tid: str, errors: list[str]) -> None:
@@ -361,7 +365,7 @@ def _check_evidence_entries(entries: Any, tid: str, errors: list[str]) -> None:
             continue
         _check_keys(entry, EVIDENCE_FIELDS, (), where, errors)
         if entry.get("kind") not in EVIDENCE:
-            errors.append(f"{where}: unknown evidence kind {_shown(entry.get('kind'))}")
+            errors.append(f"{where}: unknown evidence kind {shown(entry.get('kind'))}")
         if not _is_date(entry.get("at")):
             errors.append(f"{where}: YYYY-MM-DD date missing")
         for key in ("ref", "note_fr"):
@@ -395,7 +399,7 @@ def _check_dependencies(tasks: dict, externals: dict, milestones: dict, errors: 
                 if dep not in externals:
                     errors.append(f"{tid}: undeclared external dependency {dep}")
             else:
-                errors.append(f"{tid}: unknown dependency {_shown(dep)}")
+                errors.append(f"{tid}: unknown dependency {shown(dep)}")
         if "start_early" in task:
             _check_start_early(tid, task, tasks, milestones, errors)
 
@@ -453,7 +457,7 @@ def _check_statuses(tasks: dict, externals: dict, errors: list[str]) -> None:
         if status in ("ready", "in_progress", "awaiting_review", "done"):
             unmet = [d for d in deps if not _dep_ok(d, tasks, externals, strict=status == "done")]
             if unmet:
-                errors.append(f"{tid}: status {status} while {', '.join(unmet)} is not done")
+                errors.append(f"{tid}: status {status} while {_shown_list(unmet)} is not done")
         if status == "in_progress" and task.get("size") == "L":
             errors.append(f"{tid}: a size L task must be split before it starts")
         if status in ("blocked", "dropped") and not _is_text(task.get("notes_fr")):
@@ -471,12 +475,12 @@ def _check_evidence(tid: str, task: dict, status: Any, errors: list[str]) -> Non
         if not _evidence_kinds(task):
             errors.append(f"{tid}: done without evidence")
         elif missing := [k for k in expected if k not in _evidence_kinds(task)]:
-            errors.append(f"{tid}: expected evidence missing {', '.join(missing)}")
+            errors.append(f"{tid}: expected evidence missing {_shown_list(missing)}")
     if status == "awaiting_review":
         if "review" not in expected or not any(k in PRODUCT_EVIDENCE for k in expected):
             errors.append(f"{tid}: awaiting review is for a task that delivers a product and expects a review")
         elif missing := [k for k in expected if k != "review" and k not in _evidence_kinds(task)]:
-            errors.append(f"{tid}: awaiting review without the evidence {', '.join(missing)}")
+            errors.append(f"{tid}: awaiting review without the evidence {_shown_list(missing)}")
 
 
 def _cited(milestone: dict) -> list[str]:
@@ -496,7 +500,7 @@ def _check_exits(milestones: dict, tasks: dict, errors: list[str]) -> None:
         milestone, cited = info["data"], _cited(info["data"])
         for tid in cited:
             if tid not in tasks:
-                errors.append(f"milestone {mid}: an exit criterion cites an unknown task {_shown(tid)}")
+                errors.append(f"milestone {mid}: an exit criterion cites an unknown task {shown(tid)}")
             elif tasks[tid].get("milestone") != mid:
                 errors.append(f"milestone {mid}: an exit criterion cites {tid}, of another milestone")
             elif tasks[tid].get("priority") != "P0" or tasks[tid].get("status") == "dropped":
@@ -517,7 +521,7 @@ def _check_cut_list(mid: str, milestone: dict, tasks: dict, errors: list[str]) -
         errors.append(f"milestone {mid}: cut_list holds a duplicate")
     for tid in cut:
         if not (isinstance(tid, str) and tid in tasks and tasks[tid].get("milestone") == mid):
-            errors.append(f"milestone {mid}: cut_list cites {_shown(tid)}, which is no task of the milestone")
+            errors.append(f"milestone {mid}: cut_list cites {shown(tid)}, which is no task of the milestone")
         elif tasks[tid].get("priority") == "P0":
             errors.append(f"milestone {mid}: cut_list cannot cite {tid}, which is P0")
 
@@ -566,7 +570,7 @@ def _check_external_links(externals: dict, tasks: dict, errors: list[str]) -> No
         users = {tid for tid, task in tasks.items() if eid in _str_list(task.get("dependencies"))}
         unknown = sorted(n for n in needed if n not in tasks)
         if unknown:
-            errors.append(f"{eid}: needed_by cites unknown tasks {', '.join(_shown(n) for n in unknown[:5])}")
+            errors.append(f"{eid}: needed_by cites unknown tasks {', '.join(shown(n) for n in unknown[:5])}")
         strangers = sorted(n for n in needed if n in tasks and n not in users)
         if strangers:
             errors.append(f"{eid}: needed_by cites {', '.join(strangers)}, which do not depend on it")
@@ -580,7 +584,7 @@ def _check_decisions(items: list, tasks: dict, errors: list[str]) -> dict[str, d
     for index, dec in enumerate(items):
         did = dec.get("id") if isinstance(dec, dict) else None
         if not (isinstance(did, str) and DECISION_ID.fullmatch(did)):
-            errors.append(f"decision #{index + 1}: invalid id {_shown(did)} (expected ADR-0001)")
+            errors.append(f"decision #{index + 1}: invalid id {shown(did)} (expected ADR-0001)")
             continue
         _check_keys(dec, DECISION_REQUIRED, DECISION_OPTIONAL, did, errors)
         if did in decisions:
@@ -597,9 +601,9 @@ def _check_decision(dec: dict, did: str, tasks: dict, errors: list[str]) -> None
             errors.append(f"{did}: empty {key}")
     status, record, task = dec.get("status"), dec.get("record"), dec.get("task")
     if status not in DECISION_STATUSES:
-        errors.append(f"{did}: unknown status {_shown(status)}")
+        errors.append(f"{did}: unknown status {shown(status)}")
     if task is not None and task not in tasks:
-        errors.append(f"{did}: unknown task {_shown(task)}")
+        errors.append(f"{did}: unknown task {shown(task)}")
     if status in ("adopted", "superseded"):
         if not _is_date(dec.get("date")):
             errors.append(f"{did}: an adopted decision needs a date")

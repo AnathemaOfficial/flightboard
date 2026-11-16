@@ -29,7 +29,7 @@ import tomllib
 from typing import Any
 
 from ..text import clean
-from .base import OWNER, STATUSES, Ledger, NotALedger, dependencies, read_json, task_identity, texts
+from .base import OWNER, STATUSES, Ledger, NotALedger, dependencies, read_json, shown, task_identity, texts
 
 MAX_TASK_FILE_BYTES = 2_000_000
 MAX_TASKS = 2000  # as the roadmap ledger's validator: a branch declaring more is read in part, never applied
@@ -61,10 +61,10 @@ def _mapping(raw: dict, errors: list[str]) -> dict[str, str]:
         return words
     for word, status in found.items():
         if not isinstance(status, str) or status not in STATUSES:
-            errors.append(f"statuses: {clean(word, 40)!r} maps to {clean(status, 40)!r}, not one of "
+            errors.append(f"statuses: {shown(word)} maps to {shown(status)}, not one of "
                           f"{', '.join(STATUSES)}")
         elif word in STATUSES and word != status:
-            errors.append(f"statuses: {word} is one of flightboard's statuses and cannot mean {status}")
+            errors.append(f"statuses: {shown(word)} is one of flightboard's statuses and cannot mean {shown(status)}")
         else:
             words[word] = status
     return words
@@ -96,7 +96,7 @@ def _check_task(item: Any, index: int, words: dict[str, str], milestones: dict[s
         return None
     status = words.get(item.get("status")) if isinstance(item.get("status"), str) else None
     if status is None:
-        errors.append(f"{tid}: status {clean(item.get('status'), 40)!r} maps to none of flightboard's statuses")
+        errors.append(f"{tid}: status {shown(item.get('status'))} maps to none of flightboard's statuses")
     for key, pattern in (("owner", OWNER), ("priority", PRIORITY)):
         if key in item and not (isinstance(item[key], str) and pattern.fullmatch(item[key])):
             errors.append(f"{tid}: invalid {key}")
@@ -120,7 +120,7 @@ def _check_graph(raw_tasks: dict[str, dict], errors: list[str]) -> None:
             if dep == tid:
                 errors.append(f"{tid}: a task cannot depend on itself")
             elif dep not in raw_tasks:
-                errors.append(f"{tid}: unknown dependency {clean(dep, 40)!r}")
+                errors.append(f"{tid}: unknown dependency {shown(dep)}")
     state: dict[str, int] = {}
     for start in deps:
         if state.get(start):

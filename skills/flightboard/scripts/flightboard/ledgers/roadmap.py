@@ -63,7 +63,7 @@ def sizes(raw: dict) -> dict[str, int]:
 class RoadmapLedger(Ledger):
     kind = "roadmap"
     releases = True
-    sections = ("milestones", "capacity", "launch_gate", "external_dependencies")
+    sections = ("milestones", "capacity", "launch_gate", "external_dependencies", "decisions")
 
     def parse(self, data: bytes | None, validate: bool = True) -> dict | None:
         """A ledger, cleaned: {valid, error, updated_at, tasks, decisions, raw}; None when it is not a ledger at all.
@@ -165,7 +165,9 @@ class RoadmapLedger(Ledger):
     def review_slots(self, raw: dict) -> int | None:
         capacity = raw.get("capacity") if isinstance(raw.get("capacity"), dict) else {}
         slots = capacity.get("review_slots_per_week")
-        return slots if isinstance(slots, int) and not isinstance(slots, bool) else None
+        if type(slots) is not int or not 1 <= slots <= RULES.MAX_WEEKLY:
+            return None  # never a negative or arbitrarily long number in a summary line
+        return slots
 
     def open_decisions(self, raw: dict) -> int:
         return sum(1 for item in raw.get("decisions") or [] if isinstance(item, dict) and item.get("status") == "open")

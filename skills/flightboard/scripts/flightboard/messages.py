@@ -338,7 +338,8 @@ LABELS: dict[str, dict[str, dict[str, str]]] = {
                       "bisect": "bisect in progress"},
         "source": {"ok": "up to date", "partial": "partial", "unreadable": "unreadable", "absent": "absent"},
         "section": {"milestones": "milestones", "capacity": "capacity", "launch_gate": "launch gate",
-                    "external_dependencies": "external dependencies", "statuses": "status words"},
+                    "external_dependencies": "external dependencies", "statuses": "status words",
+                    "decisions": "decisions"},
     },
     "fr": {
         "status": {"planned": "Prévue", "ready": "Prête", "in_progress": "En cours",
@@ -371,7 +372,8 @@ LABELS: dict[str, dict[str, dict[str, str]]] = {
                       "revert": "revert en cours", "bisect": "bisect en cours"},
         "source": {"ok": "à jour", "partial": "partielle", "unreadable": "illisible", "absent": "absente"},
         "section": {"milestones": "jalons", "capacity": "capacité", "launch_gate": "porte de lancement",
-                    "external_dependencies": "dépendances externes", "statuses": "mots de statut"},
+                    "external_dependencies": "dépendances externes", "statuses": "mots de statut",
+                    "decisions": "décisions"},
     },
 }
 

@@ -494,7 +494,7 @@ the board reads nothing and never looks at what a `.git` file names; it cannot t
 
 **Server.** It listens on `127.0.0.1` and on `[::1]` at the same port (a browser tries `::1` first for `localhost`, so
 no other program can answer there in its place), and checks every request before any work. It refuses a `Host` other
-than `127.0.0.1:<port>` or `localhost:<port>` (DNS rebinding), an `Origin` from elsewhere (`null` included), a
+than `127.0.0.1:<port>`, `localhost:<port>` or `[::1]:<port>` (DNS rebinding), an `Origin` from elsewhere (`null` included), a
 same-site or cross-site `Sec-Fetch-Site`, the state loaded as a script, an image or a frame (`Sec-Fetch-Dest`), any
 method but `GET` and `HEAD`, and any path but `/` and `/state.json`. A refused request never reads the repository.
 The repository is read at most once every 5 seconds, counted from the end of the last reading, however many pages are

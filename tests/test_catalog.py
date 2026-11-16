@@ -36,7 +36,7 @@ LABELLED = {
     "ledger": ("ok", "absent", "none", "writing", "too_big", "unreadable", "merging", "stale"),
     "operation": ("rebase", "merge", "cherry-pick", "revert", "bisect"),
     "source": ("ok", "partial", "unreadable", "absent"),
-    "section": ("milestones", "capacity", "launch_gate", "external_dependencies", "statuses"),
+    "section": ("milestones", "capacity", "launch_gate", "external_dependencies", "statuses", "decisions"),
 }
 
 
