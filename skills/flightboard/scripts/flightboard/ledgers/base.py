@@ -25,6 +25,16 @@ PROGRESS = {"planned": 0, "ready": 1, "in_progress": 2, "awaiting_review": 3, "d
 GOVERNED = ("owner", "reviewer")  # their tasks move only in main: a branch never decides for them
 OWNER = re.compile(r"[a-z][a-z0-9_-]{0,30}")
 PATH = re.compile(r"[A-Za-z0-9._-]{1,100}(?:/[A-Za-z0-9._-]{1,100}){0,9}")
+TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,39}")
+
+
+def shown(value: object) -> str:
+    """A value the ledger chose, quoted, only when it is a plain token: a diagnostic names ids, never free prose."""
+    if isinstance(value, str) and TOKEN.fullmatch(value):
+        return repr(value)
+    if type(value) is int and -10**9 <= value <= 10**9:
+        return repr(value)
+    return "(unexpected value)" if value is not None else "null"
 
 
 class NotALedger(ValueError):

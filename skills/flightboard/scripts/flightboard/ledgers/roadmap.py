@@ -63,7 +63,7 @@ def sizes(raw: dict) -> dict[str, int]:
 class RoadmapLedger(Ledger):
     kind = "roadmap"
     releases = True
-    sections = ("milestones", "capacity", "launch_gate", "external_dependencies")
+    sections = ("milestones", "capacity", "launch_gate", "external_dependencies", "decisions")
 
     def parse(self, data: bytes | None, validate: bool = True) -> dict | None:
         """A ledger, cleaned: {valid, error, updated_at, tasks, decisions, raw}; None when it is not a ledger at all.
