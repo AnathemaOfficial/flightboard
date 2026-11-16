@@ -8,7 +8,7 @@ repositories, stops a server, or infers a repository from an agent conversation.
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import ctypes
 from dataclasses import dataclass
 import json
@@ -410,8 +410,32 @@ def status(paths: Paths) -> dict:
             "supervisor_running": _alive(last.get("supervisor_pid")) if isinstance(last, dict) else None}
 
 
-def _copy_engine(paths: Paths) -> None:
-    """Copy the engine into a fresh folder, then swap it in whole: a failed copy keeps the previous engine intact."""
+class _RecoveryError(OSError):
+    """Installation recovery failed; keep the stop flag until the saved installation can be recovered."""
+
+
+def _restore_file(path: Path, previous: bytes | None) -> None:
+    """Restore an installation file exactly, without rewriting an unchanged file after an I/O failure."""
+    if previous is None:
+        path.unlink(missing_ok=True)
+        return
+    if path.exists() and path.read_bytes() == previous:
+        return
+    handle, temporary = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(handle, "wb") as stream:
+            stream.write(previous)
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+@contextmanager
+def _copy_engine(paths: Paths):
+    """Keep the previous engine until configuration and activation succeed; restore it on interruption too."""
+    previous, current = paths.root / "engine.previous", paths.root / "engine"
+    if previous.exists():
+        raise _RecoveryError(f"recover the saved engine at {previous} before installing again")
     staging = Path(tempfile.mkdtemp(prefix="engine-", dir=paths.root))
     try:
         for source in paths.source_scripts.rglob("*"):
@@ -421,20 +445,26 @@ def _copy_engine(paths: Paths) -> None:
             destination = staging / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, destination)
-        previous, current = paths.root / "engine.previous", paths.root / "engine"
-        if previous.exists():
-            shutil.rmtree(previous)
-        swapped = current.exists()
-        if swapped:
-            current.rename(previous)
+        had_engine = current.exists()
         try:
+            if had_engine:
+                current.rename(previous)
             staging.rename(current)
-        except OSError:
-            if swapped:  # put the engine that was there back before failing
-                previous.rename(current)
+            yield
+        except BaseException:
+            try:
+                if previous.exists():
+                    if current.exists():
+                        shutil.rmtree(current)
+                    previous.rename(current)
+                elif not had_engine and not staging.exists() and current.exists():
+                    shutil.rmtree(current)
+            except BaseException as error:
+                raise _RecoveryError(f"could not recover the installed engine; saved engine: {previous}") from error
             raise
-        if swapped:
-            shutil.rmtree(previous, ignore_errors=True)
+        else:
+            if had_engine:
+                shutil.rmtree(previous, ignore_errors=True)
     finally:
         if staging.exists():
             shutil.rmtree(staging, ignore_errors=True)
@@ -461,29 +491,47 @@ def install(paths: Paths, trust_engines=(), trust_python=()) -> dict:
     # Stop only this helper through its flag. Servers stay alive and will be adopted.
     was_disabled = paths.disabled.exists()
     paths.disabled.touch()
+    saved_files: dict[Path, bytes | None] = {}
+    committed = False
     try:
-        limit = time.monotonic() + 10
-        while True:
-            with singleton(paths) as acquired:
-                if acquired:
-                    # A last discovery may have completed while the stop flag was pending.
-                    settings = load_config(paths) if paths.config.exists() else initial
-                    _copy_engine(paths)
-                    for name, additions in (("trusted_engines", [*engines, paths.engine]),
-                                            ("trusted_python", runtimes)):
-                        settings[name] = list(dict.fromkeys([*settings[name], *(str(p.resolve()) for p in additions)]))
-                    settings["python"], settings["pythonw"] = str(runtime), str(windowless)
-                    for board in settings["boards"]:
-                        board["command"][0], board["command"][3] = str(runtime), str(paths.engine)
-                    save_config(settings, paths)
-                    break
-            if time.monotonic() >= limit:
-                raise ValueError("the supervisor is still running; disable it and retry install")
-            time.sleep(0.2)
-        enable(paths)
-    except Exception:
-        # An installation that fails must leave the previous autostart state, never a silent stop flag.
-        if not was_disabled:
+        with ExitStack() as transaction:
+            limit = time.monotonic() + 10
+            while True:
+                with singleton(paths) as acquired:
+                    if acquired:
+                        # A last discovery may have completed while the stop flag was pending.
+                        saved_files = {path: path.read_bytes() if path.exists() else None
+                                       for path in (paths.config, paths.startup_link)}
+                        settings = load_config(paths) if paths.config.exists() else initial
+                        transaction.enter_context(_copy_engine(paths))
+                        for name, additions in (("trusted_engines", [*engines, paths.engine]),
+                                                ("trusted_python", runtimes)):
+                            settings[name] = list(dict.fromkeys([*settings[name], *(str(p.resolve()) for p in additions)]))
+                        settings["python"], settings["pythonw"] = str(runtime), str(windowless)
+                        for board in settings["boards"]:
+                            board["command"][0], board["command"][3] = str(runtime), str(paths.engine)
+                        save_config(settings, paths)
+                        break
+                if time.monotonic() >= limit:
+                    raise ValueError("the supervisor is still running; disable it and retry install")
+                time.sleep(0.2)
+            # The new supervisor needs the singleton released before it can start.
+            enable(paths)
+            committed = True
+    except BaseException as error:
+        if committed:
+            raise  # interrupted backup cleanup must not undo an already activated installation
+        paths.disabled.touch()
+        try:
+            for path, previous in saved_files.items():
+                _restore_file(path, previous)
+        except BaseException as recovery:
+            raise _RecoveryError("could not recover the startup files; autostart remains disabled") from recovery
+        if isinstance(error, _RecoveryError):
+            raise  # never reactivate an installation whose engine could not be recovered
+        if was_disabled:
+            paths.disabled.touch()
+        else:
             paths.disabled.unlink(missing_ok=True)
         raise
     return settings

@@ -112,6 +112,12 @@ def _is_count(value: Any, minimum: int, maximum: int | None = None) -> bool:
         and (maximum is None or value <= maximum)
 
 
+def _shown_list(values: list[str]) -> str:
+    """Keep identifiers and plain tokens readable without quoting arbitrary prose."""
+    return ", ".join(value if TOKEN.fullmatch(value) or TASK_ID.fullmatch(value) or EXTERNAL_ID.fullmatch(value)
+                     else shown(value) for value in values)
+
+
 def _check_keys(obj: dict, required: tuple, optional: tuple, where: str, errors: list[str]) -> None:
     missing = [key for key in required if key not in obj]
     unknown = sorted(str(key) for key in set(obj) - set(required) - set(optional))
@@ -451,7 +457,7 @@ def _check_statuses(tasks: dict, externals: dict, errors: list[str]) -> None:
         if status in ("ready", "in_progress", "awaiting_review", "done"):
             unmet = [d for d in deps if not _dep_ok(d, tasks, externals, strict=status == "done")]
             if unmet:
-                errors.append(f"{tid}: status {status} while {', '.join(unmet)} is not done")
+                errors.append(f"{tid}: status {status} while {_shown_list(unmet)} is not done")
         if status == "in_progress" and task.get("size") == "L":
             errors.append(f"{tid}: a size L task must be split before it starts")
         if status in ("blocked", "dropped") and not _is_text(task.get("notes_fr")):
@@ -469,12 +475,12 @@ def _check_evidence(tid: str, task: dict, status: Any, errors: list[str]) -> Non
         if not _evidence_kinds(task):
             errors.append(f"{tid}: done without evidence")
         elif missing := [k for k in expected if k not in _evidence_kinds(task)]:
-            errors.append(f"{tid}: expected evidence missing {', '.join(missing)}")
+            errors.append(f"{tid}: expected evidence missing {_shown_list(missing)}")
     if status == "awaiting_review":
         if "review" not in expected or not any(k in PRODUCT_EVIDENCE for k in expected):
             errors.append(f"{tid}: awaiting review is for a task that delivers a product and expects a review")
         elif missing := [k for k in expected if k != "review" and k not in _evidence_kinds(task)]:
-            errors.append(f"{tid}: awaiting review without the evidence {', '.join(missing)}")
+            errors.append(f"{tid}: awaiting review without the evidence {_shown_list(missing)}")
 
 
 def _cited(milestone: dict) -> list[str]:

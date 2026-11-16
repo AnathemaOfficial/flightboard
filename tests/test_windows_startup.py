@@ -471,6 +471,167 @@ class StartupTest(unittest.TestCase):
             startup.install(self.paths)
         self.assertTrue(self.paths.disabled.exists())  # the owner's disable stays in force
 
+    def test_interrupted_engine_swap_restores_the_previous_installation(self) -> None:
+        before = self.paths.engine.read_bytes()
+        rename = Path.rename
+
+        for error in (KeyboardInterrupt, OSError):
+            with self.subTest(error=error.__name__):
+                def fail_swap(source, target):
+                    if source.name.startswith("engine-"):
+                        raise error("swap interrupted")
+                    return rename(source, target)
+
+                with mock.patch.object(startup.sys, "executable", str(self.python)), \
+                        mock.patch.object(startup, "singleton", return_value=contextlib.nullcontext(True)), \
+                        mock.patch.object(Path, "rename", fail_swap), \
+                        mock.patch.object(startup, "enable") as enable, self.assertRaises(error):
+                    startup.install(self.paths)
+                self.assertEqual(self.paths.engine.read_bytes(), before)
+                self.assertFalse(self.paths.disabled.exists())
+                self.assertFalse((self.paths.root / "engine.previous").exists())
+                self.assertFalse(list(self.paths.root.glob("engine-*")))
+                enable.assert_not_called()
+
+    def test_config_write_failure_restores_the_engine_and_existing_config(self) -> None:
+        startup.save_config(self.settings, self.paths)
+        before_engine, before_config = self.paths.engine.read_bytes(), self.paths.config.read_bytes()
+        with mock.patch.object(startup.sys, "executable", str(self.python)), \
+                mock.patch.object(startup, "singleton", return_value=contextlib.nullcontext(True)), \
+                mock.patch.object(startup, "save_config", side_effect=OSError("config locked")), \
+                mock.patch.object(startup, "enable") as enable, self.assertRaises(OSError):
+            startup.install(self.paths)
+        self.assertEqual(self.paths.engine.read_bytes(), before_engine)
+        self.assertEqual(self.paths.config.read_bytes(), before_config)
+        self.assertFalse(self.paths.disabled.exists())
+        self.assertFalse((self.paths.root / "engine.previous").exists())
+        enable.assert_not_called()
+
+    def test_interruption_after_moving_the_old_engine_still_restores_it(self) -> None:
+        before = self.paths.engine.read_bytes()
+        rename = Path.rename
+
+        def interrupt_after_move(source, target):
+            result = rename(source, target)
+            if source == self.paths.engine.parent:
+                raise KeyboardInterrupt()
+            return result
+
+        with mock.patch.object(startup.sys, "executable", str(self.python)), \
+                mock.patch.object(startup, "singleton", return_value=contextlib.nullcontext(True)), \
+                mock.patch.object(Path, "rename", interrupt_after_move), \
+                mock.patch.object(startup, "enable") as enable, self.assertRaises(KeyboardInterrupt):
+            startup.install(self.paths)
+        self.assertEqual(self.paths.engine.read_bytes(), before)
+        self.assertFalse(self.paths.disabled.exists())
+        self.assertFalse((self.paths.root / "engine.previous").exists())
+        enable.assert_not_called()
+
+    def test_interrupted_backup_cleanup_does_not_undo_a_committed_installation(self) -> None:
+        startup.save_config(self.settings, self.paths)
+        before = self.paths.engine.read_bytes()
+        remove = startup.shutil.rmtree
+
+        def interrupt_cleanup(path, *args, **kwargs):
+            if path == self.paths.root / "engine.previous":
+                raise KeyboardInterrupt()
+            return remove(path, *args, **kwargs)
+
+        def activate(paths):
+            paths.disabled.unlink(missing_ok=True)
+
+        with mock.patch.object(startup.sys, "executable", str(self.python)), \
+                mock.patch.object(startup, "singleton", return_value=contextlib.nullcontext(True)), \
+                mock.patch.object(startup.shutil, "rmtree", side_effect=interrupt_cleanup), \
+                mock.patch.object(startup, "enable", side_effect=activate), self.assertRaises(KeyboardInterrupt):
+            startup.install(self.paths)
+        self.assertNotEqual(self.paths.engine.read_bytes(), before)
+        self.assertIn(str(self.pythonw), startup.load_config(self.paths)["trusted_python"])
+        self.assertFalse(self.paths.disabled.exists())
+        self.assertEqual((self.paths.root / "engine.previous" / "flightboard.py").read_bytes(), before)
+
+    def test_failed_activation_restores_config_shortcut_engine_and_disabled_state(self) -> None:
+        for was_disabled in (False, True):
+            with self.subTest(disabled=was_disabled):
+                startup.save_config(self.settings, self.paths)
+                self.paths.startup_link.parent.mkdir(exist_ok=True)
+                self.paths.startup_link.write_bytes(b"previous shortcut")
+                if was_disabled:
+                    self.paths.disabled.touch()
+                before_engine, before_config = self.paths.engine.read_bytes(), self.paths.config.read_bytes()
+
+                def fail_activation(paths):
+                    paths.disabled.unlink(missing_ok=True)
+                    paths.startup_link.write_bytes(b"replacement shortcut")
+                    raise OSError("supervisor launch failed")
+
+                with mock.patch.object(startup.sys, "executable", str(self.python)), \
+                        mock.patch.object(startup, "singleton", return_value=contextlib.nullcontext(True)), \
+                        mock.patch.object(startup, "enable", side_effect=fail_activation), self.assertRaises(OSError):
+                    startup.install(self.paths)
+                self.assertEqual(self.paths.engine.read_bytes(), before_engine)
+                self.assertEqual(self.paths.config.read_bytes(), before_config)
+                self.assertEqual(self.paths.startup_link.read_bytes(), b"previous shortcut")
+                self.assertEqual(self.paths.disabled.exists(), was_disabled)
+                self.assertFalse((self.paths.root / "engine.previous").exists())
+
+    def test_failed_first_activation_removes_new_installation_artifacts(self) -> None:
+        self.paths.engine.unlink()
+        self.paths.engine.parent.rmdir()
+        self.paths.startup_link.parent.mkdir()
+
+        def fail_activation(paths):
+            paths.disabled.unlink(missing_ok=True)
+            paths.startup_link.write_bytes(b"new shortcut")
+            raise OSError("activation failed")
+
+        with mock.patch.object(startup.sys, "executable", str(self.python)), \
+                mock.patch.object(startup, "singleton", return_value=contextlib.nullcontext(True)), \
+                mock.patch.object(startup, "enable", side_effect=fail_activation), self.assertRaises(OSError):
+            startup.install(self.paths)
+        self.assertFalse(self.paths.engine.parent.exists())
+        self.assertFalse(self.paths.config.exists())
+        self.assertFalse(self.paths.startup_link.exists())
+        self.assertFalse(self.paths.disabled.exists())
+
+    def test_failed_rollback_keeps_autostart_disabled_and_the_previous_engine(self) -> None:
+        before = self.paths.engine.read_bytes()
+        rename = Path.rename
+
+        def fail_restore(source, target):
+            if source.name == "engine.previous":
+                raise OSError("previous engine locked")
+            return rename(source, target)
+
+        with mock.patch.object(startup.sys, "executable", str(self.python)), \
+                mock.patch.object(startup, "singleton", return_value=contextlib.nullcontext(True)), \
+                mock.patch.object(Path, "rename", fail_restore), \
+                mock.patch.object(startup, "save_config", side_effect=OSError("config locked")), \
+                mock.patch.object(startup, "enable") as enable, self.assertRaisesRegex(OSError, "recover"):
+            startup.install(self.paths)
+        self.assertEqual((self.paths.root / "engine.previous" / "flightboard.py").read_bytes(), before)
+        self.assertTrue(self.paths.disabled.exists())
+        enable.assert_not_called()
+
+    def test_reinstall_from_the_copied_engine_keeps_its_files_intact(self) -> None:
+        startup.save_config(self.settings, self.paths)
+        self.paths.helper.write_bytes(b"# copied helper\n")
+        module = self.paths.engine.parent / "flightboard" / "module.py"
+        module.parent.mkdir()
+        module.write_bytes(b"# copied module\n")
+        before = {path.relative_to(self.paths.engine.parent): path.read_bytes()
+                  for path in self.paths.engine.parent.rglob("*") if path.is_file()}
+        paths = startup.Paths(self.paths.root, self.paths.engine.parent, self.paths.startup_link)
+        with mock.patch.object(startup.sys, "executable", str(self.python)), \
+                mock.patch.object(startup, "singleton", return_value=contextlib.nullcontext(True)), \
+                mock.patch.object(startup, "enable"):
+            startup.install(paths)
+        after = {path.relative_to(paths.engine.parent): path.read_bytes()
+                 for path in paths.engine.parent.rglob("*") if path.is_file()}
+        self.assertEqual(after, before)
+        self.assertFalse((paths.root / "engine.previous").exists())
+        self.assertFalse(list(paths.root.glob("engine-*")))
+
     @unittest.skipUnless(os.name == "nt", "install needs the Windows python.exe/pythonw.exe layout")
     def test_a_failed_engine_copy_leaves_the_previous_engine_intact(self) -> None:
         before = self.paths.engine.read_text(encoding="utf-8")
