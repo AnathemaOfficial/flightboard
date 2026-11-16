@@ -27,6 +27,7 @@ from . import view as VIEW
 
 HOST = "127.0.0.1"
 MIN_INTERVAL = 5.0  # seconds between two readings of the repository, whatever the number of open pages
+MAX_CONNECTIONS = 32  # concurrent accepted connections; past this one gets an immediate 503, never a thread
 REQUEST_TIMEOUT = 10
 PATHS = {"/": ("document",), "/state.json": ("empty", "document")}  # each path, with the Sec-Fetch-Dest it accepts
 COMMON_HEADERS = (("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff"),
@@ -154,6 +155,27 @@ class Server(http.server.ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = False
     allow_reuse_port = False
+    capacity = threading.BoundedSemaphore(MAX_CONNECTIONS)  # an idle flood never spawns threads without end
+
+    def process_request(self, request, client_address) -> None:
+        if not self.capacity.acquire(blocking=False):
+            try:
+                request.sendall(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            except OSError:
+                pass
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.capacity.release()
+            raise
+
+    def process_request_thread(self, request, client_address) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.capacity.release()
 
     def server_bind(self) -> None:
         exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)

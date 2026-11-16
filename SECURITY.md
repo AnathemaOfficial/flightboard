@@ -50,6 +50,8 @@ they are not an isolation boundary against a process that can rewrite `.git` whi
   path. Other values, includes, hooks and unknown settings remain refused.
 - **The page is served to this computer only** (`127.0.0.1` and `[::1]`), after Host, Origin and Sec-Fetch checks
   that stop DNS rebinding, other sites and other local pages.
+  Both listeners share a limit of 32 accepted connections; additional connections receive HTTP 503 without
+  starting another handler thread.
 - **Only the page's own script runs**: a Content Security Policy names it by its SHA-256 and requires Trusted Types;
   every text read in the repository becomes a text node, never markup.
 - **The lines agents read carry no free text from a branch.** `--resume` keeps verbs, ids, names and counts, and a

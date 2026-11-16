@@ -384,7 +384,7 @@ def folder_state(path: Path, root: Path) -> str:
     return _folder_state(path, root)
 
 
-def _linked_entry(folder: Path, root: Path, prefix: str = "", cap: int | None = None) -> str:
+def _linked_entry(folder: Path, root: Path, prefix: str = "", cap: int | None = None, budget=None) -> str:
     """"link" when one direct entry of folder (whose name starts with prefix, in any case: a volume may ignore case)
     is a link, a junction or cannot be told, "special" when one is a pipe, a socket or a device (git would wait on
     it), "many" when the folder holds more than cap entries; "" when it holds none of these, or is absent. A link on
@@ -393,6 +393,8 @@ def _linked_entry(folder: Path, root: Path, prefix: str = "", cap: int | None = 
     entry gone since the listing is skipped, and a folder that fails to list is looked at again a little later
     (Windows denies a folder git is deleting), refused only when every look fails."""
     for wait in LIST_WAITS:
+        if budget is not None:
+            budget.check()
         if wait:
             time.sleep(wait)
         if _folder_state(folder, root) != "plain":
@@ -402,6 +404,11 @@ def _linked_entry(folder: Path, root: Path, prefix: str = "", cap: int | None = 
                 for count, entry in enumerate(found):
                     if cap is not None and count >= cap:
                         return "many"
+                    if budget is not None:
+                        budget.check()
+                        # Preinspection must fit the remaining quota; the canonical walk charges it once.
+                        if count >= budget.left:
+                            return "many"
                     if not entry.name.casefold().startswith(prefix):
                         continue
                     try:
@@ -728,7 +735,7 @@ def git_dir_problem(root: Path, remote: str = "origin", budget: Budget | None = 
                *((name, None) for name in (*BRANCH_FOLDERS, f"refs/remotes/{remote}", f"logs/refs/remotes/{remote}"))]
     for name, cap in folders:
         budget.check()
-        found = _linked_entry(common.joinpath(*name.split("/")), root, cap=cap)
+        found = _linked_entry(common.joinpath(*name.split("/")), root, cap=cap, budget=budget)
         if found:
             return f"{found}:{name}"
     found = _linked_entry(common, root, SHARED_INDEX, MAX_GIT_FOLDER_ENTRIES)

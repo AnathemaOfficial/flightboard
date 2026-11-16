@@ -17,16 +17,35 @@ _INVISIBLE_RANGES = ((0x034F, 0x034F), (0x115F, 0x1160), (0x17B4, 0x17B5), (0x18
                      (0xE0100, 0xE01EF))
 _INVISIBLE = re.compile("[" + "".join(chr(low) if low == high else f"{chr(low)}-{chr(high)}"
                                       for low, high in _INVISIBLE_RANGES) + "]")
+CLEAN_CHUNK = 4096  # a huge value is walked in pieces, and padding never hides the text after it
 
 
 def clean(value: object, limit: int = 200) -> str:
     """Text safe to show: control, format (bidi, zero-width), private and unassigned characters become spaces,
-    spaces collapse, and the text is cut at limit."""
-    if value is None:
+    spaces collapse, and the text is cut at limit; padding no longer hides the text that follows it."""
+    if value is None or limit <= 0:
         return ""
-    raw = _INVISIBLE.sub(" ", str(value)[:limit * 4 + 64])  # a huge text is cut before the slow pass
-    visible = "".join(" " if unicodedata.category(char).startswith("C") else char for char in raw)
-    return " ".join(visible.split())[:limit]
+    visible: list[str] = []
+    separated = False
+    text = str(value)
+    for start in range(0, len(text), CLEAN_CHUNK):
+        piece = _INVISIBLE.sub(" ", text[start:start + CLEAN_CHUNK])
+        if not piece.strip():
+            separated = bool(visible)
+            continue  # padding only: no visible word to keep, and nothing to scan one character at a time
+        for char in piece:
+            if char.isspace() or unicodedata.category(char).startswith("C"):
+                separated = bool(visible)
+                continue
+            if separated:
+                visible.append(" ")
+                if len(visible) == limit:
+                    return "".join(visible)
+            visible.append(char)
+            separated = False
+            if len(visible) == limit:
+                return "".join(visible)
+    return "".join(visible)
 
 
 def safe_branch(value: object) -> str:

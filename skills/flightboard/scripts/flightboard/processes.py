@@ -16,19 +16,26 @@ CHUNK = 65_536
 ERROR_BYTES = 65_536
 
 
-def _feed(stream, data: bytes) -> None:
+def _feed(stream, data: bytes, done: threading.Event, broken: threading.Event) -> None:
     try:
-        stream.write(data)
+        pending = memoryview(data)
+        while pending:
+            written = stream.write(pending)
+            if not isinstance(written, int) or not 0 < written <= len(pending):
+                raise OSError("the input pipe made no valid write progress")
+            pending = pending[written:]
     except (OSError, ValueError):
-        pass
+        broken.set()
     finally:
         try:
             stream.close()
         except (OSError, ValueError):
-            pass
+            broken.set()
+        done.set()
 
 
-def _drain(stream, chunks: list[bytes], limit: int, over: threading.Event, done: threading.Event) -> None:
+def _drain(stream, chunks: list[bytes], limit: int, over: threading.Event, done: threading.Event,
+           broken: threading.Event) -> None:
     size = 0
     try:
         while chunk := stream.read1(CHUNK):
@@ -37,13 +44,13 @@ def _drain(stream, chunks: list[bytes], limit: int, over: threading.Event, done:
                 over.set()
                 return
             chunks.append(chunk)
-    except (OSError, ValueError):
-        pass
+    except (OSError, ValueError):  # incomplete or prematurely closed output never becomes a complete result
+        broken.set()
     finally:
         try:
             stream.close()
         except (OSError, ValueError):
-            pass
+            broken.set()
         done.set()
 
 
@@ -60,21 +67,26 @@ def run(command: list[str], *, env: dict[str, str], cwd: str, stdin: bytes | Non
                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     output: list[bytes] = []
     errors: list[bytes] = []
-    over, out_done, err_done = threading.Event(), threading.Event(), threading.Event()
-    threads = [threading.Thread(target=_drain, args=(proc.stdout, output, limit, over, out_done), daemon=True),
-               threading.Thread(target=_drain, args=(proc.stderr, errors, ERROR_BYTES, over, err_done), daemon=True)]
+    over, out_done, err_done, broken = threading.Event(), threading.Event(), threading.Event(), threading.Event()
+    feed_done = threading.Event()
+    threads = [threading.Thread(target=_drain, args=(proc.stdout, output, limit, over, out_done, broken), daemon=True),
+               threading.Thread(target=_drain, args=(proc.stderr, errors, ERROR_BYTES, over, err_done, broken),
+                                daemon=True)]
     if stdin is not None:
-        threads.append(threading.Thread(target=_feed, args=(proc.stdin, stdin), daemon=True))
+        threads.append(threading.Thread(target=_feed, args=(proc.stdin, stdin, feed_done, broken), daemon=True))
+    else:
+        feed_done.set()
+    complete = (out_done, err_done, feed_done)
     for thread in threads:
         thread.start()
     code = None
     try:
-        while not over.is_set() and not (out_done.is_set() and err_done.is_set()):
+        while not over.is_set() and not broken.is_set() and not all(done.is_set() for done in complete):
             left = deadline - time.monotonic()
             if left <= 0:
                 break
             over.wait(min(left, 0.01))
-        if not over.is_set() and out_done.is_set() and err_done.is_set():
+        if not over.is_set() and not broken.is_set() and all(done.is_set() for done in complete):
             code = proc.wait(max(0.0, deadline - time.monotonic()))
     except subprocess.TimeoutExpired:
         pass
@@ -91,4 +103,7 @@ def run(command: list[str], *, env: dict[str, str], cwd: str, stdin: bytes | Non
                 pass
         for thread in threads:
             thread.join(max(0.0, until - time.monotonic()))
+    # Stopping an oversized child can break its input pipe; keep the explicit overflow failure in that case.
+    if broken.is_set() and not over.is_set():
+        raise OSError("a pipe of the child could not be transferred completely")
     return code, b"".join(output), b"".join(errors), over.is_set()

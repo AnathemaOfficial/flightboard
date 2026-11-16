@@ -350,7 +350,8 @@ status = "done"
 ```
 
 Son validateur est petit et structurel : identifiants uniques, statuts qui se rattachent à ceux de flightboard,
-dépendances qui existent, aucun cycle. Une branche dont le fichier échoue est listée, jamais appliquée ; de même pour
+dépendances qui existent, aucun cycle. Chaque tâche peut déclarer au plus 100 dépendances ; les doublons sont refusés.
+Une branche dont le fichier échoue est listée, jamais appliquée ; de même pour
 une branche qui déclare plus de 2000 tâches, lue en partie. Un fichier de tâches inutilisable dit pourquoi sur la
 page, et `--resume` dit qu'il l'est ; dans l'histoire de main, une version sans une seule tâche utilisable (tous les
 statuts inconnus, par exemple) est sautée, jamais lue comme si toutes les tâches avaient disparu. « Prochaines à
@@ -509,6 +510,8 @@ avec un plafond de 8 secondes par commande git. Le navigateur interrompt une req
 8 secondes (20 par défaut) ; le délai socket de 10 secondes du serveur borne
 séparément la réception HTTP. Une lecture complète ratée affiche une erreur explicite et retire les anciens verdicts
 des sessions jusqu'au prochain succès. Une fiche de tâche ouverte est actualisée ou marquée indisponible.
+Les serveurs IPv4 et IPv6 partagent un plafond de 32 connexions admises ; les connexions supplémentaires reçoivent
+HTTP 503 sans démarrer un autre thread de traitement.
 
 **Page.** Une politique de sécurité (CSP) qui part de `default-src 'none'` n'autorise que le script de la page, désigné
 par son empreinte SHA-256, et ses propres requêtes (`connect-src 'self'`) ; Trusted Types est exigé, aucun cadre n'est
