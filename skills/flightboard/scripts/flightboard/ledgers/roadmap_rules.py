@@ -150,7 +150,7 @@ def _downstream(tasks: dict, start: str) -> set[str]:
 
 
 def _track(milestones: dict, mid: Any) -> str | None:
-    return TRACKS.get(milestones[mid]["data"].get("track")) if mid in milestones else None
+    return TRACKS.get(milestones[mid]["data"].get("track")) if isinstance(mid, str) and mid in milestones else None
 
 
 # ---------------------------------------------------------------- validation
@@ -313,8 +313,9 @@ def _check_tasks(items: list, milestones: dict, errors: list[str]) -> dict[str, 
             continue
         tasks[tid] = task
         _check_keys(task, TASK_REQUIRED, TASK_OPTIONAL, tid, errors)
-        if task.get("milestone") not in milestones:
-            errors.append(f"{tid}: unknown milestone {shown(task.get('milestone'))}")
+        declared = task.get("milestone")  # a list here is not a ref: name it instead of raising a TypeError
+        if not isinstance(declared, str) or declared not in milestones:
+            errors.append(f"{tid}: unknown milestone {shown(declared)}")
         _check_task_enums(task, tid, errors)
         _check_task_lists(task, tid, errors)
         if "evidence" in task:
@@ -376,12 +377,13 @@ def _check_evidence_entries(entries: Any, tid: str, errors: list[str]) -> None:
 
 
 def _rank(milestones: dict, mid: Any) -> int | None:
-    return milestones[mid]["rank"] if mid in milestones else None
+    return milestones[mid]["rank"] if isinstance(mid, str) and mid in milestones else None
 
 
 def _start_rank(task: dict, milestones: dict) -> int | None:
     early = task.get("start_early")
-    return _rank(milestones, early) if early in milestones else _rank(milestones, task.get("milestone"))
+    return _rank(milestones, early) if isinstance(early, str) and early in milestones \
+        else _rank(milestones, task.get("milestone"))
 
 
 def _check_dependencies(tasks: dict, externals: dict, milestones: dict, errors: list[str]) -> None:
@@ -406,7 +408,7 @@ def _check_dependencies(tasks: dict, externals: dict, milestones: dict, errors: 
 
 def _check_start_early(tid: str, task: dict, tasks: dict, milestones: dict, errors: list[str]) -> None:
     early, here = task["start_early"], _rank(milestones, task.get("milestone"))
-    if early not in milestones or here is None or milestones[early]["rank"] >= here:
+    if not (isinstance(early, str) and early in milestones) or here is None or milestones[early]["rank"] >= here:
         errors.append(f"{tid}: start_early must name a milestone before its own")
         return
     for dep in _task_deps(tasks, tid):
@@ -499,7 +501,7 @@ def _check_exits(milestones: dict, tasks: dict, errors: list[str]) -> None:
             continue
         milestone, cited = info["data"], _cited(info["data"])
         for tid in cited:
-            if tid not in tasks:
+            if not isinstance(tid, str) or tid not in tasks:
                 errors.append(f"milestone {mid}: an exit criterion cites an unknown task {shown(tid)}")
             elif tasks[tid].get("milestone") != mid:
                 errors.append(f"milestone {mid}: an exit criterion cites {tid}, of another milestone")
@@ -602,7 +604,7 @@ def _check_decision(dec: dict, did: str, tasks: dict, errors: list[str]) -> None
     status, record, task = dec.get("status"), dec.get("record"), dec.get("task")
     if status not in DECISION_STATUSES:
         errors.append(f"{did}: unknown status {shown(status)}")
-    if task is not None and task not in tasks:
+    if task is not None and (not isinstance(task, str) or task not in tasks):
         errors.append(f"{did}: unknown task {shown(task)}")
     if status in ("adopted", "superseded"):
         if not _is_date(dec.get("date")):
@@ -610,10 +612,10 @@ def _check_decision(dec: dict, did: str, tasks: dict, errors: list[str]) -> None
         if not (isinstance(record, str) and RECORD.fullmatch(record)):
             errors.append(f"{did}: an adopted decision needs its record docs/decisions/NNNN-title.md")
         _check_source(dec.get("source"), did, errors)
-        if status == "adopted" and task in tasks and tasks[task].get("status") != "done":
+        if status == "adopted" and isinstance(task, str) and task in tasks and tasks[task].get("status") != "done":
             errors.append(f"{did}: adopted while its task {task} is not done")
     if status == "open":
-        if task not in tasks:
+        if not isinstance(task, str) or task not in tasks:
             errors.append(f"{did}: an open decision must cite the owner's task that settles it")
         elif tasks[task].get("owner") != "owner":
             errors.append(f"{did}: the task {task} that settles it must belong to owner")

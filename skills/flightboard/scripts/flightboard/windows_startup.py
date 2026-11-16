@@ -304,6 +304,8 @@ def cycle(settings: dict, paths: Paths, current: dict | None = None, *, detached
             state = {"name": board["name"], "state": "listening" if listeners else "process_without_listener",
                      "port": board["port"], "processes": [
                          {"pid": p["ProcessId"], "created": p.get("CreationDate")} for p in processes]}
+        elif paths.disabled.exists():  # disabled while this cycle ran: no board starts
+            state = {"name": board["name"], "state": "disabled"}
         else:
             state = launch(board, paths, capture_output=False) if detached else launch(board, paths)
         states.append(state)

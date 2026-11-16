@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import date
 from hashlib import sha256
 from collections import Counter
 from typing import Any
@@ -25,6 +26,8 @@ PROGRESS = {"planned": 0, "ready": 1, "in_progress": 2, "awaiting_review": 3, "d
 GOVERNED = ("owner", "reviewer")  # their tasks move only in main: a branch never decides for them
 OWNER = re.compile(r"[a-z][a-z0-9_-]{0,30}")
 PATH = re.compile(r"[A-Za-z0-9._-]{1,100}(?:/[A-Za-z0-9._-]{1,100}){0,9}")
+DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+MAX_DEPENDENCIES = 100  # a task file past this is refused: its dependency list is not a decision input any more
 TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,39}")
 
 
@@ -67,8 +70,20 @@ def texts(value: object, count: int, limit: int) -> list[str]:
 
 
 def dependencies(value: object) -> list[str]:
-    """Dependency ids are decision inputs: preserve every id, without display truncation."""
-    return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+    """Dependency ids are decision inputs: every distinct id, in order, within one bounded list."""
+    found = [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+    return list(dict.fromkeys(found))[:MAX_DEPENDENCIES]
+
+
+def plain_date(value: object) -> str:
+    """A YYYY-MM-DD date that exists in the calendar (2024-02-31 does not), or "" when it cannot be shown as a fact."""
+    if not isinstance(value, str) or not DATE.fullmatch(value):
+        return ""
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return ""
+    return value
 
 
 def task_identity(values: dict) -> str:
@@ -86,8 +101,8 @@ def safe_path(text: object) -> str | None:
     """A ledger path relative to the repository, "/"-separated and plain (no "..", no drive, no stream), or None."""
     if not isinstance(text, str) or not PATH.fullmatch(text):
         return None
-    if any(part in (".", "..") or part.lower() == ".git" for part in text.split("/")):
-        return None  # a ledger is a file of the work tree, never one of git's own
+    if any(part in (".", "..") or part.rstrip(". ").lower() == ".git" for part in text.split("/")):
+        return None  # a ledger is a file of the work tree, never one of git's own (Windows drops a trailing dot)
     return text
 
 

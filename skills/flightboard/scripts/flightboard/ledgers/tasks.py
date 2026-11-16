@@ -29,7 +29,8 @@ import tomllib
 from typing import Any
 
 from ..text import clean
-from .base import OWNER, STATUSES, Ledger, NotALedger, dependencies, read_json, shown, task_identity, texts
+from .base import (MAX_DEPENDENCIES, OWNER, STATUSES, Ledger, NotALedger, dependencies, plain_date, read_json, shown,
+                   task_identity, texts)
 
 MAX_TASK_FILE_BYTES = 2_000_000
 MAX_TASKS = 2000  # as the roadmap ledger's validator: a branch declaring more is read in part, never applied
@@ -109,6 +110,13 @@ def _check_task(item: Any, index: int, words: dict[str, str], milestones: dict[s
     for key in ("depends_on", "acceptance"):
         if key in item and not (isinstance(item[key], list) and all(isinstance(v, str) for v in item[key])):
             errors.append(f"{tid}: {key} must be a list of texts")
+    names = item.get("depends_on")
+    if isinstance(names, list):
+        plain = [name for name in names if isinstance(name, str)]
+        if len(plain) != len(set(plain)):
+            errors.append(f"{tid}: a dependency is declared twice")
+        elif len(plain) > MAX_DEPENDENCIES:
+            errors.append(f"{tid}: at most {MAX_DEPENDENCIES} dependencies")
     return (tid, status) if status is not None else None
 
 
@@ -145,7 +153,7 @@ def check(raw: dict) -> tuple[list[str], dict[str, tuple[dict, str]]]:
     errors: list[str] = []
     if "version" in raw and raw["version"] != 1:
         errors.append("version must be 1")
-    if "updated_at" in raw and not (isinstance(raw["updated_at"], str) and DATE.fullmatch(raw["updated_at"])):
+    if "updated_at" in raw and not plain_date(raw["updated_at"]):
         errors.append("updated_at must be a YYYY-MM-DD date")
     words, milestones = _mapping(raw, errors), _milestones(raw, errors)
     found: dict[str, tuple[dict, str]] = {}
@@ -198,7 +206,7 @@ class TasksLedger(Ledger):
         tasks = {tid: _task(item, status) for tid, (item, status) in found.items()}
         updated = raw.get("updated_at")
         return {"valid": validate and not errors, "error": clean(errors[0], 240) if errors else "",
-                "updated_at": updated if isinstance(updated, str) and DATE.fullmatch(updated) else "",
+                "updated_at": plain_date(updated),
                 "tasks": tasks, "decisions": {}, "raw": raw}
 
     def milestone_titles(self, raw: dict) -> list[tuple[str, str]]:

@@ -13,7 +13,8 @@ from datetime import timedelta
 
 from ..text import clean
 from . import roadmap_rules as RULES
-from .base import MAX_LEDGER_BYTES, Ledger, NotALedger, countable, dependencies, milestone_row, read_json, task_identity, texts
+from .base import (MAX_LEDGER_BYTES, Ledger, NotALedger, countable, dependencies, milestone_row, plain_date, read_json,
+                   task_identity, texts)
 
 # What the validator iterates over: its time grows with tasks times dependencies, exit-criteria citations times
 # dependencies and external dependencies times tasks. A ledger past any of these is read but not validated, so never
@@ -90,11 +91,14 @@ class RoadmapLedger(Ledger):
                     and isinstance(item.get("status"), str) and item["status"] in RULES.STATUSES \
                     and item["id"] not in tasks:
                 tasks[item["id"]] = _task(item)
-        if not tasks:
-            return None
         decisions = {item["id"]: _decision(item) for item in (raw.get("decisions") or [])[:MAX_READ_TASKS]
                      if isinstance(item, dict) and isinstance(item.get("id"), str)
                      and RULES.DECISION_ID.fullmatch(item["id"])}
+        if not tasks:  # a ledger shape with nothing to read: named as invalid, never silently as absent
+            if raw.get("schema_version") != RULES.SCHEMA_VERSION:
+                return None  # nothing declares this a roadmap ledger: it is no ledger at all
+            return {"valid": False, "error": "ledger: no task declared",
+                    "updated_at": plain_date(raw.get("updated_at")), "tasks": {}, "decisions": decisions, "raw": raw}
         errors: list[str] = []
         over = [name for name, count in sizes(raw).items() if count > MAX_VALIDATED[name]]
         if validate and over:
@@ -106,7 +110,7 @@ class RoadmapLedger(Ledger):
                 errors = ["the validator could not read it"]
         updated = raw.get("updated_at")
         return {"valid": validate and not errors, "error": clean(errors[0], 240) if errors else "",
-                "updated_at": updated if isinstance(updated, str) and RULES.DATE.fullmatch(updated) else "",
+                "updated_at": plain_date(updated),
                 "tasks": tasks, "decisions": decisions, "raw": raw}
 
     def _forecast(self, raw: dict) -> dict[str, dict]:
@@ -141,8 +145,8 @@ class RoadmapLedger(Ledger):
     def plan(self, raw: dict, milestones: list[dict], main: dict[str, dict]) -> list[dict]:
         """The plan as a step line: the active tasks of every milestone, due at its planned end."""
         capacity = raw.get("capacity") if isinstance(raw.get("capacity"), dict) else {}
-        start = capacity.get("start_date")
-        if not isinstance(start, str) or not RULES.DATE.fullmatch(start):
+        start = plain_date(capacity.get("start_date"))
+        if not start:
             return []
         points, total, total_10 = [{"at": start, "all": 0, "v10": 0}], 0, 0
         for milestone in milestones:

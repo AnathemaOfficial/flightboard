@@ -28,7 +28,8 @@ def _feed(stream, data: bytes) -> None:
             pass
 
 
-def _drain(stream, chunks: list[bytes], limit: int, over: threading.Event, done: threading.Event) -> None:
+def _drain(stream, chunks: list[bytes], limit: int, over: threading.Event, done: threading.Event,
+           broken: threading.Event) -> None:
     size = 0
     try:
         while chunk := stream.read1(CHUNK):
@@ -37,8 +38,10 @@ def _drain(stream, chunks: list[bytes], limit: int, over: threading.Event, done:
                 over.set()
                 return
             chunks.append(chunk)
-    except (OSError, ValueError):
+    except ValueError:  # the stream was closed under us: nothing more to read
         pass
+    except OSError:  # an output this reader could not read is never reported as a complete one
+        broken.set()
     finally:
         try:
             stream.close()
@@ -60,9 +63,10 @@ def run(command: list[str], *, env: dict[str, str], cwd: str, stdin: bytes | Non
                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     output: list[bytes] = []
     errors: list[bytes] = []
-    over, out_done, err_done = threading.Event(), threading.Event(), threading.Event()
-    threads = [threading.Thread(target=_drain, args=(proc.stdout, output, limit, over, out_done), daemon=True),
-               threading.Thread(target=_drain, args=(proc.stderr, errors, ERROR_BYTES, over, err_done), daemon=True)]
+    over, out_done, err_done, broken = threading.Event(), threading.Event(), threading.Event(), threading.Event()
+    threads = [threading.Thread(target=_drain, args=(proc.stdout, output, limit, over, out_done, broken), daemon=True),
+               threading.Thread(target=_drain, args=(proc.stderr, errors, ERROR_BYTES, over, err_done, broken),
+                                daemon=True)]
     if stdin is not None:
         threads.append(threading.Thread(target=_feed, args=(proc.stdin, stdin), daemon=True))
     for thread in threads:
@@ -91,4 +95,6 @@ def run(command: list[str], *, env: dict[str, str], cwd: str, stdin: bytes | Non
                 pass
         for thread in threads:
             thread.join(max(0.0, until - time.monotonic()))
+    if broken.is_set():
+        raise OSError("a pipe of the child could not be read")
     return code, b"".join(output), b"".join(errors), over.is_set()
