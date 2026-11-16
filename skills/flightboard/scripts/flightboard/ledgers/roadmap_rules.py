@@ -37,6 +37,7 @@ TOP_REQUIRED = ("schema_version", "updated_at", "capacity", "launch_gate", "mile
 TOP_OPTIONAL = ("project", "decisions")
 CAPACITY_FIELDS = ("start_date", "review_slots_per_week", "owner_hours_per_week")
 AGENT_CAPACITY_FIELDS = ("agent_sessions_per_week", "claude_sessions_per_week")
+MAX_WEEKLY = 10_000  # a weekly capacity past this is refused: no line of a summary may carry an arbitrary number
 MILESTONE_FIELDS = ("id", "title_fr", "track", "goal_fr", "value_fr", "timebox_weeks", "dogfood_min",
                     "cut_list", "exit_criteria")
 CRITERION_FIELDS = ("text_fr", "tasks")
@@ -106,8 +107,9 @@ def _is_date(value: Any) -> bool:
     return True
 
 
-def _is_count(value: Any, minimum: int) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value >= minimum
+def _is_count(value: Any, minimum: int, maximum: int | None = None) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= minimum \
+        and (maximum is None or value <= maximum)
 
 
 def _shown(value: Any) -> str:
@@ -192,14 +194,14 @@ def _check_top(ledger: dict, errors: list[str]) -> None:
     if not _is_date(capacity.get("start_date")):
         errors.append("capacity: start_date must be a YYYY-MM-DD date")
     for key in CAPACITY_FIELDS[1:]:
-        if not _is_count(capacity.get(key), 1):
-            errors.append(f"capacity: {key} must be a positive integer")
+        if not _is_count(capacity.get(key), 1, MAX_WEEKLY):
+            errors.append(f"capacity: {key} must be an integer from 1 to {MAX_WEEKLY}")
     present = [key for key in AGENT_CAPACITY_FIELDS if key in capacity]
     if not present:
         errors.append("capacity: missing field(s) agent_sessions_per_week")
     for key in present:
-        if not _is_count(capacity[key], 1):
-            errors.append(f"capacity: {key} must be a positive integer")
+        if not _is_count(capacity[key], 1, MAX_WEEKLY):
+            errors.append(f"capacity: {key} must be an integer from 1 to {MAX_WEEKLY}")
     if len(present) == 2 and capacity[present[0]] != capacity[present[1]]:
         errors.append("capacity: agent_sessions_per_week and claude_sessions_per_week must agree")
 

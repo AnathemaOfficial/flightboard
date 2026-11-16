@@ -54,10 +54,18 @@ class Paths:
 
 def default_paths() -> Paths:
     local, roaming = os.environ.get("LOCALAPPDATA", ""), os.environ.get("APPDATA", "")
-    if not local or not roaming or not Path(local).is_absolute() or not Path(roaming).is_absolute():
-        raise ValueError("LOCALAPPDATA and APPDATA must name absolute user folders")
+    if not _local_folder(local) or not _local_folder(roaming):
+        raise ValueError("LOCALAPPDATA and APPDATA must name absolute local user folders")
     return Paths(Path(local) / "Flightboard" / "startup", Path(__file__).resolve().parent.parent,
                  Path(roaming) / "Microsoft/Windows/Start Menu/Programs/Startup/Flightboard.lnk")
+
+
+def _local_folder(value: str) -> bool:
+    """An absolute folder on a local drive of this computer: no UNC share, no device path, no bare drive root."""
+    if not value or "\0" in value or value.startswith(("//", "\\\\")):
+        return False
+    path = Path(value)
+    return path.is_absolute() and len(path.anchor) == 3 and path.anchor[1] == ":" and path != Path(path.anchor)
 
 
 def _key(path: str | Path) -> str:
@@ -103,6 +111,10 @@ def validate_config(value: dict) -> dict:
     runtimes = {_key(path) for path in value["trusted_python"]}
     if _key(value["python"]) not in runtimes:
         raise ValueError("the restart interpreter must be trusted")
+    windowless = _key(value["pythonw"])
+    if windowless not in runtimes and not any(
+            _key(Path(path).with_name("pythonw.exe")) == windowless for path in value["trusted_python"]):
+        raise ValueError("the windowless interpreter must be trusted")
     if not isinstance(value.get("boards"), list):
         raise ValueError("boards must be a list")
     ports, repos = set(), set()
@@ -348,6 +360,72 @@ def disable(paths: Paths) -> None:
     paths.startup_link.unlink(missing_ok=True)
 
 
+def _alive(pid: object) -> bool | None:
+    """Whether that process id is still running (None where this system cannot tell). Never throws."""
+    if os.name != "nt":
+        return None
+    if type(pid) is not int or not 0 < pid <= 0xFFFFFFFF:
+        return False
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = (ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong)
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.GetExitCodeProcess.argtypes = (ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong))
+        kernel32.GetExitCodeProcess.restype = ctypes.c_int
+        kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+        handle = kernel32.OpenProcess(0x1000, 0, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong(0)
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return None
+            return code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    except (OSError, ValueError):
+        return None
+
+
+def status(paths: Paths) -> dict:
+    """Whether startup is enabled, its configuration, its last check, and whether that supervisor still runs."""
+    found = paths.root / "status.json"
+    last = json.loads(found.read_text(encoding="utf-8")) if found.exists() else None
+    return {"enabled": paths.startup_link.exists() and not paths.disabled.exists(), "folder": str(paths.root),
+            "config": load_config(paths) if paths.config.exists() else None, "last_check": last,
+            "supervisor_running": _alive(last.get("supervisor_pid")) if isinstance(last, dict) else None}
+
+
+def _copy_engine(paths: Paths) -> None:
+    """Copy the engine into a fresh folder, then swap it in whole: a failed copy keeps the previous engine intact."""
+    staging = Path(tempfile.mkdtemp(prefix="engine-", dir=paths.root))
+    try:
+        for source in paths.source_scripts.rglob("*"):
+            relative = source.relative_to(paths.source_scripts)
+            if "__pycache__" in relative.parts or source.suffix not in (".py", ".html") or not source.is_file():
+                continue
+            destination = staging / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
+        previous, current = paths.root / "engine.previous", paths.root / "engine"
+        if previous.exists():
+            shutil.rmtree(previous)
+        swapped = current.exists()
+        if swapped:
+            current.rename(previous)
+        try:
+            staging.rename(current)
+        except OSError:
+            if swapped:  # put the engine that was there back before failing
+                previous.rename(current)
+            raise
+        if swapped:
+            shutil.rmtree(previous, ignore_errors=True)
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+
+
 def install(paths: Paths, trust_engines=(), trust_python=()) -> dict:
     runtime = Path(sys.executable).resolve()
     if runtime.name.lower() == "pythonw.exe":
@@ -356,7 +434,7 @@ def install(paths: Paths, trust_engines=(), trust_python=()) -> dict:
     if not runtime.is_file() or not windowless.is_file():
         raise ValueError("install needs a Python installation with python.exe and pythonw.exe")
     engines = [paths.source_scripts / "flightboard.py", *(Path(p) for p in trust_engines)]
-    runtimes = [runtime, *(Path(p) for p in trust_python)]
+    runtimes = [runtime, windowless, *(Path(p) for p in trust_python)]
     for path in [*engines, *runtimes]:
         if not path.is_absolute() or not path.is_file():
             raise ValueError("trusted engines and interpreters must be existing absolute files")
@@ -367,33 +445,33 @@ def install(paths: Paths, trust_engines=(), trust_python=()) -> dict:
     }
     paths.root.mkdir(parents=True, exist_ok=True)
     # Stop only this helper through its flag. Servers stay alive and will be adopted.
+    was_disabled = paths.disabled.exists()
     paths.disabled.touch()
-    limit = time.monotonic() + 10
-    while True:
-        with singleton(paths) as acquired:
-            if acquired:
-                # A last discovery may have completed while the stop flag was pending.
-                settings = load_config(paths) if paths.config.exists() else initial
-                for source in paths.source_scripts.rglob("*"):
-                    relative = source.relative_to(paths.source_scripts)
-                    if "__pycache__" in relative.parts or source.suffix not in (".py", ".html") or not source.is_file():
-                        continue
-                    destination = paths.root / "engine" / relative
-                    if source.resolve() == destination.resolve():
-                        continue
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(source, destination)
-                for name, additions in (("trusted_engines", [*engines, paths.engine]), ("trusted_python", runtimes)):
-                    settings[name] = list(dict.fromkeys([*settings[name], *(str(p.resolve()) for p in additions)]))
-                settings["python"], settings["pythonw"] = str(runtime), str(windowless)
-                for board in settings["boards"]:
-                    board["command"][0], board["command"][3] = str(runtime), str(paths.engine)
-                save_config(settings, paths)
-                break
-        if time.monotonic() >= limit:
-            raise ValueError("the supervisor is still running; disable it and retry install")
-        time.sleep(0.2)
-    enable(paths)
+    try:
+        limit = time.monotonic() + 10
+        while True:
+            with singleton(paths) as acquired:
+                if acquired:
+                    # A last discovery may have completed while the stop flag was pending.
+                    settings = load_config(paths) if paths.config.exists() else initial
+                    _copy_engine(paths)
+                    for name, additions in (("trusted_engines", [*engines, paths.engine]),
+                                            ("trusted_python", runtimes)):
+                        settings[name] = list(dict.fromkeys([*settings[name], *(str(p.resolve()) for p in additions)]))
+                    settings["python"], settings["pythonw"] = str(runtime), str(windowless)
+                    for board in settings["boards"]:
+                        board["command"][0], board["command"][3] = str(runtime), str(paths.engine)
+                    save_config(settings, paths)
+                    break
+            if time.monotonic() >= limit:
+                raise ValueError("the supervisor is still running; disable it and retry install")
+            time.sleep(0.2)
+        enable(paths)
+    except Exception:
+        # An installation that fails must leave the previous autostart state, never a silent stop flag.
+        if not was_disabled:
+            paths.disabled.unlink(missing_ok=True)
+        raise
     return settings
 
 
@@ -425,7 +503,10 @@ def run(paths: Paths, once: bool = False) -> dict:
                 except Exception as error:
                     LOG.exception("Supervision failed; will retry")
                     status = {"status": "error", "error": str(error)}
-                    _write(paths.root / "status.json", status)
+                    try:
+                        _write(paths.root / "status.json", status)
+                    except (OSError, ValueError):  # a status that cannot be written must not end the supervision
+                        LOG.warning("Could not write the status file; the next cycle will retry")
                     if once:
                         raise
                 if once:
@@ -467,10 +548,7 @@ def main(argv: list[str] | None = None) -> int:
             disable(paths)
             result = {"status": "disabled", "servers_left_running": True}
         elif options.command == "status":
-            result = {"enabled": paths.startup_link.exists() and not paths.disabled.exists(),
-                      "folder": str(paths.root), "config": load_config(paths) if paths.config.exists() else None,
-                      "last_check": json.loads((paths.root / "status.json").read_text(encoding="utf-8"))
-                      if (paths.root / "status.json").exists() else None}
+            result = status(paths)
         elif options.command == "forget":
             # Pause supervision so a discovery write cannot race this edit.
             if not _absolute(options.repo):

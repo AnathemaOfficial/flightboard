@@ -191,5 +191,22 @@ class RoadmapRulesTest(unittest.TestCase):
         self.assertEqual(ledgers.make("tasks", ".board/tasks.toml").path, ".board/tasks.toml")
 
 
+class RoadmapCapacityTest(unittest.TestCase):
+    def test_a_weekly_capacity_beyond_its_bound_is_refused_and_never_printed(self) -> None:
+        """A summary line never carries a negative or arbitrarily long capacity a branch chose."""
+        board, raw = roadmap(), ledger({"FB-001": "planned"})
+        for slots, expected in ((rules.MAX_WEEKLY + 1, None), (rules.MAX_WEEKLY, rules.MAX_WEEKLY),
+                                (-5, None), (0, None), (9_999_999_999, None)):
+            with self.subTest(slots=slots):
+                capacity = {**raw["capacity"], "review_slots_per_week": slots}
+                errors = [error for error in rules.validate_ledger({**raw, "capacity": capacity})
+                          if "review_slots_per_week" in error]
+                self.assertEqual(board.review_slots({"capacity": capacity}), expected)
+                if expected is None:
+                    self.assertTrue(errors)  # the ledger is named invalid instead of printed
+                else:
+                    self.assertEqual(errors, [])
+
+
 if __name__ == "__main__":
     unittest.main()

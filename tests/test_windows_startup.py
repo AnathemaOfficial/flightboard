@@ -15,6 +15,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -416,6 +417,110 @@ class StartupTest(unittest.TestCase):
         self.assertFalse(self.paths.disabled.exists())
         enable.assert_called_once_with(self.paths)
         self.assertEqual(len(startup.load_config(self.paths)["boards"]), 1)
+
+    def _stuck_supervisor(self):
+        """`install` waits ten seconds for a supervisor that never releases its lock."""
+        clock, patches = iter([0.0, *(1e9,) * 8]), []
+        patches.append(mock.patch.object(startup, "singleton", return_value=contextlib.nullcontext(False)))
+        patches.append(mock.patch.object(startup.time, "monotonic", side_effect=lambda: next(clock, 1e9)))
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        return patches
+
+    def test_failed_install_restores_the_previous_autostart_state(self) -> None:
+        self._stuck_supervisor()
+        with mock.patch.object(startup, "enable") as enable, self.assertRaises(ValueError):
+            startup.install(self.paths)
+        enable.assert_not_called()
+        self.assertFalse(self.paths.disabled.exists())  # an installation that fails never cuts autostart silently
+
+    def test_failed_install_keeps_a_previously_disabled_installation_disabled(self) -> None:
+        self.paths.disabled.touch()
+        self._stuck_supervisor()
+        with self.assertRaises(ValueError):
+            startup.install(self.paths)
+        self.assertTrue(self.paths.disabled.exists())  # the owner's disable stays in force
+
+    def test_a_failed_engine_copy_leaves_the_previous_engine_intact(self) -> None:
+        before = self.paths.engine.read_text(encoding="utf-8")
+        with mock.patch.object(startup, "singleton", return_value=contextlib.nullcontext(True)), \
+                mock.patch.object(startup.shutil, "copyfile", side_effect=OSError("disk full")), \
+                self.assertRaises(OSError):
+            startup.install(self.paths)
+        self.assertEqual(self.paths.engine.read_text(encoding="utf-8"), before)
+        self.assertFalse(list(self.paths.root.glob("engine-*")))
+        self.assertFalse(self.paths.disabled.exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows startup install uses a native singleton")
+    def test_install_replaces_the_engine_folder_as_a_whole(self) -> None:
+        stale = self.paths.engine.parent / "stale.py"
+        stale.write_text("old\n", encoding="utf-8")
+        with mock.patch.object(startup.sys, "executable", str(self.python)), \
+                mock.patch.object(startup, "enable"):
+            startup.install(self.paths)
+        self.assertFalse(stale.exists())  # the copy is swapped in, never mixed with the previous one
+        self.assertTrue(self.paths.helper.is_file())
+        self.assertFalse(list(self.paths.root.glob("engine.*")))
+
+    @unittest.skipUnless(os.name == "nt", "Windows startup supervisor loop")
+    def test_a_status_write_failure_does_not_end_the_supervisor_loop(self) -> None:
+        startup.save_config(self.settings, self.paths)
+        def stop() -> None:
+            time.sleep(0.3)
+            self.paths.disabled.touch()
+        stopper = threading.Thread(target=stop, daemon=True)
+        stopper.start()
+        with mock.patch.object(startup, "_write", side_effect=OSError("status locked")), \
+                mock.patch.object(startup, "inventory", return_value={"processes": [], "listeners": []}):
+            result = startup.run(self.paths)
+        stopper.join(5)
+        self.assertEqual(result, {"status": "disabled"})  # the loop survived a status it could not write
+
+    @unittest.skipUnless(os.name == "nt", "Windows startup status")
+    def test_status_reports_whether_the_supervisor_still_runs(self) -> None:
+        self.paths.startup_link.parent.mkdir()
+        self.paths.startup_link.touch()
+        startup.save_config(self.settings, self.paths)
+        found = self.paths.root / "status.json"
+        found.write_text(json.dumps({"status": "running", "supervisor_pid": os.getpid()}), encoding="utf-8")
+        result = startup.status(self.paths)
+        self.assertTrue(result["enabled"])
+        self.assertTrue(result["supervisor_running"])
+        dead = subprocess.Popen([sys.executable, "-c", "pass"], creationflags=startup.NO_WINDOW)
+        dead.wait(timeout=30)
+        found.write_text(json.dumps({"status": "running", "supervisor_pid": dead.pid}), encoding="utf-8")
+        self.assertFalse(startup.status(self.paths)["supervisor_running"])
+
+    def test_the_windowless_interpreter_must_also_be_trusted(self) -> None:
+        hostile = self.root / "notepad.exe"
+        hostile.touch()
+        with self.assertRaises(ValueError):
+            startup.validate_config({**copy.deepcopy(self.settings), "pythonw": str(hostile)})
+        self.assertEqual(startup.validate_config(self.settings), self.settings)  # install's layout stays accepted
+
+    @unittest.skipUnless(os.name == "nt", "Windows startup install uses a native singleton")
+    def test_install_trusts_the_windowless_interpreter_it_installs(self) -> None:
+        with mock.patch.object(startup.sys, "executable", str(self.python)), \
+                mock.patch.object(startup, "enable"):
+            installed = startup.install(self.paths)
+        self.assertIn(str(self.pythonw), installed["trusted_python"])
+        self.assertEqual(startup.validate_config(installed), installed)
+
+    @unittest.skipUnless(os.name == "nt", "Windows startup folders")
+    def test_startup_folders_must_stay_on_a_local_drive(self) -> None:
+        drive = "C" + ":"
+        local = Path(drive + "\\") / "Users" / "me" / "AppData" / "Local"
+        roaming = local.parent / "Roaming"
+        cases = ((r"\\server\share\Local", str(roaming)),
+                 (str(local), r"\\server\share\Roaming"),
+                 ("relative-folder", str(roaming)))
+        for local_text, roaming_text in cases:
+            with self.subTest(local=local_text), mock.patch.dict(
+                    os.environ, {"LOCALAPPDATA": local_text, "APPDATA": roaming_text}), self.assertRaises(ValueError):
+                startup.default_paths()
+        with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local), "APPDATA": str(roaming)}):
+            self.assertEqual(startup.default_paths().root, local / "Flightboard" / "startup")
 
 
 if __name__ == "__main__":
