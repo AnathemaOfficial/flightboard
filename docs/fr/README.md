@@ -499,7 +499,7 @@ d'erreur, ne peut aller que dans le dossier de cache.
 
 **Serveur.** Il n'écoute que `127.0.0.1`, et `[::1]` au même port (le navigateur essaie `::1` en premier pour
 `localhost` : aucun autre programme ne peut y répondre à sa place), et contrôle chaque requête avant tout travail. Il
-refuse un `Host` autre que `127.0.0.1:<port>` ou `localhost:<port>` (rebinding DNS), une `Origin` d'ailleurs (`null`
+refuse un `Host` autre que `127.0.0.1:<port>`, `localhost:<port>` ou `[::1]:<port>` (rebinding DNS), une `Origin` d'ailleurs (`null`
 compris), un `Sec-Fetch-Site` same-site ou cross-site, l'état chargé comme script, image ou cadre (`Sec-Fetch-Dest`),
 toute méthode autre que `GET` et `HEAD`, et tout chemin autre que `/` et `/state.json`. Une requête refusée ne lit
 jamais le dépôt. Le dépôt est lu au plus une fois toutes les 5 secondes, comptées depuis la fin de la lecture
