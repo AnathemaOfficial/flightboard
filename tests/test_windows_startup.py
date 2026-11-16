@@ -510,6 +510,54 @@ class StartupTest(unittest.TestCase):
         self.assertFalse((self.paths.root / "engine.previous").exists())
         enable.assert_not_called()
 
+    def test_failed_copy_resumes_a_previously_enabled_installation(self) -> None:
+        startup.save_config(self.settings, self.paths)
+        self.paths.startup_link.parent.mkdir()
+        self.paths.startup_link.write_bytes(b"previous shortcut")
+        before_engine, before_config = self.paths.engine.read_bytes(), self.paths.config.read_bytes()
+
+        def resume(paths):
+            self.assertEqual(paths.engine.read_bytes(), before_engine)
+            self.assertEqual(paths.config.read_bytes(), before_config)
+            self.assertEqual(paths.startup_link.read_bytes(), b"previous shortcut")
+            self.assertFalse(paths.disabled.exists())
+
+        with mock.patch.object(startup.sys, "executable", str(self.python)), \
+                mock.patch.object(startup, "singleton", return_value=contextlib.nullcontext(True)), \
+                mock.patch.object(startup.shutil, "copyfile", side_effect=OSError("disk full")), \
+                mock.patch.object(startup, "enable", side_effect=resume) as enable, \
+                self.assertRaisesRegex(OSError, "disk full"):
+            startup.install(self.paths)
+        enable.assert_called_once_with(self.paths)
+
+    def test_invalid_previous_config_does_not_resume_the_supervisor(self) -> None:
+        self.paths.config.write_bytes(b"{")
+        self.paths.startup_link.parent.mkdir()
+        self.paths.startup_link.write_bytes(b"previous shortcut")
+        with mock.patch.object(startup.sys, "executable", str(self.python)), \
+                mock.patch.object(startup, "singleton", return_value=contextlib.nullcontext(True)), \
+                mock.patch.object(startup, "enable") as enable, self.assertRaises(ValueError):
+            startup.install(self.paths)
+        enable.assert_not_called()
+        self.assertEqual(self.paths.config.read_bytes(), b"{")
+        self.assertFalse(self.paths.disabled.exists())
+
+    def test_failed_resume_keeps_autostart_disabled_and_reports_both_failures(self) -> None:
+        startup.save_config(self.settings, self.paths)
+        self.paths.startup_link.parent.mkdir()
+        self.paths.startup_link.write_bytes(b"previous shortcut")
+        before_engine, before_config = self.paths.engine.read_bytes(), self.paths.config.read_bytes()
+        with mock.patch.object(startup.sys, "executable", str(self.python)), \
+                mock.patch.object(startup, "singleton", return_value=contextlib.nullcontext(True)), \
+                mock.patch.object(startup.shutil, "copyfile", side_effect=OSError("disk full")), \
+                mock.patch.object(startup, "enable", side_effect=OSError("runtime unavailable")) as enable, \
+                self.assertRaisesRegex(startup._RecoveryError, "disk full.*resume.*runtime unavailable"):
+            startup.install(self.paths)
+        enable.assert_called_once_with(self.paths)
+        self.assertEqual(self.paths.engine.read_bytes(), before_engine)
+        self.assertEqual(self.paths.config.read_bytes(), before_config)
+        self.assertTrue(self.paths.disabled.exists())
+
     def test_interruption_after_moving_the_old_engine_still_restores_it(self) -> None:
         before = self.paths.engine.read_bytes()
         rename = Path.rename
@@ -562,8 +610,17 @@ class StartupTest(unittest.TestCase):
                 if was_disabled:
                     self.paths.disabled.touch()
                 before_engine, before_config = self.paths.engine.read_bytes(), self.paths.config.read_bytes()
+                activations = 0
 
                 def fail_activation(paths):
+                    nonlocal activations
+                    activations += 1
+                    if activations == 2:
+                        self.assertEqual(paths.engine.read_bytes(), before_engine)
+                        self.assertEqual(paths.config.read_bytes(), before_config)
+                        self.assertEqual(paths.startup_link.read_bytes(), b"previous shortcut")
+                        self.assertFalse(paths.disabled.exists())
+                        return
                     paths.disabled.unlink(missing_ok=True)
                     paths.startup_link.write_bytes(b"replacement shortcut")
                     raise OSError("supervisor launch failed")
@@ -577,6 +634,7 @@ class StartupTest(unittest.TestCase):
                 self.assertEqual(self.paths.startup_link.read_bytes(), b"previous shortcut")
                 self.assertEqual(self.paths.disabled.exists(), was_disabled)
                 self.assertFalse((self.paths.root / "engine.previous").exists())
+                self.assertEqual(activations, 1 if was_disabled else 2)
 
     def test_failed_first_activation_removes_new_installation_artifacts(self) -> None:
         self.paths.engine.unlink()
@@ -598,6 +656,9 @@ class StartupTest(unittest.TestCase):
         self.assertFalse(self.paths.disabled.exists())
 
     def test_failed_rollback_keeps_autostart_disabled_and_the_previous_engine(self) -> None:
+        startup.save_config(self.settings, self.paths)
+        self.paths.startup_link.parent.mkdir()
+        self.paths.startup_link.write_bytes(b"previous shortcut")
         before = self.paths.engine.read_bytes()
         rename = Path.rename
 
