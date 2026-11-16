@@ -226,6 +226,11 @@ class RefusalTest(unittest.TestCase):
     def test_accepted(self) -> None:
         for method, target, extra in (("GET", "/", {}), ("HEAD", "/state.json", {}), ("GET", "/?x=1", {}),
                                       ("GET", "/", {"Host": f"localhost:{self.PORT}"}),
+                                      ("GET", "/", {"Host": f"[::1]:{self.PORT}"}),
+                                      ("GET", "/state.json", {"Host": f"[::1]:{self.PORT}",
+                                                              "Origin": f"http://[::1]:{self.PORT}",
+                                                              "Sec_Fetch_Site": "same-origin",
+                                                              "Sec_Fetch_Dest": "empty"}),
                                       ("GET", "/state.json", {"Origin": f"http://127.0.0.1:{self.PORT}",
                                                               "Sec_Fetch_Site": "same-origin",
                                                               "Sec_Fetch_Dest": "empty"}),
@@ -236,6 +241,7 @@ class RefusalTest(unittest.TestCase):
     def test_refused(self) -> None:
         cases = (({"Host": "evil.example"}, "/"), ({"Host": f"evil.example:{self.PORT}"}, "/"),
                  ({"Host": "127.0.0.1"}, "/"), ({"Host": f"127.0.0.1:{self.PORT}.evil.example"}, "/"),
+                 ({"Host": f"[::1]:{self.PORT + 1}"}, "/"),
                  ({"Origin": "null"}, "/state.json"), ({"Origin": "http://evil.example"}, "/state.json"),
                  ({"Origin": f"http://localhost:{self.PORT + 1}"}, "/state.json"),
                  ({"Sec_Fetch_Site": "same-site"}, "/state.json"), ({"Sec_Fetch_Site": "cross-site"}, "/"),

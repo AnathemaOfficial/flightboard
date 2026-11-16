@@ -168,6 +168,35 @@ class StartupTest(unittest.TestCase):
         self.assertIn(os.path.normcase(str(self.repo)),
                       [os.path.normcase(path) for path in self.settings["excluded_repos"]])
 
+    def link(self, name: str = "repository alias") -> Path:
+        """A link to the repository, or a skip where this system or this user cannot make one."""
+        alias = self.root / name
+        try:
+            os.symlink(self.repo, alias, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("this system does not let a plain user make a link")
+        return alias
+
+    def test_a_link_and_its_target_share_one_key(self) -> None:
+        self.assertEqual(startup._key(self.link()), startup._key(self.repo))
+
+    def test_a_repository_forgotten_through_a_link_is_really_forgotten(self) -> None:
+        self.remember()
+        alias = self.link()
+        startup.forget(self.settings, str(alias), self.paths)
+        self.assertEqual(self.settings["boards"], [])
+        self.assertEqual([startup._key(path) for path in self.settings["excluded_repos"]], [startup._key(self.repo)])
+        process, listeners = self.process(self.repo)
+        self.assertFalse(self.discover(process, listeners))
+
+    def test_two_spellings_of_one_repository_are_refused(self) -> None:
+        board = self.remember()
+        alias = self.link()
+        alias_board = {**copy.deepcopy(board), "name": "alias", "repo": str(alias), "port": 8792, "command": [
+            *board["command"][:4], "--repo", str(alias), "--port", "8792"]}
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            startup.validate_config({**copy.deepcopy(self.settings), "boards": [copy.deepcopy(board), alias_board]})
+
     def test_an_adopted_runtime_can_differ_from_the_stable_runtime(self) -> None:
         alternate = self.root / "alternate-python.exe"
         alternate.touch()

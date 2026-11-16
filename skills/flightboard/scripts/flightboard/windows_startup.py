@@ -68,8 +68,22 @@ def _local_folder(value: str) -> bool:
     return path.is_absolute() and len(path.anchor) == 3 and path.anchor[1] == ":" and path != Path(path.anchor)
 
 
+def _canonical(path: str | Path) -> str:
+    """The path this system resolves: a link, a junction or a short name all name the same folder."""
+    text = os.fspath(path)
+    try:
+        return os.path.realpath(text)
+    except (OSError, ValueError):
+        return text
+
+
 def _key(path: str | Path) -> str:
-    return os.path.normcase(os.path.normpath(str(path)))
+    """A path as this system compares it: links resolved, case folded, no device prefix or trailing separator."""
+    key = os.path.normcase(os.path.normpath(_canonical(path)))
+    if key.startswith("\\\\?\\") and not key.startswith("\\\\?\\unc\\"):
+        key = key[4:]
+    stripped = key.rstrip("\\/") if os.name == "nt" else key.rstrip("/")  # a backslash names a file elsewhere
+    return stripped or key
 
 
 def _absolute(value) -> bool:
@@ -301,7 +315,7 @@ def forget(settings: dict, repo: str, paths: Paths) -> None:
         raise ValueError("forget requires an absolute --repo path")
     settings["boards"] = [board for board in settings["boards"] if _key(board["repo"]) != _key(repo)]
     if _key(repo) not in {_key(path) for path in settings["excluded_repos"]}:
-        settings["excluded_repos"].append(repo)
+        settings["excluded_repos"].append(_canonical(repo))  # the folder, whatever spelling named it
     save_config(settings, paths)
 
 
