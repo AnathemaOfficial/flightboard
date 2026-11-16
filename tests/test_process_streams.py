@@ -36,7 +36,8 @@ class ProcessStreamsTest(unittest.TestCase):
         child.wait.return_value = 0
         with mock.patch.object(processes.subprocess, "Popen", return_value=child):
             return processes.run(["child"], env={}, cwd=".", stdin=b"input" if writer is not None else None,
-                                 timeout=options.get("timeout", 1), grace=options.get("grace", 0.1), limit=100)
+                                 timeout=options.get("timeout", 1), grace=options.get("grace", 0.1), limit=100,
+                                 stop=options.get("stop"))
 
     def test_an_input_write_error_invalidates_a_zero_exit(self) -> None:
         class Broken(Writer):
@@ -64,6 +65,33 @@ class ProcessStreamsTest(unittest.TestCase):
 
         with self.assertRaises(OSError):
             self.run_child(output=Closed())
+
+    def test_overflow_remains_explicit_when_stopping_the_child_breaks_input(self) -> None:
+        for failure in ("write", "close"):
+            with self.subTest(failure=failure):
+                stopped = threading.Event()
+
+                class Interrupted(Writer):
+                    def write(self, data) -> int:
+                        stopped.wait()
+                        if failure == "write":
+                            raise BrokenPipeError("child stopped after overflowing its output")
+                        return super().write(data)
+
+                    def close(self) -> None:
+                        super().close()
+                        if failure == "close":
+                            raise OSError("input flush failed after the child was stopped")
+
+                writer = Interrupted()
+                try:
+                    result = self.run_child(writer, output=io.BytesIO(b"x" * 101),
+                                            stop=lambda child: stopped.set())
+                    self.assertIsNone(result[0])
+                    self.assertTrue(result[3])
+                finally:
+                    stopped.set()
+                    self.assertTrue(writer.closed.wait(1), "the test must not leave its feeder blocked")
 
     def test_partial_input_writes_are_completed_before_success(self) -> None:
         class Partial(Writer):

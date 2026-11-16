@@ -103,6 +103,7 @@ def run(command: list[str], *, env: dict[str, str], cwd: str, stdin: bytes | Non
                 pass
         for thread in threads:
             thread.join(max(0.0, until - time.monotonic()))
-    if broken.is_set():
+    # Stopping an oversized child can break its input pipe; keep the explicit overflow failure in that case.
+    if broken.is_set() and not over.is_set():
         raise OSError("a pipe of the child could not be transferred completely")
     return code, b"".join(output), b"".join(errors), over.is_set()
