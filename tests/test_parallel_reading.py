@@ -207,11 +207,12 @@ class ParallelRunnerTest(unittest.TestCase):
         bad = ("a" * 40, "b" * 40)
         relations = [bad, bad[::-1]] + [(f"{number:040x}", f"{number + 100:040x}")
                                        for number in range(collector_module.PARALLEL_MIN - 1)]
-        attempts = []
+        attempts, runners = [], []
         unavailable = gitreads.GitFailed("temporarily unreadable direction")
 
         def ancestor(git, common, older, newer):
             attempts.append((older, newer))
+            runners.append(git)
             if (older, newer) == bad:
                 raise unavailable
             return False
@@ -224,7 +225,117 @@ class ParallelRunnerTest(unittest.TestCase):
             self.assertIsNone(self.reader._guarded_remote(refs, "refs/heads/reverse", bad[0]))
         self.assertIs(self.reader._ancestor_failures[bad], unavailable)
         self.assertEqual(attempts.count(bad), 1, "reciprocal workers repeated the failed direction")
+        self.assertTrue(all(git is not self.reader.git for git in runners),
+                        "the reverse of a failed direction fell back to the parent runner")
         self.assertEqual(len(self.reader._ancestors), 2 * (collector_module.PARALLEL_MIN - 1) + 1)
+
+    def test_reciprocal_remote_relations_keep_both_directions_in_forked_readers(self) -> None:
+        pairs = [(f"{number + 100:040x}", f"{number + 200:040x}")
+                 for number in range(collector_module.PARALLEL_MIN)]
+        requested = [direction for pair in pairs for direction in (pair, pair[::-1])]
+        attempts, forks = [], []
+        actual_fork = gitreads.Git.fork
+
+        def fork(git):
+            child = actual_fork(git)
+            forks.append(child)
+            return child
+
+        def ancestor(git, common, older, newer):
+            attempts.append((git, (older, newer)))
+            return (older, newer) in pairs
+
+        refs = {f"refs/remotes/origin/{number}": {"sha": older}
+                for number, (older, _) in enumerate(requested)}
+        with mock.patch.object(gitreads.Git, "is_ancestor", ancestor), \
+                mock.patch.object(gitreads.Git, "fork", fork):
+            self.reader._prefetch_remote_relations(requested)
+            for number, (_, newer) in enumerate(requested):
+                self.assertEqual(self.reader._remote(refs, f"refs/heads/{number}", newer),
+                                 "ahead" if number % 2 == 0 else "behind")
+        self.assertEqual([pair for _, pair in attempts].count(pairs[0]), 1)
+        self.assertEqual(len(attempts), len(requested))
+        self.assertTrue(forks, "the reciprocal batch never used forked readers")
+        self.assertTrue(all(git is not self.reader.git and any(git is child for child in forks)
+                            for git, _ in attempts), "a reciprocal read fell back to the parent runner")
+        self.assertEqual(set(self.reader._ancestors), set(requested))
+
+    def test_reciprocal_remote_relations_retain_a_failed_reverse_after_a_true_forward(self) -> None:
+        pair = ("a" * 40, "b" * 40)
+        requested = [pair, pair[::-1]] + [(f"{number:040x}", f"{number + 100:040x}")
+                                         for number in range(collector_module.PARALLEL_MIN - 1)]
+        unavailable = gitreads.GitFailed("temporarily unreadable reverse direction")
+        attempts = []
+
+        def ancestor(git, common, older, newer):
+            attempts.append((git, (older, newer)))
+            if (older, newer) == pair[::-1]:
+                raise unavailable
+            return True
+
+        refs = {"refs/remotes/origin/forward": {"sha": pair[0]},
+                "refs/remotes/origin/reverse": {"sha": pair[1]}}
+        with mock.patch.object(gitreads.Git, "is_ancestor", ancestor):
+            self.reader._prefetch_remote_relations(requested)
+            self.assertEqual(self.reader._remote(refs, "refs/heads/forward", pair[1]), "ahead")
+            self.assertIsNone(self.reader._guarded_remote(refs, "refs/heads/reverse", pair[0]))
+        self.assertIs(self.reader._ancestors[pair], True)
+        self.assertIs(self.reader._ancestor_failures[pair[::-1]], unavailable)
+        self.assertTrue(all(git is not self.reader.git for git, _ in attempts))
+        self.assertEqual([direction for _, direction in attempts].count(pair[::-1]), 1)
+
+    def test_a_single_requested_ancestry_orientation_stops_after_a_true_result(self) -> None:
+        pairs = [(f"{number:040x}", f"{number + 100:040x}")
+                 for number in range(collector_module.PARALLEL_MIN)]
+        attempts = []
+
+        def ancestor(git, common, older, newer):
+            attempts.append((older, newer))
+            return True
+
+        with mock.patch.object(gitreads.Git, "is_ancestor", ancestor):
+            self.reader._prefetch_remote_relations(pairs)
+        self.assertCountEqual(attempts, pairs)
+        self.assertEqual(set(self.reader._ancestors), set(pairs))
+
+    def test_later_reciprocal_prefetch_reuses_direction_failures_without_parent_reads(self) -> None:
+        pairs = [(f"{number + 100:040x}", f"{number + 200:040x}")
+                 for number in range(collector_module.PARALLEL_MIN)]
+        reverse = [pair[::-1] for pair in pairs]
+        unavailable = {pair: gitreads.GitFailed(f"temporarily unreadable direction {number}")
+                       for number, pair in enumerate(pairs)}
+        attempts, forks = [], []
+        actual_fork = gitreads.Git.fork
+
+        def fork(git):
+            child = actual_fork(git)
+            forks.append(child)
+            return child
+
+        def ancestor(git, common, older, newer):
+            pair = (older, newer)
+            attempts.append((git, pair))
+            if pair in unavailable:
+                raise unavailable[pair]
+            return False
+
+        refs = {f"refs/remotes/origin/{number}": {"sha": older}
+                for number, (older, _) in enumerate(reverse)}
+        with mock.patch.object(gitreads.Git, "is_ancestor", ancestor), \
+                mock.patch.object(gitreads.Git, "fork", fork):
+            self.reader._prefetch_remote_relations(pairs)
+            self.assertEqual(set(self.reader._ancestor_failures), set(pairs))
+            self.assertEqual(self.reader._ancestors, {})
+            first_forks = len(forks)
+            self.reader._prefetch_remote_relations(reverse)
+            for number, (_, newer) in enumerate(reverse):
+                self.assertIsNone(self.reader._guarded_remote(refs, f"refs/heads/{number}", newer))
+        self.assertGreater(len(forks), first_forks, "the later reversed batch never used its worker pool")
+        self.assertTrue(all(git is not self.reader.git and any(git is child for child in forks)
+                            for git, _ in attempts), "the later reciprocal batch fell back to the parent runner")
+        self.assertCountEqual([pair for _, pair in attempts], pairs + reverse)
+        self.assertEqual(self.reader._ancestors, dict.fromkeys(reverse, False))
+        self.assertTrue(all(self.reader._ancestor_failures[pair] is error for pair, error in unavailable.items()))
 
 
 @unittest.skipIf(GIT is None, "git absent")
@@ -448,6 +559,42 @@ class ParallelSnapshotTest(unittest.TestCase):
         with mock.patch.object(gitreads.Git, "is_ancestor", ancestor):
             found = collector_module.Collector(self.repo.root, self.settings).snapshot(NOW)
         self.assertEqual(attempted, [(other, tip)])
+        self.assertEqual(found["main"]["state"], "unreadable")
+        self.assertEqual(found["main"]["reason"], "git_failed")
+
+    def test_forked_remote_ancestry_deadline_still_fails_the_whole_reading(self) -> None:
+        tips = [self.repo.git("rev-parse", "HEAD", where=tree) for tree in self.trees]
+        remotes = [f"refs/remotes/origin/topic-{number}" for number in range(len(tips))]
+
+        def clean_refs():
+            for remote in remotes:
+                self.repo.git("update-ref", "-d", remote)
+
+        self.addCleanup(clean_refs)
+        for number, remote in enumerate(remotes):
+            self.repo.git("update-ref", remote, tips[(number + 1) % len(tips)])
+        actual, actual_fork = gitreads.Git.is_ancestor, gitreads.Git.fork
+        attempted, forks = [], []
+        bad = (tips[1], tips[0])
+
+        def fork(git):
+            child = actual_fork(git)
+            forks.append(child)
+            return child
+
+        def ancestor(git, common, older, newer):
+            if (older, newer) == bad:
+                attempted.append(git)
+                raise gitreads.ReadingTooLong("the forked reading exceeded its shared time budget")
+            return actual(git, common, older, newer)
+
+        reader = collector_module.Collector(self.repo.root, self.settings)
+        with mock.patch.object(gitreads.Git, "is_ancestor", ancestor), \
+                mock.patch.object(gitreads.Git, "fork", fork):
+            found = reader.snapshot(NOW)
+        self.assertEqual(len(attempted), 1)
+        self.assertIsNot(attempted[0], reader.git)
+        self.assertTrue(any(attempted[0] is child for child in forks), "the deadline never hit a forked reader")
         self.assertEqual(found["main"]["state"], "unreadable")
         self.assertEqual(found["main"]["reason"], "git_failed")
 

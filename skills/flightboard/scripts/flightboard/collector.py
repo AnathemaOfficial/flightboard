@@ -211,36 +211,46 @@ class Collector:
                 self._pair_failures[pair] = error
 
     def _prefetch_remote_relations(self, relations) -> None:
+        requested = dict.fromkeys(relations)
+        known = self._ancestors.keys() | self._ancestor_failures.keys()
         jobs, seen = [], set()
-        for pair in relations:
+        for pair in requested:
             relation = frozenset(pair)
             if relation in seen or pair[0] == pair[1] or self._ancestors.get(pair) is True \
-                    or pair in self._ancestor_failures or (pair[1], pair[0]) in self._ancestor_failures \
-                    or (pair in self._ancestors and (pair[1], pair[0]) in self._ancestors):
+                    or pair in self._ancestor_failures or (pair in known and (pair[1], pair[0]) in known):
                 continue
             seen.add(relation)  # one worker owns both directions, including a failed reverse read
             jobs.append(pair)
 
+        def read_direction(pair, git):
+            if pair in self._ancestors:
+                return self._ancestors[pair]
+            if pair in self._ancestor_failures:
+                error = self._ancestor_failures[pair]
+                if isinstance(error, GIT.ReadingTooLong):
+                    raise error
+                return error
+            try:
+                return git.is_ancestor(self.common, pair[0], pair[1])
+            except GIT.ReadingTooLong:
+                raise
+            except Exception as exc:
+                return exc
+
         def read(pair, git):
             older, newer = pair
-            ahead = self._ancestors.get(pair)
-            if ahead is None:
-                ahead = git.is_ancestor(self.common, older, newer)
-            if ahead:
-                return True, None
-            reverse = self._ancestors.get((newer, older))
-            try:
-                return False, reverse if reverse is not None else git.is_ancestor(self.common, newer, older)
-            except Exception as exc:
-                return False, exc  # retain the successful forward result and the exact failed direction
+            ahead = read_direction(pair, git)
+            if (ahead is True or isinstance(ahead, Exception)) and (newer, older) not in requested:
+                return ahead, None
+            return ahead, read_direction((newer, older), git)
 
         for pair, value, error in self._parallel_results(jobs, read):
             if error is None:
-                self._ancestors[pair] = value[0]
-                if isinstance(value[1], Exception):
-                    self._ancestor_failures[(pair[1], pair[0])] = value[1]
-                elif value[1] is not None:
-                    self._ancestors[(pair[1], pair[0])] = value[1]
+                for direction, result in zip((pair, (pair[1], pair[0])), value):
+                    if isinstance(result, Exception):
+                        self._ancestor_failures[direction] = result
+                    elif result is not None:
+                        self._ancestors[direction] = result
             else:
                 self._ancestor_failures[pair] = error
 

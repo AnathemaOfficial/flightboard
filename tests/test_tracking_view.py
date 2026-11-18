@@ -284,6 +284,59 @@ class TrackingViewTest(unittest.TestCase):
         self.assertTrue(value["tasks"][historical]["declared_in"].startswith("aa-"))
         self.assertLessEqual(len(value["tasks"]), 500)
 
+    def test_unknown_distances_never_claim_a_session_is_merged(self) -> None:
+        for kind in ("checkout", "worktree", "branch", "remote"):
+            for tracked in (False, True):
+                with self.subTest(kind=kind, tracked=tracked):
+                    card = observed(kind=kind, ahead=None, behind=None, modified=0, untracked=0,
+                                    files_read=False, files_issue="unreadable", reason="read_failed")
+                    value = build(card, **({} if tracked else {"ledger": None, "ledger_adapter": None}))
+                    shown = value["sessions"][0]
+                    self.assertEqual(shown["stage"], "unknown")
+                    self.assertEqual(shown["advice"], "")
+                    self.assertEqual(shown["reason"], "read_failed")
+                    self.assertEqual(value["kpis"]["ready"], 0)
+                    for lang in ("en", "fr"):
+                        self.assertNotEqual(view.M.label(lang, "stage", shown["stage"]), "unknown")
+        confirmed = build(observed(ahead=0, behind=0, modified=0))["sessions"][0]
+        self.assertEqual(confirmed["stage"], "merged")
+        self.assertEqual(confirmed["advice"], "merged")
+        dirty = build(observed(ahead=0, behind=0))["sessions"][0]
+        self.assertEqual(dirty["stage"], "uncommitted")
+        self.assertEqual(dirty["advice"], "open")
+
+    def test_visible_quiet_ongoing_task_keeps_detail_before_ordinary_current_cards(self) -> None:
+        adapter = load("ledgers").make("tasks", "tasks.json")
+        current = [f"ACTIVE-{number:03}" for number in range(520)]
+        for head_only in (False, True):
+            with self.subTest(head_only=head_only):
+                quiet_raw = [{"id": "QUIET-1", "title": "Visible quiet work", "status": "in_progress",
+                              "owner": "codex"},
+                             {"id": "QUIET-DONE", "title": "Quiet history", "status": "done", "owner": "codex"}]
+                rows = [{"id": tid, "title": "Other current work", "status": "in_progress", "owner": "codex"}
+                        for tid in current]
+                ledger = adapter.parse(json.dumps({"version": 1, "tasks": rows + ([] if head_only else quiet_raw)})
+                                       .encode("utf-8"))
+                head = adapter.parse(json.dumps({"version": 1, "tasks": quiet_raw}).encode("utf-8"))
+                self.assertTrue(ledger["valid"], ledger["error"])
+                self.assertTrue(head["valid"], head["error"])
+                cards = []
+                for number in range(13):
+                    names = current[number * 40:(number + 1) * 40]
+                    cards.append(observed(id=f"aa-{number:02}", name=f"aa-{number:02}", activity="active",
+                                          tasks=names, _head_tasks={tid: ledger["tasks"][tid] for tid in names}))
+                cards.append(observed(id="zz-quiet", name="zz-quiet", tasks=["QUIET-1", "QUIET-DONE"],
+                                      ledger_file_modified_at=RECENT, _head_tasks=head["tasks"]))
+                value = build(cards, ledger=ledger, ledger_adapter=adapter)
+                self.assertEqual(value["next"], [])
+                self.assertEqual(len(value["waiting"]), 1)
+                self.assertEqual(value["waiting"][0]["kind"], "session")
+                self.assertEqual(value["waiting"][0]["tasks"], ["QUIET-1", "QUIET-DONE"])
+                self.assertIn("QUIET-1", value["tasks"])
+                self.assertEqual(value["tasks"]["QUIET-1"]["title"], "Visible quiet work")
+                self.assertNotIn("QUIET-DONE", value["tasks"])
+                self.assertEqual(len(value["tasks"]), 500)
+
     def test_build_adds_diagnostics_without_changing_tasks_events_or_advice(self) -> None:
         card = observed(tasks=["FB-001"], _head_tasks={"FB-001": {"status": "awaiting_review"}})
         before = copy.deepcopy(card)

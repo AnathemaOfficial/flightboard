@@ -113,6 +113,8 @@ def _stage(session: dict) -> str:
     if session["modified"] or session["untracked"] \
             or any(change.get("uncommitted") for change in session.get("_changes", session.get("changes", []))):
         return "uncommitted"
+    if session["ahead"] is None or session.get("behind", 0) is None:
+        return "unknown"
     if session["kind"] == "checkout" and not session["ahead"]:
         return "up_to_date"
     if session["kind"] != "checkout" and session["remote"] == "behind":
@@ -133,6 +135,8 @@ def _advice(session: dict, live: dict[str, dict], tracked: bool = True) -> str:
         return ""
     if session.get("gone"):
         return "gone"
+    if stage == "unknown":
+        return ""
     read = session["files_read"] and not (session.get("stash") or session.get("left_behind")
                                          or session.get("held") or session.get("reason"))
     if stage == "uncommitted" or (stage == "behind_origin" and not session["ahead"]):
@@ -601,12 +605,15 @@ def build_view(now: datetime, mode: str, context: dict, sessions: list[dict], ve
     shown = events[:MAX_EVENTS]
     # Current interactive tasks retain detail before quiet-session history and tracking reminders.
     visible_waiting = waiting[:MAX_WAITING]
+    card_tasks = [tid for c in sessions for tid in _named(c)]
+    current_pairs = [(c["name"], tid) for c in sessions for tid in _named(c)
+                     if live.get(tid, (c.get("_head_tasks") or {}).get(tid, {})).get("status")
+                     not in ("done", "dropped")]
+    current = set(current_pairs)
     wanted = [item["id"] for item in nexts]
-    wanted += [tid for item in visible_waiting if item["kind"] not in ("tracking", "session")
-               for tid in item["tasks"]]
-    card_tasks = [tid for c in sessions for tid in c["tasks"][:MAX_SESSION_TASKS]]
-    wanted += [tid for c in sessions for tid in c["tasks"][:MAX_SESSION_TASKS]
-               if live.get(tid, (c.get("_head_tasks") or {}).get(tid, {})).get("status") not in ("done", "dropped")]
+    wanted += [tid for item in visible_waiting if item["kind"] != "tracking" for tid in item["tasks"]
+               if item["kind"] != "session" or (item["session"], tid) in current]
+    wanted += [tid for _, tid in current_pairs]
     wanted += [event["task"] for event in shown] + card_tasks
     wanted += sorted(tid for tid, e in live.items() if e["sources"])
     wanted += [tid for item in visible_waiting if item["kind"] == "tracking" for tid in item["tasks"]]

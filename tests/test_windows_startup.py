@@ -329,66 +329,23 @@ class StartupTest(unittest.TestCase):
         )
         if ownership is not None:
             code += textwrap.dedent(f"""
-                import _winapi
                 real_popen = m.subprocess.Popen
-                def publish(handle, pid):
+                def publish(pid):
                     destination = Path({str(ownership)!r})
                     temporary = destination.with_suffix('.tmp')
-                    temporary.write_text(json.dumps({{'handle': handle, 'pid': pid}}), encoding='utf-8')
+                    temporary.write_text(json.dumps({{'pid': pid}}), encoding='utf-8')
                     temporary.replace(destination)
                 def own_child(*args, **kwargs):
                     if {failure!r} == 'pipe':
                         kwargs['stdout'] = None
                     process = real_popen(*args, **kwargs)
-                    if {failure!r} == 'parent':
-                        probe_parent, probe = None, None
-                        try:
-                            probe_parent = _winapi.OpenProcess(_winapi.PROCESS_DUP_HANDLE, False, {os.getpid()})
-                            probe = _winapi.DuplicateHandle(
-                                _winapi.GetCurrentProcess(), int(process._handle), probe_parent,
-                                _winapi.SYNCHRONIZE | 0x0001, False, 0)
-                            publish(probe, process.pid)
-                        except BaseException:
-                            process.kill()
-                            process.wait()
-                            if probe is not None:
-                                returned = _winapi.DuplicateHandle(
-                                    probe_parent, probe, _winapi.GetCurrentProcess(), 0, False,
-                                    _winapi.DUPLICATE_CLOSE_SOURCE | _winapi.DUPLICATE_SAME_ACCESS)
-                                _winapi.CloseHandle(returned)
-                            raise
-                        finally:
-                            if probe_parent is not None:
-                                _winapi.CloseHandle(probe_parent)
-                        def refuse_parent(*args):
-                            raise OSError('fixture parent handle unavailable')
-                        _winapi.OpenProcess = refuse_parent
-                    parent, owned = None, None
-                    try:
-                        parent = _winapi.OpenProcess(_winapi.PROCESS_DUP_HANDLE, False, {os.getpid()})
-                        owned = _winapi.DuplicateHandle(
-                            _winapi.GetCurrentProcess(), int(process._handle), parent,
-                            _winapi.SYNCHRONIZE | 0x0001, False, 0)  # PROCESS_TERMINATE
-                        publish(owned, process.pid)
-                    except BaseException as primary:
-                        process.kill()
-                        process.wait()
-                        try:
-                            Path({str(ownership.with_suffix('.rescue.json'))!r}).write_text(json.dumps({{
-                                'returncode': process.returncode,
-                                'signaled': _winapi.WaitForSingleObject(int(process._handle), 0)
-                            }}), encoding='utf-8')
-                        except BaseException as error:
-                            primary.add_note('fixture rescue receipt failed: ' + repr(error))
-                        if owned is not None:
-                            returned = _winapi.DuplicateHandle(
-                                parent, owned, _winapi.GetCurrentProcess(), 0, False,
-                                _winapi.DUPLICATE_CLOSE_SOURCE | _winapi.DUPLICATE_SAME_ACCESS)
-                            _winapi.CloseHandle(returned)
-                        raise
-                    finally:
-                        if parent is not None:
-                            _winapi.CloseHandle(parent)
+                    if {failure!r} == 'publication':
+                        witness = Path({str(ownership.with_suffix('.launched.json'))!r})
+                        temporary = witness.with_suffix('.tmp')
+                        temporary.write_text(json.dumps({{'pid': process.pid}}), encoding='utf-8')
+                        temporary.replace(witness)
+                        time.sleep(30)
+                    publish(process.pid)
                     return process
                 m.subprocess.Popen = own_child
                 """)
@@ -401,6 +358,12 @@ class StartupTest(unittest.TestCase):
                     return real_write(path, value)
                 m._write = fail_status
                 """)
+        if ownership is not None:
+            code += (
+                f"bootstrap = Path({str(ownership.with_suffix('.bootstrap'))!r})\n"
+                "limit = time.monotonic() + 30\n"
+                "while not bootstrap.exists() and time.monotonic() < limit:\n    time.sleep(0.01)\n"
+                "assert bootstrap.exists(), 'fixture caller was never assigned to its job'\n")
         code += "result = m.run(paths, once=True)\nassert result['status'] == 'running'\n"
         if failure == "caller":
             code += "time.sleep(30)\n"
@@ -410,21 +373,31 @@ class StartupTest(unittest.TestCase):
     @contextlib.contextmanager
     def _owned_once_child(self, failure: str = ""):
         import _winapi
+        from tests.windows_fixture import WindowsJob
         ownership = self.root / "owned-child.json"
-        ownership.unlink(missing_ok=True)
+        bootstrap = ownership.with_suffix(".bootstrap")
+        for path in (ownership, bootstrap, ownership.with_suffix(".launched.json")):
+            path.unlink(missing_ok=True)
         gate, receipt, code = self._once_child_case(ownership, failure)
-        caller, handle, primary = None, None, None
+        job = WindowsJob()
+        caller, handle, primary, assigned = None, None, None, False
         try:
             caller = subprocess.Popen([sys.executable, "-I", "-B", "-c", code], stdout=subprocess.PIPE,
                                       stderr=subprocess.PIPE, creationflags=startup.NO_WINDOW)
+            job.assign(int(caller._handle))
+            assigned = True
+            bootstrap.touch()  # the controlled caller cannot launch its child before assignment
             deadline = time.monotonic() + 10
             while not ownership.is_file() and caller.poll() is None and time.monotonic() < deadline:
                 time.sleep(0.01)
             if not ownership.is_file():
                 raise AssertionError("fixture caller did not publish child ownership")
-            handle = json.loads(ownership.read_text(encoding="utf-8"))["handle"]
-            yield {"caller": caller, "handle": handle, "gate": gate, "receipt": receipt,
-                   "rescue": ownership.with_suffix(".rescue.json")}
+            pid = json.loads(ownership.read_text(encoding="utf-8"))["pid"]
+            # Only trust the opened process after checking membership in this exact fixture job.
+            handle = _winapi.OpenProcess(_winapi.SYNCHRONIZE | 0x1000 | 0x0001, False, pid)
+            if not job.contains(handle):
+                raise AssertionError("published fixture child is not in its owned job")
+            yield {"caller": caller, "handle": handle, "gate": gate, "receipt": receipt}
         except BaseException as error:
             primary = error
             raise
@@ -437,25 +410,27 @@ class StartupTest(unittest.TestCase):
                 except BaseException as error:
                     errors.append(error)
 
-            if caller is not None:
+            if caller is not None and not assigned:
+                # Assignment failed before the bootstrap gate opened: only the owned caller can exist.
                 try:
                     if caller.poll() is None:
                         caller.kill()
                 except BaseException as error:
                     errors.append(error)
-            child_stopped = handle is None
+            job_stopped = False
+            try:
+                job.stop()
+                job_stopped = True
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                clean(job.close)  # KILL_ON_JOB_CLOSE also covers an interrupted termination wait
+            child_stopped = job_stopped
             if handle is not None:
                 try:
-                    # The caller handed off this exact process handle before any status-file write.
-                    if _winapi.WaitForSingleObject(handle, 0) == _winapi.WAIT_TIMEOUT:
-                        try:
-                            _winapi.TerminateProcess(handle, 1)
-                        except OSError:
-                            if _winapi.WaitForSingleObject(handle, 5_000) != _winapi.WAIT_OBJECT_0:
-                                raise
-                    if _winapi.WaitForSingleObject(handle, 5_000) != _winapi.WAIT_OBJECT_0:
-                        raise RuntimeError("fixture child did not exit during owned-handle cleanup")
-                    child_stopped = True
+                    child_stopped = _winapi.WaitForSingleObject(handle, 5_000) == _winapi.WAIT_OBJECT_0
+                    if not child_stopped:
+                        raise TimeoutError("fixture child did not exit during job cleanup")
                 except BaseException as error:
                     errors.append(error)
             caller_stopped, pipes_drained = False, False
@@ -469,12 +444,13 @@ class StartupTest(unittest.TestCase):
                 except BaseException as error:
                     errors.append(error)
                 finally:
-                    # A live inherited pipe holder can block BufferedReader.close on its reader's lock.
+                    # An unconfirmed wait must leave Popen's native handle available for recovery.
                     if caller_stopped and child_stopped and pipes_drained:
                         for stream in (caller.stdout, caller.stderr):
                             if stream is not None:
                                 clean(stream.close)
-                    clean(caller._handle.Close)
+                    if caller_stopped:
+                        clean(caller._handle.Close)
             if handle is not None:
                 clean(lambda: _winapi.CloseHandle(handle))
             for error in errors:
@@ -580,27 +556,72 @@ class StartupTest(unittest.TestCase):
                     _winapi.WaitForSingleObject(observer, 5_000)
                 _winapi.CloseHandle(observer)
 
-    @unittest.skipUnless(os.name == "nt", "owned Windows fixture process handles")
-    def test_owned_once_child_parent_handle_failure_is_rescued_by_its_caller(self) -> None:
+    @unittest.skipUnless(os.name == "nt", "owned Windows fixture jobs")
+    def test_owned_once_child_job_assignment_failure_prevents_a_child_launch(self) -> None:
+        from tests.windows_fixture import WindowsJob
+        actual, callers = subprocess.Popen, []
+
+        def start(*args, **kwargs):
+            caller = actual(*args, **kwargs)
+            callers.append(caller)
+            return caller
+
+        with mock.patch.object(subprocess, "Popen", side_effect=start), \
+                mock.patch.object(WindowsJob, "assign", side_effect=OSError("fixture job assignment refused")):
+            with self.assertRaisesRegex(OSError, "fixture job assignment refused"):
+                with self._owned_once_child():
+                    self.fail("an unassigned fixture caller reached its child")
+        self.assertEqual(len(callers), 1)
+        self.assertIsNotNone(callers[0].returncode, "assignment failure left the owned caller running")
+        self.assertFalse((self.root / "owned-child.bootstrap").exists())
+        self.assertFalse((self.root / "owned-child.json").exists())
+
+    @unittest.skipUnless(os.name == "nt", "owned Windows fixture jobs")
+    def test_owned_once_child_job_cleans_an_unpublished_child(self) -> None:
         import _winapi
-        with self._owned_once_child("parent") as child:
-            _, stderr = child["caller"].communicate(timeout=10)
-            self.assertNotEqual(child["caller"].returncode, 0)
-            self.assertIn("fixture parent handle unavailable", stderr.decode("utf-8", errors="replace"))
-            self.assertTrue(child["rescue"].is_file(), "caller failed without waiting for its owned child")
-            self.assertEqual(json.loads(child["rescue"].read_text(encoding="utf-8")),
-                             {"returncode": 1, "signaled": _winapi.WAIT_OBJECT_0})
-            self.assertEqual(_winapi.WaitForSingleObject(child["handle"], 0), _winapi.WAIT_OBJECT_0)
+        from tests.windows_fixture import WindowsJob
+        stop, populations, states = WindowsJob.stop, [], []
+
+        def observe_stop(job):
+            pid = json.loads((self.root / "owned-child.launched.json").read_text(encoding="utf-8"))["pid"]
+            observer = _winapi.OpenProcess(_winapi.SYNCHRONIZE | 0x1000, False, pid)
+            try:
+                member = job.contains(observer)
+                states.append((member, _winapi.WaitForSingleObject(observer, 0) if member else None))
+                populations.append(job.active())
+                stop(job)
+                populations.append(job.active())
+                states.append(_winapi.WaitForSingleObject(observer, 5_000))
+            finally:
+                _winapi.CloseHandle(observer)
+
+        with mock.patch.object(WindowsJob, "stop", observe_stop):
+            with self.assertRaisesRegex(AssertionError, "did not publish child ownership"):
+                with self._owned_once_child("publication"):
+                    self.fail("the deliberately blocked ownership record was published")
+        self.assertTrue((self.root / "owned-child.launched.json").is_file(),
+                        "the fault did not reach the launched-but-unpublished child")
+        self.assertFalse((self.root / "owned-child.json").exists())
+        self.assertGreaterEqual(populations[0], 2)
+        self.assertEqual(populations[1:], [0], "job cleanup left fixture descendants running")
+        self.assertEqual(states, [(True, _winapi.WAIT_TIMEOUT), _winapi.WAIT_OBJECT_0],
+                         "the unpublished child must be alive in the owned job before cleanup and stopped after")
 
     @unittest.skipUnless(os.name == "nt", "owned Windows fixture process handles")
     def test_owned_once_child_does_not_close_pipes_when_caller_wait_is_unconfirmed(self) -> None:
+        import _winapi
         caller = None
         try:
             with contextlib.ExitStack() as patches:
                 with self.assertRaisesRegex(ValueError, "fixture primary error") as raised:
                     with self._owned_once_child() as child:
                         caller = child["caller"]
-                        caller.communicate(timeout=10)
+                        self.assertEqual(caller.wait(timeout=10), 0)
+                        self.assertFalse(caller.stdout.closed)
+                        self.assertFalse(caller.stderr.closed)
+                        caller.returncode = None  # recovery must query the native handle, not a cached exit code
+                        patches.enter_context(mock.patch.object(caller, "poll", return_value=None))
+                        patches.enter_context(mock.patch.object(caller, "kill"))  # it already exited successfully
                         patches.enter_context(mock.patch.object(
                             caller, "wait", side_effect=subprocess.TimeoutExpired("fixture caller", 5)))
                         stdout_close = patches.enter_context(mock.patch.object(caller.stdout, "close"))
@@ -609,11 +630,15 @@ class StartupTest(unittest.TestCase):
                 stdout_close.assert_not_called()
                 stderr_close.assert_not_called()
                 self.assertTrue(any("TimeoutExpired" in note for note in raised.exception.__notes__))
+            self.assertEqual(_winapi.WaitForSingleObject(int(caller._handle), 0), _winapi.WAIT_OBJECT_0)
         finally:
             if caller is not None:
-                caller.wait(timeout=5)
-                caller.stdout.close()
-                caller.stderr.close()
+                try:
+                    caller.wait(timeout=5)
+                finally:
+                    caller.stdout.close()
+                    caller.stderr.close()
+                    caller._handle.Close()
 
     @unittest.skipUnless(os.name == "nt", "owned Windows fixture process handles")
     def test_owned_once_child_stops_inherited_pipe_holder_before_draining(self) -> None:

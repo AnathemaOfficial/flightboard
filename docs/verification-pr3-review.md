@@ -125,7 +125,7 @@ still propagate. Quiet-session historical IDs and head-ledger completed tasks mu
 interactive details under the existing cap. These are production behavior corrections, separate from
 test-harness reliability suggestions.
 
-The Windows test fixture has one explicitly deferred limitation (CodeRabbit `r4616388591`): a caller stalled
+At `bef7025`, the Windows test fixture had an explicitly deferred limitation (CodeRabbit `r4616388591`): a caller stalled
 between duplicating a child handle and publishing its ownership record can leave the child alive until its
 30-second watchdog expires, and the duplicated handle can remain open until the test process exits. Normal
 handoff and exceptions that run the rescue path are covered; a stalled handoff is not. A test-owned Windows
@@ -142,4 +142,47 @@ The final full local Windows/Python 3.14 suite ran **644 tests in 305.763 second
 (642 passed). Independent Python, general and security reviews approved these source/test hashes; unchanged
 JavaScript retains its earlier verification. `git diff --check` passed, and the original performance worktree's
 dirty-patch SHA-256 remains `9f2f73c70e82cf42f06ef2da888f8c6c971eee561b9484e54203df8eaba8139c`.
-Later pushed-head CI and bot results are separate PR evidence; the deferred test-only item remains explicit.
+Later pushed-head CI and bot results are separate PR evidence; the test-only item was still open at that revision.
+
+## Remaining CodeRabbit corrections requested after `bef7025`
+
+The follow-up addresses review `5960056746` and the earlier Windows fixture ownership comment. Unknown main
+distances now produce an explicit indeterminate stage in English and French, with no merged advice. Confirmed
+merged, dirty, conflict and operation evidence retains its established priority. Visible quiet-session reminders
+reserve details for ongoing tasks, using live status and then their declaring ledger; completed history remains
+later under the same 500-detail cap.
+
+Requested reciprocal ancestry directions stay in the forked worker pool, including a successful first direction
+and direction-specific failures. Planning and workers reuse both success and failure memos across the worktree
+and branch phases: an unknown opposite direction is still scheduled, while a failed direction is not retried
+within the reading. Single-direction early stopping, parent-only result publication and shared deadlines remain.
+Regressions cover both prefetch phases, actual child runners, no serial fallback and both direct and forked
+deadline propagation. No additional traversal, per-folder Git query or filesystem cache is introduced.
+
+The Windows fixture now owns an anonymous, non-inheritable Job with kill-on-close before opening the controlled
+caller's bootstrap gate. It publishes only a PID atomically and opens the observation handle in the test process,
+requiring membership in that exact Job before trusting it. Cross-process handle duplication is removed, so a stall
+before publication leaves no transferred parent handle. Job cleanup covers the launched but unpublished child;
+the Job remains owned through the caller-exit and child-survival receipt assertions. Unconfirmed caller waits keep
+Popen's native handle available for recovery, and the wait-failure control starts with genuinely open pipes.
+
+The reviewed Windows Python 3.12 and 3.14 executables are direct interpreters, as is the CI's setup-python path.
+The containment evidence applies to those paths; assigning a launcher does not retrospectively contain an
+interpreter it already started. The fixture makes no universal guarantee for an arbitrary delegating launcher.
+No production startup code, installed engine, supervisor or running dashboard is changed by this test work.
+
+Focused verification: 23 parallel-reading tests, 26 tracking tests, 46 overlay tests and 6 catalog tests passed.
+The Windows fixture passed 62 tests on Python 3.14 (15.170 seconds) and Python 3.12 (14.519 seconds). A no-op
+Job-termination mutation makes the unpublished-child regression fail; real kill-on-close cleanup remains enabled
+during that control. Python, general and security reviews and the final full-suite results are recorded below.
+
+Independent Python, general and security reviews approved the final source and fixture hashes. A fresh read-only
+live-clock check kept parallel reading enabled, all three Scout sessions complete and their work counters unchanged.
+Its cold sample was 0.9193 seconds; the median of three warm samples was 0.5474 seconds during local validation.
+This is a local observation, not a cross-machine latency guarantee. The separate original performance worktree's
+dirty-patch SHA-256 still matches `9f2f73c70e82cf42f06ef2da888f8c6c971eee561b9484e54203df8eaba8139c`.
+
+The final full local Windows/Python 3.14 suite ran **652 tests in 317.262 seconds: OK, with 2 skipped**
+(650 passed). This includes the hygiene checks, unchanged extracted Node-page harness and previous scan/cache
+regressions. `git diff --check` passed. Pushed-head CI and provider review outcomes are verified separately on PR 3;
+the earlier green run for `bef7025` is not substituted for these checks.
