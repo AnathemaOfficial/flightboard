@@ -9,6 +9,7 @@ const code = [between('  function renderTask(id)', '  function openTask(id)'),
   between('  function completedAt(', '  let lastOk = '),
   between('  function renderHeader()', '  function renderLive()'),
   between('  function renderLive()', '  // ---- what waits'),
+  between('  function cardMeta(c)', '  function cardLedger(c)'),
   between('  function observedStamp(value)', '  function card(c)'),
   between('  function renderFooter()', '  function draw('),
   source.split('\n').find(line => line.startsWith('  const render = ')),
@@ -103,6 +104,19 @@ const checks = new AsyncFunction('assert', `
     const brokenRef={...ref,reason:'read_failed',tracking:{state:'unknown',reason:'unreadable'}};
     assert.match(JSON.stringify(trackingCard(brokenRef)),/page.tracking_unknown/);
   }
+
+  // A failed ancestry observation is unknown, while established zero/positive counts keep their wording.
+  for (const kind of ['worktree','branch','remote']) {
+    for (const ahead of [null,undefined]) {
+      const meta=JSON.stringify(cardMeta({kind,ahead,behind:2,modified:3}));
+      assert.doesNotMatch(meta,/page[.](no_commit_out|commits_out)/);
+      assert.match(meta,/page.behind/);
+      assert.match(meta,/page.modified/);
+    }
+    assert.deepEqual(cardMeta({kind,ahead:0}),['page.no_commit_out']);
+    assert.deepEqual(cardMeta({kind,ahead:2}),['page.commits_out {"n":2}']);
+  }
+  assert.deepEqual(cardMeta({kind:'checkout',ahead:2}),[]);
 
   assert.equal(requestTimeout(),20000);
   for (const [seconds,expected] of [[12,20000],[30,38000],[120,128000]]) {
@@ -235,6 +249,6 @@ const checks = new AsyncFunction('assert', `
 
   document.hidden=true; let calls=0; fetch=async()=>{calls++;return response(state());}; await refresh();
   assert.equal(calls,0);
-  return '14 live-page checks passed';
+  return '15 live-page checks passed';
 `);
 checks(assert).then(result => console.log(result)).catch(error => { console.error(error); process.exitCode=1; });

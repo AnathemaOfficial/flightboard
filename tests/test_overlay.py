@@ -320,7 +320,8 @@ class RulesTest(unittest.TestCase):
 
 def card(name: str, **values) -> dict:
     """A session as the view reads it, with only what a test sets."""
-    return {"name": name, "kind": "branch", "advice": "", "stage": "committed", "decisions": [], "_changes": [],
+    return {"id": name, "name": name, "kind": "branch", "advice": "", "stage": "committed", "decisions": [],
+            "_changes": [],
             "reason": "", "reason_text": "", "activity": "quiet", "files_read": True, "tasks": [], "inferred": [],
             "last_activity": "", "ahead": 1, "operation": "", "stale": False, "_head_tasks": {}, **values}
 

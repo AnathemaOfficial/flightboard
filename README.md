@@ -411,6 +411,10 @@ does not change the forecast. Dependencies are checked in full, independently of
 - main's figures stay main's; what the sessions declare is counted apart.
 - What branches declare never grows the page without bound: a card names 40 tasks, then a count; the page holds the
   details of 500 tasks at most; what waits for you lists 30 items, then a count.
+  Tracking checks rank before quiet-session notices; merge, conflict, task/decision checks, preservation alerts
+  and reviews rank ahead of both. When higher-priority items fill the 30 named slots, a quiet-session notice can
+  be omitted from the page and `--resume` item lines and included only in the overflow count. Its absence is not
+  evidence that the session is finished.
 
 ### What a session may be called
 

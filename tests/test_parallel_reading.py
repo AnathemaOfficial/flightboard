@@ -70,6 +70,7 @@ class ParallelRunnerTest(unittest.TestCase):
         jobs = list(range(collector_module.PARALLEL_MIN))
         with mock.patch.object(self.reader.git, "status") as status:
             self.assertEqual(self.reader._parallel_results(jobs, status), [])
+            self.assertEqual(self.reader._parallel_results([0], status, parallel_eligible=True), [])
             status.assert_not_called()
 
         class CustomGit(gitreads.Git):
@@ -78,6 +79,7 @@ class ParallelRunnerTest(unittest.TestCase):
         self.reader.git = CustomGit()
         read = mock.Mock()
         self.assertEqual(self.reader._parallel_results(jobs, read), [])
+        self.assertEqual(self.reader._parallel_results([0], read, parallel_eligible=True), [])
         read.assert_not_called()
 
     def test_a_slow_first_job_does_not_stop_unrelated_queued_reads(self) -> None:
@@ -336,6 +338,85 @@ class ParallelRunnerTest(unittest.TestCase):
         self.assertCountEqual([pair for _, pair in attempts], pairs + reverse)
         self.assertEqual(self.reader._ancestors, dict.fromkeys(reverse, False))
         self.assertTrue(all(self.reader._ancestor_failures[pair] is error for pair, error in unavailable.items()))
+
+    def test_mixed_cached_phase_keeps_its_one_unread_relation_in_a_forked_reader(self) -> None:
+        pairs = [(f"{number + 100:040x}", f"{number + 200:040x}")
+                 for number in range(collector_module.PARALLEL_MIN)]
+        bad, unavailable = pairs[-1], gitreads.GitFailed("temporarily unreadable direction")
+        later = pairs[:-1] + [bad[::-1]]
+        attempts, forks = [], []
+        actual_fork = gitreads.Git.fork
+
+        def fork(git):
+            child = actual_fork(git)
+            forks.append(child)
+            return child
+
+        def ancestor(git, common, older, newer):
+            pair = (older, newer)
+            attempts.append((git, pair))
+            if pair == bad:
+                raise unavailable
+            return pair != bad[::-1]
+
+        refs = {f"refs/remotes/origin/{number}": {"sha": older}
+                for number, (older, _) in enumerate(later)}
+        with mock.patch.object(gitreads.Git, "is_ancestor", ancestor), \
+                mock.patch.object(gitreads.Git, "fork", fork):
+            self.reader._prefetch_remote_relations(pairs)
+            self.assertEqual(set(self.reader._ancestors), set(pairs[:-1]))
+            self.assertIs(self.reader._ancestor_failures[bad], unavailable)
+            first_forks = len(forks)
+            self.reader._prefetch_remote_relations(later)
+            for number, (_, newer) in enumerate(later):
+                self.assertEqual(self.reader._guarded_remote(refs, f"refs/heads/{number}", newer),
+                                 "ahead" if number < len(later) - 1 else None)
+        self.assertEqual(len(forks) - first_forks, 1, "cache hits disabled the eligible phase's worker pool")
+        self.assertTrue(all(git is not self.reader.git and any(git is child for child in forks)
+                            for git, _ in attempts), "the mixed phase fell back to the parent runner")
+        self.assertCountEqual([pair for _, pair in attempts], pairs + [bad[::-1]])
+        self.assertIs(self.reader._ancestor_failures[bad], unavailable)
+
+    def test_small_ancestry_phases_stay_sequential_even_with_repeated_or_identity_pairs(self) -> None:
+        pairs = [(f"{number + 100:040x}", f"{number + 200:040x}")
+                 for number in range(collector_module.PARALLEL_MIN - 1)]
+        inputs = [pairs, [pairs[0]] * collector_module.PARALLEL_MIN,
+                  [(f"{number:040x}", f"{number:040x}") for number in range(collector_module.PARALLEL_MIN)]
+                  + [pairs[0]]]
+        for requested in inputs:
+            with self.subTest(requested=requested):
+                reader = collector_module.Collector(Path(self.temporary.name).resolve())
+                attempts = []
+
+                def ancestor(git, common, older, newer):
+                    attempts.append((git, (older, newer)))
+                    return True
+
+                with mock.patch.object(gitreads.Git, "is_ancestor", ancestor), \
+                        mock.patch.object(gitreads.Git, "fork") as fork:
+                    reader._prefetch_remote_relations(requested)
+                    distinct = list(dict.fromkeys(pair for pair in requested if pair[0] != pair[1]))
+                    refs = {f"refs/remotes/origin/{number}": {"sha": older}
+                            for number, (older, _) in enumerate(distinct)}
+                    for number, (_, newer) in enumerate(distinct):
+                        self.assertEqual(reader._remote(refs, f"refs/heads/{number}", newer), "ahead")
+                fork.assert_not_called()
+                self.assertTrue(all(git is reader.git for git, _ in attempts))
+                self.assertEqual([pair for _, pair in attempts], distinct)
+
+    def test_fully_cached_ancestry_phase_starts_no_pool_and_runs_no_git(self) -> None:
+        pairs = [(f"{number + 100:040x}", f"{number + 200:040x}")
+                 for number in range(collector_module.PARALLEL_MIN)]
+        self.reader._ancestors.update(dict.fromkeys(pairs, True))
+        refs = {f"refs/remotes/origin/{number}": {"sha": older}
+                for number, (older, _) in enumerate(pairs)}
+        with mock.patch.object(gitreads.Git, "is_ancestor") as ancestor, \
+                mock.patch.object(collector_module, "ThreadPoolExecutor") as pool:
+            self.reader._prefetch_remote_relations(pairs)
+            for number, (_, newer) in enumerate(pairs):
+                self.assertEqual(self.reader._remote(refs, f"refs/heads/{number}", newer), "ahead")
+        ancestor.assert_not_called()
+        pool.assert_not_called()
 
 
 @unittest.skipIf(GIT is None, "git absent")

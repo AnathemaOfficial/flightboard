@@ -408,6 +408,11 @@ indépendamment des limites d'affichage.
 - Les chiffres de main restent ceux de main ; ce que déclarent les sessions est compté à part.
 - Ce que déclarent les branches ne fait jamais grossir la page sans limite : une carte nomme 40 tâches, puis un
   nombre ; la page garde le détail de 500 tâches au plus ; ce qui t'attend tient en 30 éléments, puis un nombre.
+  Les vérifications de suivi passent avant les avis de session silencieuse ; les fusions, conflits, vérifications
+  de tâche ou de décision, alertes de conservation et revues passent avant les deux. Si les 30 places nommées sont
+  remplies par des éléments prioritaires, un avis de session silencieuse peut être absent des lignes de la page
+  et de `--resume`, tout en étant inclus dans le nombre d'éléments supplémentaires. Son absence ne signifie pas
+  que la session est terminée.
 
 ### Ce qu'on peut dire d'une session
 

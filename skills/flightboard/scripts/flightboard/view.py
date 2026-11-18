@@ -413,8 +413,8 @@ class Waiting:
             # a session whose modified files were not read may be writing: it is not called quiet
             if c["stage"] == "uncommitted" and c["activity"] != "active" and c["files_read"]:
                 text = self.say("wait.session", name=c["name"])
-                items.append(_item("session", self.say("verb.session"), text, text, _named(c), c["name"],
-                                   c["last_activity"]))
+                items.append({**_item("session", self.say("verb.session"), text, text, _named(c), c["name"],
+                                     c["last_activity"]), "session_id": c["id"]})
         return items
 
     def all(self, sessions: list[dict], live: dict[str, dict], notes: list[dict], events: list[dict],
@@ -606,13 +606,13 @@ def build_view(now: datetime, mode: str, context: dict, sessions: list[dict], ve
     # Current interactive tasks retain detail before quiet-session history and tracking reminders.
     visible_waiting = waiting[:MAX_WAITING]
     card_tasks = [tid for c in sessions for tid in _named(c)]
-    current_pairs = [(c["name"], tid) for c in sessions for tid in _named(c)
+    current_pairs = [(c["id"], tid) for c in sessions for tid in _named(c)
                      if live.get(tid, (c.get("_head_tasks") or {}).get(tid, {})).get("status")
                      not in ("done", "dropped")]
     current = set(current_pairs)
     wanted = [item["id"] for item in nexts]
     wanted += [tid for item in visible_waiting if item["kind"] != "tracking" for tid in item["tasks"]
-               if item["kind"] != "session" or (item["session"], tid) in current]
+               if item["kind"] != "session" or (item["session_id"], tid) in current]
     wanted += [tid for _, tid in current_pairs]
     wanted += [event["task"] for event in shown] + card_tasks
     wanted += sorted(tid for tid, e in live.items() if e["sources"])

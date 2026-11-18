@@ -5,7 +5,14 @@ from __future__ import annotations
 
 import ctypes
 from ctypes import wintypes
+from pathlib import Path
+import sys
 import time
+
+
+def fixture_python() -> str:
+    """A Windows venv's redirector must not create an interpreter before job assignment."""
+    return str(Path(sys._base_executable).resolve(strict=True))
 
 
 class _Limits(ctypes.Structure):

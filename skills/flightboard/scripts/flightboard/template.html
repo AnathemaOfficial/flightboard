@@ -414,7 +414,9 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
   }
   function cardMeta(c) {
     const meta = [];
-    if (c.kind !== 'checkout') meta.push(c.ahead ? tn('page.commits_out', c.ahead) : t('page.no_commit_out'));
+    if (c.kind !== 'checkout' && c.ahead !== null && c.ahead !== undefined) {
+      meta.push(c.ahead ? tn('page.commits_out', c.ahead) : t('page.no_commit_out'));
+    }
     if (c.behind) meta.push(tn('page.behind', c.behind));
     if (c.modified) meta.push(tn('page.modified', c.modified));
     if (c.untracked) meta.push(tn('page.untracked', c.untracked));

@@ -152,13 +152,16 @@ class Collector:
             and set(vars(self.git)) <= {"remote", "blank", "graph", "deadline"} \
             and not any(callable(value) for name, value in vars(self).items() if name != "_completion_clock")
 
-    def _parallel_results(self, jobs: list, read) -> list[tuple[object, object, Exception | None]]:
+    def _parallel_results(self, jobs: list, read, *, parallel_eligible: bool | None = None
+                          ) -> list[tuple[object, object, Exception | None]]:
         """Bounded, ordered reads; workers return values and only this thread publishes caches.
 
         At most READ_WORKERS jobs are submitted at once. The pool is drained before a deadline or any other
         failure can return from snapshot: no worker outlives the filters, deadline or cache-pruning phase.
         """
-        if len(jobs) < PARALLEL_MIN or not self._parallel_allowed():
+        if parallel_eligible is None:
+            parallel_eligible = len(jobs) >= PARALLEL_MIN
+        if not jobs or not parallel_eligible or not self._parallel_allowed():
             return []
         results, pending = [None] * len(jobs), {}
         remaining = iter(enumerate(jobs))
@@ -212,6 +215,8 @@ class Collector:
 
     def _prefetch_remote_relations(self, relations) -> None:
         requested = dict.fromkeys(relations)
+        # Phase size chooses the pool before cache hits remove work; only unresolved jobs are submitted.
+        parallel_eligible = len({frozenset(pair) for pair in requested if pair[0] != pair[1]}) >= PARALLEL_MIN
         known = self._ancestors.keys() | self._ancestor_failures.keys()
         jobs, seen = [], set()
         for pair in requested:
@@ -244,7 +249,7 @@ class Collector:
                 return ahead, None
             return ahead, read_direction((newer, older), git)
 
-        for pair, value, error in self._parallel_results(jobs, read):
+        for pair, value, error in self._parallel_results(jobs, read, parallel_eligible=parallel_eligible):
             if error is None:
                 for direction, result in zip((pair, (pair[1], pair[0])), value):
                     if isinstance(result, Exception):

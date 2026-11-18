@@ -186,3 +186,37 @@ The final full local Windows/Python 3.14 suite ran **652 tests in 317.262 second
 (650 passed). This includes the hygiene checks, unchanged extracted Node-page harness and previous scan/cache
 regressions. `git diff --check` passed. Pushed-head CI and provider review outcomes are verified separately on PR 3;
 the earlier green run for `bef7025` is not substituted for these checks.
+
+## Follow-up on review `5960910561`
+
+The `131338a` revision passed all eight CI jobs and its Codex review reported no findings. The manually requested
+CodeRabbit pass identified additional display, cache-threshold and fixture cases. Quiet-session detail priority
+now uses the stable session ID rather than a display name shared by different worktrees. The page omits an unknown
+commit distance instead of rendering `null` as zero; known zero and positive distances retain their existing labels.
+
+An ancestry phase with at least eight distinct, non-identity unordered relations is eligible for parallel reads
+before cached relations are removed. Only unresolved jobs are submitted, so a mixed eligible phase can retain a
+forked reader for its last missing direction. Fully cached phases issue no Git calls, and genuinely smaller phases
+remain sequential. The earlier no-serial-fallback claims concern eligible phases, not every Git command.
+
+The existing 30-item waiting policy is retained and documented in both READMEs: tracking checks rank ahead of
+quiet-session notices, after merge/conflict/check/alert/review items. A quiet notice may therefore be represented
+only in the overflow count when higher-priority items fill the named list. Absence from that bounded list never
+establishes completion. This policy is independent of reserving details for the items that are actually visible.
+
+The Windows fixture selects the direct base interpreter for both controlled launches and its isolated test
+configuration, including when the test runner is in a CPython venv. Bootstrap gating remains in place. An opened
+PID handle is retained as a child-observation handle only after exact Job membership succeeds; a rejected handle
+is closed without waiting on or terminating the unrelated process, and successful Job cleanup still permits drain.
+
+Focused regressions passed: 26 parallel-reading tests, 27 tracking tests, 46 overlay tests, the Python page wrapper
+and 15 checks against JavaScript functions extracted from the real template. The 64-test Windows fixture passed
+on Python 3.14 in 15.599 seconds and inside a real offline Python 3.12 venv in 15.156 seconds. That venv reports a
+redirector as `sys.executable` and the native interpreter as `sys._base_executable`; both controlled launches use
+the latter. Independent Python, JavaScript, general and security reviews approved the frozen candidate hashes.
+
+The final full local Windows/Python 3.14 suite ran **658 tests in 315.843 seconds: OK, with 2 skipped**
+(656 passed). A fresh four-reading Scout check retained complete observations and unchanged counters for all three
+sessions, with parallel readers enabled and a 0.5234-second warm median (0.8395-second cold sample). As before,
+these are local measurements. `git diff --check` passed; CI and provider results are recorded against the next
+pushed SHA rather than reusing the successful `131338a` checks.

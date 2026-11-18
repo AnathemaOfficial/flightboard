@@ -337,6 +337,45 @@ class TrackingViewTest(unittest.TestCase):
                 self.assertNotIn("QUIET-DONE", value["tasks"])
                 self.assertEqual(len(value["tasks"]), 500)
 
+    def test_homonymous_sessions_do_not_promote_each_others_quiet_history(self) -> None:
+        adapter = load("ledgers").make("tasks", "tasks.json")
+        current = [f"CURRENT-{number:03}" for number in range(499)]
+        ledger = adapter.parse(json.dumps({"version": 1, "tasks": [
+            *({"id": tid, "title": "Current quiet work", "status": "in_progress", "owner": "codex"}
+              for tid in current),
+            {"id": "VISIBLE-1", "title": "Last visible quiet work", "status": "in_progress", "owner": "codex"}]})
+                               .encode("utf-8"))
+        old = adapter.parse(json.dumps({"version": 1, "tasks": [
+            {"id": "OLD-1", "title": "Completed quiet work", "status": "done", "owner": "codex"}]}).encode("utf-8"))
+        active = adapter.parse(json.dumps({"version": 1, "tasks": [
+            {"id": "OLD-1", "title": "Other session work", "status": "in_progress", "owner": "codex"}]})
+                               .encode("utf-8"))
+        self.assertTrue(ledger["valid"], ledger["error"])
+        self.assertTrue(old["valid"], old["error"])
+        self.assertTrue(active["valid"], active["error"])
+        cards = []
+        for number in range(13):
+            names = current[number * 40:(number + 1) * 40]
+            cards.append(observed(id=f"aa-{number:02}", name=f"aa-{number:02}", tasks=names,
+                                  ledger_file_modified_at=RECENT,
+                                  _head_tasks={tid: ledger["tasks"][tid] for tid in names}))
+        cards.append(observed(id="quiet-worker", name="worker", tasks=["OLD-1"],
+                              ledger_file_modified_at=RECENT, _head_tasks=old["tasks"]))
+        cards.append(observed(id="active-worker", name="worker", tasks=["OLD-1"], activity="active",
+                              ledger_file_modified_at=RECENT, _head_tasks=active["tasks"]))
+        cards.append(observed(id="last-visible", name="zz-last", tasks=["VISIBLE-1"],
+                              ledger_file_modified_at=RECENT,
+                              _head_tasks={"VISIBLE-1": ledger["tasks"]["VISIBLE-1"]}))
+        value = build(cards, ledger=ledger, ledger_adapter=adapter)
+        self.assertEqual(len(value["waiting"]), 15)
+        self.assertTrue(all(item["kind"] == "session" for item in value["waiting"]))
+        self.assertNotIn("OLD-1", value["tasks"], "an unrelated namesake must not promote completed history")
+        self.assertIn("VISIBLE-1", value["tasks"])
+        self.assertEqual(value["tasks"]["VISIBLE-1"]["title"], "Last visible quiet work")
+        self.assertEqual(len(value["tasks"]), 500)
+        quiet = next(item for item in value["waiting"] if item["session"] == "worker")
+        self.assertEqual(quiet["session_id"], "quiet-worker")
+
     def test_build_adds_diagnostics_without_changing_tasks_events_or_advice(self) -> None:
         card = observed(tasks=["FB-001"], _head_tasks={"FB-001": {"status": "awaiting_review"}})
         before = copy.deepcopy(card)
