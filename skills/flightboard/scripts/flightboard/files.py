@@ -1499,7 +1499,8 @@ def activity_info(tree: Path, root: Path, legacy_names: list[str], names: list[s
         if _is_link(info) or not stat.S_ISREG(info.st_mode):
             reasons.add("unsafe")
             continue
-        sample = info.st_mtime if sample is None else max(sample, info.st_mtime)
+        written = info.st_mtime_ns / 1e9  # match the guarded ledger identity's timestamp conversion
+        sample = written if sample is None else max(sample, written)
 
     def dated(value):
         try:

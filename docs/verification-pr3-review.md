@@ -220,3 +220,27 @@ The final full local Windows/Python 3.14 suite ran **658 tests in 315.843 second
 sessions, with parallel readers enabled and a 0.5234-second warm median (0.8395-second cold sample). As before,
 these are local measurements. `git diff --check` passed; CI and provider results are recorded against the next
 pushed SHA rather than reusing the successful `131338a` checks.
+
+## Shared precision for ordinary file observations
+
+Review `5961478110` on `9efd831` contained no inline comments and one outside-diff timestamp issue. A read-only
+reproduction on an existing repository file found `st_mtime_ns = 1794841793232145500`, while `st_mtime` was
+`1794841793.2321455` and `st_mtime_ns / 1e9` was `1794841793.2321453`. Formatting those different float conversions
+could make activity appear one microsecond later than the ledger even when both represented the same saved file.
+
+Ordinary file observations now use the nanosecond conversion already used for the ledger, at the existing shared
+normalization point in `files.activity_info`. Both cached candidate stats and guarded fallback stats follow that
+path. Legacy file dates and active/recent classification retain `st_mtime`; no global tolerance, extra stat,
+traversal, Git call or cross-reading filesystem cache is introduced. Same-stat observations produce no tracking
+gap, while genuine microsecond differences remain observable.
+
+Four RED subcases reproduced the false signal through the real activity and tracking functions (cached/fallback
+stats, unassigned/ongoing tasks). After correction, 19 activity tests and 12 recovery tests passed; the two new
+methods also passed on Python 3.12. Genuine +1-microsecond controls still report activity, with zero extra metadata
+lookups for cached evidence and one shared lookup for fallback evidence. Python, general and security delta
+reviews approved the final hashes.
+
+The final full local Windows/Python 3.14 suite ran **660 tests in 319.666 seconds: OK, with 2 skipped**
+(658 passed). Four fresh Scout readings kept all three sessions complete and their counters unchanged, with
+parallel readers enabled and a 0.5375-second warm median (0.8604-second cold sample). `git diff --check` passed.
+CI and both bot reviews are checked again on the pushed precision-fix SHA.

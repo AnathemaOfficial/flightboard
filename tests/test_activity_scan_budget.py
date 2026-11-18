@@ -8,8 +8,9 @@ import json
 import os
 import tempfile
 import unittest
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from tests.fixtures import GIT, NOW, load
@@ -19,9 +20,58 @@ files = load("files")
 collector_module = load("collector")
 gitreads = load("gitreads")
 Settings = load("config").Settings
+view = load("view")
 
 
 class ObservedActivityTest(unittest.TestCase):
+    def _assert_tracking_precision(self, difference_ns: int) -> None:
+        ledger_ns = 1794841793232145500  # this same mtime rounds differently through st_mtime and ns / 1e9
+        observed_ns = ledger_ns + difference_ns
+        seconds, nanoseconds = divmod(observed_ns, 1_000_000_000)
+        now = datetime.fromtimestamp(ledger_ns / 1e9, timezone.utc) + timedelta(days=1)
+        for cached in (False, True):
+            for status in (None, "in_progress"):
+                with self.subTest(cached=cached, status=status), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    leaf = root / "tasks.json"
+                    leaf.write_text("{}\n", encoding="utf-8")
+                    info = SimpleNamespace(st_mode=leaf.stat().st_mode, st_mtime_ns=observed_ns,
+                                           st_mtime=seconds + nanoseconds / 1e9)
+                    actual, looked_up = files.os.lstat, []
+
+                    def lstat(path, *args, **kwargs):
+                        if Path(path) == leaf:
+                            looked_up.append(Path(path))
+                            return info
+                        return actual(path, *args, **kwargs)
+
+                    observations = {leaf.name: info} if cached else {}
+                    with mock.patch.object(files.os, "lstat", lstat):
+                        result = files.activity_info(root, root, [leaf.name], [leaf.name], observations, set())
+                    self.assertTrue(result["complete"], result)
+                    self.assertEqual(looked_up, [] if cached else [leaf])
+                    self.assertEqual(result["last_write"], datetime.fromtimestamp(info.st_mtime, timezone.utc),
+                                     "legacy entry dating must retain its existing float observation")
+                    session = {"kind": "worktree", "files_read": True, "ledger": "ok", "modified": 1,
+                               "file_activity_complete": result["complete"],
+                               "ledger_file_modified_at": collector_module._observed_iso(ledger_ns / 1e9, timezone.utc),
+                               "file_activity_observed_at": collector_module._observed_iso(
+                                   result["observed"].timestamp(), timezone.utc),
+                               "tasks": [] if status is None else ["LOT-1"],
+                               "_head_tasks": {} if status is None else {"LOT-1": {"status": status}}}
+                    expected = {"state": "none", "reason": ""} if difference_ns == 0 else {
+                        "state": "check" if status is None else "info",
+                        "reason": "unassigned" if status is None else "ongoing"}
+                    self.assertEqual(view.tracking(session, True, now), expected)
+                    if difference_ns == 0:
+                        self.assertEqual(session["file_activity_observed_at"], session["ledger_file_modified_at"])
+
+    def test_same_stat_does_not_create_a_false_tracking_gap(self) -> None:
+        self._assert_tracking_precision(0)
+
+    def test_a_real_microsecond_gap_still_supplies_tracking_evidence(self) -> None:
+        self._assert_tracking_precision(1_000)
+
     def test_failed_legacy_lookups_are_not_retried_before_a_later_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
