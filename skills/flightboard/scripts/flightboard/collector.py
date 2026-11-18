@@ -19,6 +19,7 @@ import os
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -62,7 +63,8 @@ class Collector:
     """Reads the repository on demand, one reading at a time. Given a session's worktree, it reads the main checkout
     that worktree belongs to."""
 
-    def __init__(self, root: Path, settings: Settings | None = None, git: GIT.Git | None = None) -> None:
+    def __init__(self, root: Path, settings: Settings | None = None, git: GIT.Git | None = None, *,
+                 completion_clock: Callable[[], datetime] | None = None) -> None:
         self.settings = settings or Settings()
         if not CONFIG.valid(self.settings):  # settings built by hand pass the same text checks as the command line
             raise ValueError("settings refused")
@@ -76,6 +78,7 @@ class Collector:
         self.remote = self.git.remote
         self.remote_prefix = f"refs/remotes/{self.remote}/"
         self._lock = threading.Lock()
+        self._completion_clock = completion_clock
         self._version_ok = False
         self._no_lazy_fetch = False  # whether this git honours GIT_NO_LAZY_FETCH (a partial clone is then read)
         self._adapter_key: tuple | None = None
@@ -141,10 +144,10 @@ class Collector:
     # -------- cached reads
 
     def _parallel_allowed(self) -> bool:
-        """A custom reader or an instance-level spy may carry state a fork cannot safely reproduce."""
+        """Custom operations may carry state a fork cannot reproduce; the parent-only completion clock is safe."""
         return type(self) is Collector and type(self.git) is GIT.Git \
             and set(vars(self.git)) <= {"remote", "blank", "graph", "deadline"} \
-            and not any(callable(value) for value in vars(self).values())
+            and not any(callable(value) for name, value in vars(self).items() if name != "_completion_clock")
 
     def _parallel_results(self, jobs: list, read) -> list[tuple[object, object, Exception | None]]:
         """Bounded, ordered reads; workers return values and only this thread publishes caches.
@@ -500,9 +503,13 @@ class Collector:
         versions = OVERLAY.history_versions(entries, {sha: self._ledger(sha, False) for sha in
                                                       {entry["sha"] for entry in entries}}) if adapter else []
         short = main_ref.split("/", 3)[-1] if main_ref.startswith("refs/remotes/") else main_ref[len(HEADS):]
+        if self._completion_clock is not None:
+            observed_until = self._completion_clock()
+        else:
+            observed_until = now + timedelta(seconds=max(0, time.monotonic() - started)) \
+                if started is not None else now
         context = {"ref": main_ref, "sha": main, "note": list(note),
-                   "observed_until": now + timedelta(seconds=max(0, time.monotonic() - started))
-                   if started is not None else now,
+                   "observed_until": observed_until,
                    "note_text": " · ".join(M.say(self.lang, "note." + code, remote=self.remote,
                                                  main=safe_branch(short)) for code in note),
                    "ledger": main_ledger, "ledger_adapter": adapter, "ledger_missing": missing,

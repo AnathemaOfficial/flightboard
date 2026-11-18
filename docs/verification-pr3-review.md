@@ -56,3 +56,35 @@ cards and retained warnings for refused local worktrees and broken refs. `git di
 A read-only collector check against the representative three-session checkout still reports complete file
 observations and unchanged work counters. Remote CI and bot coverage remain separate checks on the pushed
 head, recorded on PR 3; this receipt does not claim those later results or authorize a merge.
+
+## Live clock and visible-detail follow-up
+
+The next external pass on `fcd32d27ae60a12634a91f331a1f0091fd9f04b0` classified risk as low and raised smaller
+clock, display-budget and test-boundary issues. The live server now supplies a trusted completion wall clock;
+fixed-time snapshots retain their deterministic time model and monotonic deadlines remain independent of clock
+corrections. The clock hook must not disable normal parallel readers or permit arbitrary instance reader overrides.
+
+Review actions precede informational tracking reminders. Visible next-task details are reserved before reminder
+IDs, and hidden waiting rows do not preempt details for visible cards. A known enumeration limit is retained even
+when an entry disappears before classification. Tests observe deadlines outside callbacks that intentionally catch
+errors, expire worker deadlines only after the initial batch is submitted, identify the actual forked failure
+runners, distinguish initial abort/poll timers and allow fixture setup time before the child watchdog expires.
+
+The additional request to infer changes that happen between separate file and ledger observations is outside
+the temporal-hint contract: `none` means no temporal gap was observed, never atomic coverage. An active worktree
+is not an atomic snapshot. A later ledger save can remove the signal without proving every change was registered,
+as the README and tracking design already state. Another traversal would add work and still have its own race
+window; this correction adds no journal, second full walk or automatic acceptance inference.
+
+The final follow-up suite ran **628 tests in 293.158 seconds: OK, with 2 skipped** (626 passed). Focused clock,
+budget, priority/detail, parallel, mode, startup and actual Node-page checks passed. Independent Python,
+JavaScript, security and general reviews approved the final source and tests.
+
+The review caught a temporary interaction between the trusted clock callback and the conservative instance-spy
+guard. Only the explicit `_completion_clock` field is exempted; custom reader overrides still select sequential
+execution. A RED/GREEN regression on eight real worktrees verifies actual forked readers, equivalent complete
+results and the custom-operation refusal control.
+
+Four read-only checks with the live clock configured report parallel reading enabled, all three representative
+sessions complete and unchanged work counters. Cold latency was 0.8713 seconds; the three warm samples gave
+a **0.4967-second median**. This is a local measurement, not a guarantee for other repositories or machines.

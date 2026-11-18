@@ -33,7 +33,7 @@ MAX_DETAILS = 500  # the tasks whose detail the page holds
 HISTORY_MAX = 300
 STARTED = ("in_progress", "awaiting_review", "done")
 PRIORITY = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
-WAITING_ORDER = ("merge", "conflict", "check", "alert", "tracking", "review", "session")
+WAITING_ORDER = ("merge", "conflict", "check", "alert", "review", "tracking", "session")
 WORD = re.compile(r"[A-Za-z0-9]+(?:[._-]+[A-Za-z0-9]+)*")
 
 
@@ -600,7 +600,7 @@ def build_view(now: datetime, mode: str, context: dict, sessions: list[dict], ve
     nexts = _next(live, sessions, adapter, raw, order) if tracked else []
     shown = events[:MAX_EVENTS]
     # the tasks the page can open, those it shows first, at most MAX_DETAILS
-    wanted = [tid for item in waiting for tid in item["tasks"]] + [item["id"] for item in nexts]
+    wanted = [item["id"] for item in nexts] + [tid for item in waiting[:MAX_WAITING] for tid in item["tasks"]]
     wanted += [tid for c in sessions for tid in c["tasks"][:MAX_SESSION_TASKS]] + [event["task"] for event in shown]
     wanted += sorted(tid for tid, e in live.items() if e["sources"])
     ids = set(list(dict.fromkeys(wanted))[:MAX_DETAILS])

@@ -1210,6 +1210,10 @@ def children(tree: Path, root: Path, folder: str, limit: int = MAX_DATED, depth:
             return None
         listing_reasons: set[str] = set()
         listed = _entries(path, budget=budget, reasons=listing_reasons) if budget is not None else _entries(path)
+        if listing_reasons:
+            if reasons is not None:
+                reasons.update(listing_reasons)
+            found["complete"] = False
         if listed is None:
             return None
         for entry in listed:
@@ -1233,9 +1237,6 @@ def children(tree: Path, root: Path, folder: str, limit: int = MAX_DATED, depth:
             if sum(len(found[key]) for key in ("leaves", "folders", "sealed")) > limit:
                 return None
         if listing_reasons:
-            if reasons is not None:
-                reasons.update(listing_reasons)
-            found["complete"] = False
             return found
     return found
 

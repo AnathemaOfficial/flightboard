@@ -110,6 +110,33 @@ class ObservedActivityTest(unittest.TestCase):
 
 
 class SharedTraversalBudgetTest(unittest.TestCase):
+    def test_disappearing_prefix_entry_keeps_the_known_exhaustion_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            folder = root / "work"
+            folder.mkdir()
+            leaf = folder / "work.py"
+            leaf.write_text("work\n", encoding="utf-8")
+            actual = files._entry_info
+
+            def vanished(entry):
+                Path(entry.path).unlink()
+
+                class FreshEntry:
+                    name, path = entry.name, entry.path
+
+                    @staticmethod
+                    def stat(*, follow_symlinks=False):
+                        return os.stat(entry.path, follow_symlinks=follow_symlinks)
+
+                return actual(FreshEntry())  # Windows DirEntry may retain metadata from its directory listing
+
+            reasons = set()
+            with mock.patch.object(files, "_entry_info", vanished):
+                found = files.children(root, root, "work/", budget=files.Budget(entries=1), reasons=reasons)
+            self.assertIsNone(found)
+            self.assertEqual(reasons, {"limit"})
+
     def test_directory_iterator_is_bounded_and_observed_prefix_is_retained(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

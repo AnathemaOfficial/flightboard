@@ -103,33 +103,55 @@ class ParallelRunnerTest(unittest.TestCase):
 
     def test_deadline_stops_new_submissions_and_drains_running_reads(self) -> None:
         lock = threading.Lock()
+        initial_submitted = threading.Event()
+        initial_started = threading.Barrier(collector_module.READ_WORKERS)
+        expired = threading.Event()
+        submitted, deadline_checks = [], []
         active, started = 0, 0
+        submit = collector_module.ThreadPoolExecutor.submit
+        time_left = gitreads.Git.time_left
 
-        def slow(job, git):
+        def tracked_submit(pool, read, *args, **kwargs):
+            future = submit(pool, read, *args, **kwargs)
+            submitted.append(args[0])
+            if len(submitted) == collector_module.READ_WORKERS:
+                initial_submitted.set()
+            return future
+
+        def checked_time_left(git):
+            if git is self.reader.git:
+                deadline_checks.append(git.deadline)
+            return time_left(git)
+
+        def read(job, git):
             nonlocal active, started
             with lock:
                 active += 1
                 started += 1
             try:
-                time.sleep(0.65)
+                if not initial_submitted.wait(timeout=5):
+                    raise AssertionError("the initial batch was not submitted")
+                initial_started.wait(timeout=5)
+                if job == 0:
+                    self.reader.git.deadline = time.monotonic() - 1
+                    expired.set()
+                elif not expired.wait(timeout=5):
+                    raise AssertionError("the deadline did not expire before the first completion")
                 return job
             finally:
                 with lock:
                     active -= 1
 
-        started_reading = threading.Event()
-        actual = slow
-
-        def expire_after_start(job, git):
-            self.reader.git.deadline = time.monotonic() - 1
-            started_reading.set()
-            return actual(job, git)
-
-        with self.assertRaises(gitreads.ReadingTooLong):
-            self.reader._parallel_results(list(range(collector_module.PARALLEL_MIN)), expire_after_start)
-        self.assertTrue(started_reading.is_set())
-        self.assertGreater(started, 0)
-        self.assertLessEqual(started, collector_module.READ_WORKERS)
+        with mock.patch.object(collector_module.ThreadPoolExecutor, "submit", tracked_submit), \
+                mock.patch.object(gitreads.Git, "time_left", checked_time_left), \
+                self.assertRaises(gitreads.ReadingTooLong):
+            self.reader._parallel_results(list(range(collector_module.PARALLEL_MIN)), read)
+        self.assertTrue(expired.is_set())
+        self.assertEqual(submitted, list(range(collector_module.READ_WORKERS)))
+        self.assertEqual(len(deadline_checks), collector_module.READ_WORKERS + 1)
+        self.assertTrue(all(value is None for value in deadline_checks[:-1]))
+        self.assertIsNotNone(deadline_checks[-1])
+        self.assertEqual(started, collector_module.READ_WORKERS)
         self.assertEqual(active, 0, "a worker survived the failed reading")
 
     def test_failed_graph_prefetch_propagates_without_a_sequential_retry(self) -> None:
@@ -215,23 +237,35 @@ class ParallelSnapshotTest(unittest.TestCase):
         main = self.repo.git("rev-parse", "main")
         tip = self.repo.git("rev-parse", "HEAD", where=self.trees[0])
         actual = gitreads.Git.counts
+        actual_fork = gitreads.Git.fork
+        forks, failed_runners = [], []
         failed, attempts = True, 0
+
+        def fork(git):
+            child = actual_fork(git)
+            forks.append(child)
+            return child
 
         def counts(git, common, base, current):
             nonlocal attempts
             if (base, current) == (main, tip):
                 attempts += 1
                 if failed:
+                    failed_runners.append(git)
                     raise gitreads.GitFailed("temporarily unavailable graph")
             return actual(git, common, base, current)
 
         reader = collector_module.Collector(self.repo.root, self.settings)
-        with mock.patch.object(gitreads.Git, "counts", counts):
+        with mock.patch.object(gitreads.Git, "counts", counts), mock.patch.object(gitreads.Git, "fork", fork):
             first = reader.snapshot(NOW)
             self.assertEqual(first["main"]["state"], "ok", first["main"])
             card = next(card for card in first["sessions"] if card["name"] == self.trees[0].name)
             self.assertEqual(card["reason"], "distance_unreadable")
             self.assertEqual(attempts, 1, "failed prefetch ran again in the sequential path")
+            self.assertEqual(len(failed_runners), 1)
+            self.assertIsNot(failed_runners[0], reader.git)
+            self.assertTrue(any(child is failed_runners[0] for child in forks),
+                            "the failing pair did not exercise its forked prefetch runner")
             failed = False
             second = reader.snapshot(NOW)
         card = next(card for card in second["sessions"] if card["name"] == self.trees[0].name)
@@ -243,23 +277,35 @@ class ParallelSnapshotTest(unittest.TestCase):
         main = self.repo.git("rev-parse", "main")
         tip = self.repo.git("rev-parse", "HEAD", where=self.trees[0])
         actual = gitreads.Git.commits
+        actual_fork = gitreads.Git.fork
+        forks, failed_runners = [], []
         failed, attempts = True, 0
+
+        def fork(git):
+            child = actual_fork(git)
+            forks.append(child)
+            return child
 
         def commits(git, common, base, current, limit=gitreads.MAX_COMMITS):
             nonlocal attempts
             if (base, current, limit) == (main, tip, gitreads.MAX_SESSION_COMMITS + 1):
                 attempts += 1
                 if failed:
+                    failed_runners.append(git)
                     raise gitreads.GitFailed("temporarily unavailable range")
             return actual(git, common, base, current, limit)
 
         reader = collector_module.Collector(self.repo.root, self.settings)
-        with mock.patch.object(gitreads.Git, "commits", commits):
+        with mock.patch.object(gitreads.Git, "commits", commits), mock.patch.object(gitreads.Git, "fork", fork):
             first = reader.snapshot(NOW)
             self.assertEqual(first["main"]["state"], "ok", first["main"])
             card = next(card for card in first["sessions"] if card["name"] == self.trees[0].name)
             self.assertEqual(card["reason"], "commit_history_unreadable")
             self.assertEqual(attempts, 1, "failed prefetch ran again in the sequential path")
+            self.assertEqual(len(failed_runners), 1)
+            self.assertIsNot(failed_runners[0], reader.git)
+            self.assertTrue(any(child is failed_runners[0] for child in forks),
+                            "the failing range did not exercise its forked prefetch runner")
             failed = False
             second = reader.snapshot(NOW)
         card = next(card for card in second["sessions"] if card["name"] == self.trees[0].name)

@@ -354,15 +354,17 @@ class ReadSecondsTest(unittest.TestCase):
         collector = self.make_collector()
         expected = {"settings": collector.settings.public()}
         clock = [100.0]
+        observed_deadlines = []
 
         def read(now, mode, *_):
-            self.assertEqual(collector.git.deadline, 130)
+            observed_deadlines.append(collector.git.deadline)
             clock[0] = 129.0
             return expected
 
         with mock.patch.object(collector_module.time, "monotonic", side_effect=lambda: clock[0]), \
                 mock.patch.object(collector, "_snapshot", side_effect=read):
             self.assertEqual(collector.snapshot(NOW), expected)
+        self.assertEqual(observed_deadlines, [130])
         self.assertIsNone(collector.git.deadline)
 
     def test_errors_and_expired_readings_keep_the_budget_for_the_page(self) -> None:
@@ -372,9 +374,10 @@ class ReadSecondsTest(unittest.TestCase):
             with self.subTest(failure=failure):
                 collector = self.make_collector()
                 clock = [100.0]
+                observed_deadlines = []
 
                 def read(now, mode, *_):
-                    self.assertEqual(collector.git.deadline, 130)
+                    observed_deadlines.append(collector.git.deadline)
                     if failure is not None:
                         raise failure
                     clock[0] = 130.0
@@ -383,6 +386,7 @@ class ReadSecondsTest(unittest.TestCase):
                 with mock.patch.object(collector_module.time, "monotonic", side_effect=lambda: clock[0]), \
                         mock.patch.object(collector, "_snapshot", side_effect=read):
                     found = collector.snapshot(NOW)
+                self.assertEqual(observed_deadlines, [130])
                 self.assertEqual(found["main"]["state"], "unreadable")
                 self.assertEqual(found["main"]["reason"], expected_reason)
                 self.assertEqual(found["settings"]["read_seconds"], 30)

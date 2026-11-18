@@ -209,8 +209,10 @@ const checks = new AsyncFunction('assert', `
   const initialRequest=startPolling();
   assert.equal(immediateCalls,1);
   assert.equal(data.main.state,'loading');
-  assert.ok(Array.from(timers).some(([id,entry])=>!existingTimers.has(id) && entry.delay===128000));
+  const initialTimers=()=>Array.from(timers).filter(([id])=>!existingTimers.has(id)).map(([,entry])=>entry.delay);
+  assert.deepEqual(initialTimers(),[128000]);
   finishInitial(response(state('first result','done',120))); await initialRequest;
+  assert.deepEqual(initialTimers(),[10000]);
   assert.equal(data.main.state,'ok'); assert.equal($('live').className,'live on');
   assert.notEqual(lastOk,null); assert.equal(requestTimeout(),128000);
 

@@ -295,11 +295,13 @@ class StartupTest(unittest.TestCase):
 
     def test_once_child_can_write_after_its_supervisor_process_has_exited(self) -> None:
         gate, receipt = self.root / "caller-has-exited", self.root / "child-survived"
+        caller_timeout = 10
+        child_watchdog = caller_timeout + 20  # allow the supervisor and native handle acquisition to finish
         child = self.root / "delayed-child.py"
         child.write_text(
             "from pathlib import Path\nimport time\n"
             f"gate = Path({str(gate)!r})\nreceipt = Path({str(receipt)!r})\n"
-            "limit = time.monotonic() + 5\n"
+            f"limit = time.monotonic() + {child_watchdog}\n"
             "while not gate.exists() and time.monotonic() < limit:\n    time.sleep(0.02)\n"
             "if gate.exists():\n    print('SERVING after caller exit', flush=True)\n"
             "    receipt.write_text('survived', encoding='utf-8')\n"
@@ -325,7 +327,7 @@ class StartupTest(unittest.TestCase):
             "print(json.dumps(result))\n"
         )
         caller = subprocess.run([sys.executable, "-I", "-B", "-c", code], capture_output=True,
-                                timeout=10, creationflags=startup.NO_WINDOW)
+                                timeout=caller_timeout, creationflags=startup.NO_WINDOW)
         self.assertEqual(caller.returncode, 0, caller.stderr.decode("utf-8", errors="replace"))
         handle = None
         if os.name == "nt":

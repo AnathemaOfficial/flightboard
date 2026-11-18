@@ -341,7 +341,8 @@ def _resume(root: Path, settings: Settings, now: datetime) -> int:
 
 def _serve(root: Path, settings: Settings, port: int) -> int:
     try:
-        servers = SERVER.make_servers(SERVER.Snapshots(Collector(root, settings)), PAGE.template(), port,
+        collector = Collector(root, settings, completion_clock=SERVER.now_local)
+        servers = SERVER.make_servers(SERVER.Snapshots(collector), PAGE.template(), port,
                                       settings.lang)
     except OSError:
         print(f"port {port} is busy or unavailable (127.0.0.1 or ::1): start again with --port N", file=sys.stderr)
