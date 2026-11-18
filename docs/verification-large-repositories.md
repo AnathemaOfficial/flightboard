@@ -4,6 +4,9 @@ SPDX-FileCopyrightText: 2026 Technologies CoreXalt Inc.
 -->
 # Large-repository capacity checks — 2026-11-13
 
+These measurements precede the [loading optimizations](verification-large-repository-loading.md), whose separate
+report covers faster initial HTML and guarded parallel reads on the existing 267-worktree repository.
+
 `--max-worktrees` accepts 1 to 1000 registered worktree admin entries, with 100 as the default. The cap does not
 allocate worktrees or add read scope. A set over the chosen cap is refused, rather than silently truncated.
 The shared reading deadline (12 to 120 seconds), each Git command's 8-second cap and the 50,000-entry preflight

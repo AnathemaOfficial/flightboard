@@ -307,6 +307,12 @@ def parse_staged(raw: bytes, limit: int = MAX_STAGED) -> list[tuple[str, str, st
 
 # ---------------------------------------------------------------- the runner
 
+def ignore_eligible(path: str) -> bool:
+    """Whether check-ignore can safely evaluate this relative name without literal pathspec support."""
+    return bool(path) and not path.startswith(":") and not any(c in path for c in "*?[\\") \
+        and not any("\ud800" <= c <= "\udfff" for c in path)
+
+
 class Git:
     """The reads of flightboard, and nothing else. remote names the one remote whose branches are read."""
 
@@ -325,6 +331,12 @@ class Git:
         if left <= 0:
             raise ReadingTooLong("the whole reading exceeded its time budget")
         return min(GIT_TIMEOUT, left)
+
+    def fork(self) -> Git:
+        """An independent runner with this snapshot's fixed filters, graph policy and absolute deadline."""
+        child = Git(self.remote)
+        child.blank, child.graph, child.deadline = self.blank, self.graph, self.deadline
+        return child
 
     def execute(self, git_dir: Path, args: tuple[str, ...], work_tree: Path | None = None,
                 stdin: bytes | None = None, codes: tuple[int, ...] = (0,), literal: bool = True) -> tuple[int, bytes]:
@@ -468,8 +480,7 @@ class Git:
         """Which of these paths, relative to the worktree (a folder ends with "/"), its ignore rules cover.
         check-ignore refuses literal pathspecs, so a name pathspec magic could read (":" first, or one of *?[ and
         backslash) is never asked: it simply counts as untracked."""
-        asked = [path for path in paths if path and not path.startswith(":") and not any(c in path for c in "*?[\\")
-                 and not any("\ud800" <= c <= "\udfff" for c in path)]  # a name that is not UTF-8 counts as untracked
+        asked = [path for path in paths if ignore_eligible(path)]
         if not asked:
             return set()
         feed = "".join(f"{path}\0" for path in asked).encode("utf-8")

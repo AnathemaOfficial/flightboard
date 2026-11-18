@@ -67,6 +67,27 @@ class Snapshots:
                 raise self._error
             return self._view
 
+    def page(self, lang: str = "en") -> dict:
+        """A fresh completed reading, or a neutral shell; HTML never waits for Git."""
+        failed = False
+        if self._lock.acquire(blocking=False):
+            try:
+                if self._at is not None and self._clock() - self._at < MIN_INTERVAL:
+                    if self._error is None and self._view is not None:
+                        return self._view
+                    failed = self._error is not None
+            finally:
+                self._lock.release()
+        settings = getattr(self._collector, "settings", None)
+        lang = getattr(settings, "lang", lang)
+        if failed:
+            value = VIEW.error_view(self._now(), "live", "unavailable", lang=lang, tool=TOOL,
+                                    repository=getattr(self._collector, "name", ""))
+            value["settings"] = settings.public() if settings else {}
+            return value
+        return VIEW.loading_view(self._now(), lang, TOOL, getattr(self._collector, "name", ""),
+                                 settings.public() if settings else {})
+
 
 def refusal(method: str, target: str, headers, port: int) -> str | None:
     """Why a request is refused (a code), or None; checked before any work. Host alone stops DNS rebinding; Origin,
@@ -126,7 +147,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         state = urlsplit(self.path).path == "/state.json"
         try:
-            view = self.server.snapshots.get()
+            view = self.server.snapshots.get() if state else self.server.snapshots.page(self.server.lang)
             body = PAGE.state_json(view) if state else None
         except Exception as exc:  # the collector degrades on its own; this is the last guard of a request
             print(f"reading impossible: {type(exc).__name__}", file=sys.stderr)

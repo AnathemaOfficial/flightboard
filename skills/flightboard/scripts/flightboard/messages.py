@@ -27,6 +27,8 @@ TEXT: dict[str, dict[str, object]] = {
         "verb.alert": "Look at the session",
         "verb.review": "Start the review",
         "verb.session": "Look at the session",
+        "wait.tracking": "{name}: observed file activity is newer than its task ledger; check the associated lot",
+        "wait.tracking_safe": "Recent file activity is newer than the task ledger; check its lot association.",
         "wait.merge": "{tasks} · {name}, {commits}, {pushed}",
         "wait.merge_git": "{name}, {commits}, {pushed}",
         "wait.conflict": "{tid}, changed in several places: {sides}",
@@ -173,6 +175,10 @@ TEXT: dict[str, dict[str, object]] = {
         "verb.alert": "Regarder la session",
         "verb.review": "Lancer la revue",
         "verb.session": "Regarder la session",
+        "wait.tracking": "{name} : de l’activité est observée après l’enregistrement du registre ; "
+                         "vérifie le lot associé",
+        "wait.tracking_safe": "De l’activité est observée après l’enregistrement du registre ; "
+                              "vérifie son rattachement aux lots.",
         "wait.merge": "{tasks} · {name}, {commits}, {pushed}",
         "wait.merge_git": "{name}, {commits}, {pushed}",
         "wait.conflict": "{tid}, changée à plusieurs endroits : {sides}",
@@ -320,7 +326,8 @@ LABELS: dict[str, dict[str, dict[str, str]]] = {
                      "unknown": "activity unknown"},
         "stage": {"uncommitted": "uncommitted changes", "committed": "committed, not pushed", "pushed": "pushed",
                   "behind_origin": "behind its remote: the session went on elsewhere", "merged": "in main",
-                  "up_to_date": "up to date", "conflict": "in conflict", "operation": "git operation in progress"},
+                  "up_to_date": "up to date", "conflict": "in conflict", "operation": "git operation in progress",
+                  "unknown": "relationship to main unknown"},
         "advice": {"ready_to_merge": "ready for your merge go", "open": "not yet in main",
                    "ended": "ended: all in main", "keep_for_review": "in main, in review: keep the session for fixes",
                    "keep_files": "in main, but kept files wait in its folder", "merged": "in main",
@@ -353,7 +360,7 @@ LABELS: dict[str, dict[str, dict[str, str]]] = {
         "stage": {"uncommitted": "modifs non commitées", "committed": "commité, pas poussé", "pushed": "poussé",
                   "behind_origin": "en retard sur son remote : la session a continué ailleurs",
                   "merged": "dans main", "up_to_date": "à jour", "conflict": "en conflit",
-                  "operation": "opération git en cours"},
+                  "operation": "opération git en cours", "unknown": "rattachement à main inconnu"},
         "advice": {"ready_to_merge": "prête pour ton go de fusion", "open": "pas encore dans main",
                    "ended": "terminée : tout est dans main",
                    "keep_for_review": "dans main, en revue : garde la session pour les corrections",
@@ -387,7 +394,34 @@ PAGE: dict[str, dict[str, object]] = {
         "page.spoken_live": "Live", "page.spoken_lost": "Connection lost: start the server again",
         "page.spoken_snapshot": "Snapshot",
         "page.subject": "“{subject}”",
-        "page.ledger_of": " · ledger of {date}",
+        "page.ledger_of": " · main’s ledger dated {date}",
+        "page.board_read_at": "Board reading: {when}",
+        "page.observed_activity": "Observed local activity",
+        "page.ledger_saved_at": "Working ledger saved",
+        "page.date_unknown": "Not observed",
+        "page.tracking_check": "Tracking to check",
+        "page.tracking_info": "Activity since the ledger was saved",
+        "page.tracking_unknown": "Association not evaluated",
+        "page.tracking_unassigned": "No lot is identified for this session. "
+                                    "Check which lot the recent work belongs to.",
+        "page.tracking_settled": "The identified lots are in review or finished. "
+                                 "Check the association of the recent work.",
+        "page.tracking_ongoing": "Work can legitimately continue on an existing lot. "
+                                 "These dates do not establish coverage.",
+        "page.tracking_unreadable": "The working files or ledger could not be fully read.",
+        "page.tracking_partial": "Activity dating is incomplete; these observations "
+                                 "cannot establish the lot association.",
+        "page.tracking_dates": "Reliable activity and working-ledger dates are unavailable.",
+        "page.tracking_partial_note": "Partial observation: {reasons}.",
+        "page.tracking_partial_limit": "activity-dating entry limit reached",
+        "page.tracking_partial_depth": "reading depth limit reached",
+        "page.tracking_partial_folder": "a folder was not fully observed",
+        "page.tracking_partial_unsafe": "an unsafe or special entry was excluded",
+        "page.tracking_partial_deleted": "a deleted file has no observable time",
+        "page.tracking_partial_ignore": "ignore rules could not be evaluated",
+        "page.tracking_partial_unreadable": "some metadata could not be read",
+        "page.tracking_partial_unspecified": "some entries could not be dated",
+        "page.tracking_task_state": "The associated lot status is unavailable or unknown.",
         "page.unreadable": "Reading impossible: {reason}",
         "page.invalid_main": "Main's ledger does not pass its validator: {error}",
         "page.cannot_read": "The page could not read the repository: {reason}. It tries again on its own.",
@@ -528,7 +562,34 @@ PAGE: dict[str, dict[str, object]] = {
         "page.spoken_live": "En direct", "page.spoken_lost": "Connexion perdue : relance le serveur",
         "page.spoken_snapshot": "Instantané",
         "page.subject": "« {subject} »",
-        "page.ledger_of": " · registre du {date}",
+        "page.ledger_of": " · registre de main daté du {date}",
+        "page.board_read_at": "Lecture du tableau : {when}",
+        "page.observed_activity": "Activité locale observée",
+        "page.ledger_saved_at": "Registre de travail enregistré",
+        "page.date_unknown": "Non observée",
+        "page.tracking_check": "Suivi à vérifier",
+        "page.tracking_info": "Activité depuis l’enregistrement du registre",
+        "page.tracking_unknown": "Rattachement non évalué",
+        "page.tracking_unassigned": "Aucun lot n’est identifié pour cette session. "
+                                    "Vérifie à quel lot rattacher le travail récent.",
+        "page.tracking_settled": "Les lots identifiés sont en revue ou terminés. "
+                                 "Vérifie le rattachement du travail récent.",
+        "page.tracking_ongoing": "Le travail peut continuer normalement sur un lot existant. "
+                                 "Ces dates ne prouvent pas sa couverture.",
+        "page.tracking_unreadable": "Les fichiers de travail ou le registre n’ont pas pu être lus complètement.",
+        "page.tracking_partial": "La datation de l’activité est partielle ; ces observations "
+                                 "ne permettent pas d’établir le rattachement.",
+        "page.tracking_dates": "Les dates fiables d’activité et d’enregistrement du registre ne sont pas disponibles.",
+        "page.tracking_partial_note": "Observation partielle : {reasons}.",
+        "page.tracking_partial_limit": "limite d’éléments datables atteinte",
+        "page.tracking_partial_depth": "profondeur maximale de lecture atteinte",
+        "page.tracking_partial_folder": "contenu d’un dossier non entièrement observé",
+        "page.tracking_partial_unsafe": "entrée non sûre ou spéciale écartée",
+        "page.tracking_partial_deleted": "fichier supprimé sans date observable",
+        "page.tracking_partial_ignore": "règles d’exclusion non évaluées",
+        "page.tracking_partial_unreadable": "certaines métadonnées sont illisibles",
+        "page.tracking_partial_unspecified": "certains éléments n’ont pas pu être datés",
+        "page.tracking_task_state": "Le statut du lot associé est indisponible ou inconnu.",
         "page.unreadable": "Lecture impossible : {reason}",
         "page.invalid_main": "Le registre de main ne passe pas son validateur : {error}",
         "page.cannot_read": "La page n’a pas pu lire le dépôt : {reason}. Elle réessaie toute seule.",
@@ -731,6 +792,22 @@ PAGE["fr"].update({
     "page.task_unavailable": "Cette tâche est indisponible dans la lecture actuelle. Son état précédent n'est plus montré.",
     "page.task_conflict": "Déclarations en conflit : aucun statut de branche n'est appliqué tant que le conflit n'est pas résolu.",
     "page.left_behind": ["{n} commit délaissé sur un HEAD détaché : garde la session", "{n} commits délaissés sur un HEAD détaché : garde la session"],
+})
+TEXT["en"]["summary.loading"] = "Reading the repository…"
+TEXT["fr"]["summary.loading"] = "Lecture du dépôt en cours…"
+LABELS["en"]["source"]["loading"] = "reading"
+LABELS["fr"]["source"]["loading"] = "lecture en cours"
+PAGE["en"].update({
+    "page.loading": "Reading the repository…", "page.mode_loading": "reading",
+    "page.loading_detail": "The board will fill automatically when the reading completes. Large repositories may take longer.",
+    "page.spoken_loading": "Reading the repository: session states are not available yet",
+    "page.initial_failed": "The initial reading has not completed. Retrying automatically.",
+})
+PAGE["fr"].update({
+    "page.loading": "Lecture du dépôt en cours…", "page.mode_loading": "lecture en cours",
+    "page.loading_detail": "Le tableau se remplira automatiquement à la fin de la lecture. Un gros dépôt peut demander davantage de temps.",
+    "page.spoken_loading": "Lecture du dépôt : les états des sessions ne sont pas encore disponibles",
+    "page.initial_failed": "La première lecture n'est pas terminée. Nouvel essai automatique.",
 })
 
 

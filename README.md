@@ -24,6 +24,18 @@ go. flightboard is one local page, and a few lines of text for an agent, that an
 - **The roadmap, live**: the task statuses each session declares in its own copy of your task file, overlaid on
   `main` before anything is merged, with conflicts between sessions shown, never resolved for you.
 - **Progress**: tasks done over time, milestones, moves per day, each with a table view.
+- **Tracking dates**: the board reading, observed local activity and working-ledger save time are shown separately.
+  Recent work after the ledger was saved prompts a tracking check when no lot is identified or the identified lots
+  are already in review/finished. Ongoing work gets an informational note. A trusted recent ordinary file can
+  supply a reminder even in a partial sample, with its limits displayed; incomplete absence stays unevaluated.
+
+Tracking notices describe observations, not missing-task proof or acceptance. They do not change task statuses or
+progress. Saving a ledger can remove the temporal signal without establishing coverage. Activity dating reuses
+already discovered nonignored leaves under untracked directories. Their guarded metadata is reused within a shared
+2000-entry traversal budget, eight levels deep; at most 200 additional metadata lookups are allowed. Ignored
+candidate roots are pruned before descent. Directory timestamps alone never establish tracking evidence.
+Depth/count limits, unresolved folders and deleted files remain explicit; existing read-root and Git/file-read
+bounds remain in force.
 
 It works without any task file too: a repository without one gets the whole sessions view from git alone.
 
@@ -70,7 +82,9 @@ Ask for a **live dashboard** to open the page, or for a **text summary** to get 
 
 Click the URL returned by the agent, or paste it into Chrome, Edge, Firefox or another browser. The default address
 is [http://127.0.0.1:8790/](http://127.0.0.1:8790/); it works while the server is running on this computer. You can
-bookmark it. The page refreshes every 10 seconds.
+bookmark it. The page opens immediately. If no fresh reading is available yet, it shows **Reading the repository…**
+and fills automatically when the browser's state request completes. That loading screen contains no session verdicts.
+The next refresh request starts 10 seconds after the preceding one finishes; a large repository can take longer to read.
 
 English is the default. Ask `Open Flightboard for this repository, in French` for French; the corresponding command
 options are `--lang en` and `--lang fr`. They select the language of both the dashboard and the text summary.
@@ -252,6 +266,8 @@ before relying on a higher capacity. A lightweight test repository does not esta
 project with extensive history and modified files.
 See the [capacity checks](docs/verification-large-repositories.md) for measured 300/400/500/1000-worktree fixtures
 and the separate existing-repository qualification.
+The [loading verification](docs/verification-large-repository-loading.md) records the later loading optimizations,
+reader-count comparison and live-server checks for an existing 267-worktree repository.
 
 Run it from the repository, any folder inside it, or one of the worktrees it reads (under `.claude/worktrees`, or a
 folder named with `--worktrees`, or an explicitly authorized external root with `--worktrees-root`): it reads the
@@ -259,7 +275,8 @@ main checkout either way. A folder whose `.git` is a
 file the board does not follow (a worktree elsewhere, a submodule) gives "no git repository here": run it from the main
 checkout, or name it with `--repo`. As with git, a folder stands for the nearest repository above it: run from a plain
 folder that lies inside another repository (a dotfiles repository in your home, say), it reads that one, and the page
-names it. The live page reads the repository again every 10 seconds. `--resume` prints one summary sentence; a `Note:`
+names it. The live page requests another reading 10 seconds after its previous request finishes. `--resume` prints
+one summary sentence; a `Note:`
 line, in fixed words, when main is guessed, has diverged from its remote, or the fetched remote main is ahead but has
 not been pulled (the local main remains the baseline); when no local main exists, the remote main is followed. A note
 also appears when main's ledger
@@ -394,6 +411,10 @@ does not change the forecast. Dependencies are checked in full, independently of
 - main's figures stay main's; what the sessions declare is counted apart.
 - What branches declare never grows the page without bound: a card names 40 tasks, then a count; the page holds the
   details of 500 tasks at most; what waits for you lists 30 items, then a count.
+  Tracking checks rank before quiet-session notices; merge, conflict, task/decision checks, preservation alerts
+  and reviews rank ahead of both. When higher-priority items fill the 30 named slots, a quiet-session notice can
+  be omitted from the page and `--resume` item lines and included only in the overflow count. Its absence is not
+  evidence that the session is finished.
 
 ### What a session may be called
 
@@ -498,6 +519,9 @@ no other program can answer there in its place), and checks every request before
 than `127.0.0.1:<port>`, `localhost:<port>` or `[::1]:<port>` (DNS rebinding), an `Origin` from elsewhere (`null` included), a
 same-site or cross-site `Sec-Fetch-Site`, the state loaded as a script, an image or a frame (`Sec-Fetch-Dest`), any
 method but `GET` and `HEAD`, and any path but `/` and `/state.json`. A refused request never reads the repository.
+The HTML response does not start or wait for a Git reading. It uses a fresh completed view when available, otherwise
+a neutral loading view; the browser requests `/state.json` immediately for that initial loading view. A static
+`--snapshot` is still produced only after its full reading completes and does not poll.
 The repository is read at most once every 5 seconds, counted from the end of the last reading, however many pages are
 open; a failed reading is not repeated within that time. A reading shares a budget of 12 seconds by default
 (`--read-seconds` accepts 12 to 120), with an 8-second cap per git run. The browser aborts a state request after the
@@ -506,6 +530,13 @@ socket timeout bounds incoming HTTP handling separately. A failed live reading d
 the previous session verdicts until a successful refresh. An open task detail is refreshed or marked unavailable.
 The IPv4 and IPv6 listeners share a limit of 32 accepted connections; additional connections receive HTTP 503
 without starting another handler thread.
+
+For larger sets, independent guarded reads use at most four workers with the same total deadline and per-command
+limits. Commit relationships and history keyed by full object IDs can be reused; working-file results are not
+reused across readings. Indexes, ignore rules, mutable files and path checks are checked again. Repository preflight
+keeps its shared entry budget, results are combined by the collector, and its workers finish before that reading
+returns. Globally bounded path caches retain only text components and parent-name plans, never filesystem state.
+Smaller sets and custom Git readers retain the sequential path.
 
 **Page.** A Content Security Policy starting from `default-src 'none'` lets only the page's own script run, named by
 its SHA-256, and only its own requests (`connect-src 'self'`); Trusted Types are required, no frame is allowed, and
@@ -550,8 +581,9 @@ read the page. See [SECURITY.md](SECURITY.md) to report a vulnerability.
 - A branch pushed by a cloud session shows only once fetched: the board never fetches. When a session went on
   elsewhere while its local worktree stayed behind, the board reads the local worktree and says it is behind its
   remote.
-- A new folder is looked at three levels deep. Ignored deeper down, or holding a nested repository of its own, it
-  counts as a new file: the error leans the safe way, and the session is never called ended for it. A folder that
+- New folders share a bounded traversal, up to eight levels deep. Ignored deeper down, or holding a nested
+  repository of its own, a folder counts as a new file: the error leans the safe way, and the session is never
+  called ended for it. A folder that
   cannot be listed (its permissions, say) is never taken for an empty one: that worktree's new files are not read.
 - A session whose reading fails within a successful snapshot is marked unreadable. If the whole live reading fails,
   the page removes the old session verdicts and announces the failure. Retrying never turns old data into evidence

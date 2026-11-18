@@ -19,9 +19,13 @@ import os
 import re
 import stat
 import struct
+import threading
 import time
+from collections import OrderedDict
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import NamedTuple
 
 from . import gitconfig as GITCONFIG
 from . import readio
@@ -36,6 +40,9 @@ WORKTREES = ((".claude", "worktrees"),)  # the default worktree folders, as part
 MAX_LEDGER_BYTES = 5_000_000
 MAX_SMALL_BYTES = 4096
 MAX_DATED = 200
+# Shared work for dating a normal source tree; existing metadata costs no second filesystem lookup.
+MAX_ACTIVITY_ENTRIES = 2000
+MAX_ACTIVITY_DEPTH = 8
 MAX_WORKTREES = 100
 MAX_LIST_ENTRIES = 50_000
 MAX_KEPT_ENTRIES = 2000
@@ -53,6 +60,127 @@ HEAD_REF = re.compile(r"refs/heads/[^\x00-\x20\x7f~^:?*\x5b\x5c]{1,250}")  # wha
 OPERATIONS = (("rebase-merge", "rebase"), ("rebase-apply", "rebase"), ("MERGE_HEAD", "merge"),
               ("CHERRY_PICK_HEAD", "cherry-pick"), ("REVERT_HEAD", "revert"), ("BISECT_LOG", "bisect"))
 GONE = "gone"  # the reason of a worktree whose folder is gone: its admin folder stays until git prunes it
+
+# Only immutable path spelling and parent-name plans are cached. Filesystem checks, index bytes, ignore rules and
+# directory entries are always read anew. Oversized inputs still work; they simply do not enter these caches.
+PATH_PLAN_CACHE_SIZE = 16_384
+PATH_PLAN_NAME_CHARS = 1024
+PATH_PLAN_COMPONENTS = 32
+PARENT_PLAN_CACHE_SIZE = 32
+PARENT_PLAN_NAMES = 2048
+PARENT_PLAN_TEXT_BYTES = 128 * 1024
+PARENT_PLAN_FOLDERS = 4096
+
+
+class _RelativePlan(NamedTuple):
+    parts: tuple[str, ...]
+    parent: tuple[str, ...]
+    lexical: bool
+
+
+def _make_relative_plan(name: str) -> _RelativePlan:
+    relative = PurePosixPath(name)
+    lexical = bool(name) and not relative.is_absolute() and ".." not in relative.parts and ":" not in name \
+        and "\\" not in name and "\0" not in name and not any("\ud800" <= c <= "\udfff" for c in name)
+    return _RelativePlan(relative.parts, relative.parent.parts, lexical)
+
+
+@lru_cache(maxsize=PATH_PLAN_CACHE_SIZE)
+def _cached_relative_plan(name: str) -> _RelativePlan:
+    return _make_relative_plan(name)
+
+
+def _relative_plan(name: str) -> _RelativePlan:
+    if type(name) is str and len(name) <= PATH_PLAN_NAME_CHARS and name.count("/") < PATH_PLAN_COMPONENTS:
+        return _cached_relative_plan(name)
+    return _make_relative_plan(name)
+
+
+def _safe_plan(name: str, plan: _RelativePlan) -> bool:
+    # Neither platform policy nor encoding is frozen in a plan: these checks retain their current dependencies.
+    return plan.lexical and (_written_as_utf8(name) if os.name != "nt"
+                             else not any(_windows_odd(part) for part in plan.parts))
+
+
+class _ParentPlan(NamedTuple):
+    known: frozenset[str]
+    ordered: tuple[tuple[str, tuple[str, ...]], ...]
+
+
+class _ParentPlanInfo(NamedTuple):
+    hits: int
+    misses: int
+    maxsize: int
+    currsize: int
+
+
+_PARENT_PLANS: OrderedDict[frozenset[str], _ParentPlan] = OrderedDict()
+_PARENT_PLAN_LOCK = threading.Lock()
+_PARENT_PLAN_HITS = 0
+_PARENT_PLAN_MISSES = 0
+
+
+def _text_bytes(text: str) -> int:
+    return len(text) if text.isascii() else len(text.encode("utf-8", errors="surrogatepass"))
+
+
+def _make_parent_plan(names: frozenset[str] | set[str]) -> tuple[_ParentPlan, bool]:
+    folders: dict[str, tuple[str, ...]] = {}
+    text_bytes = 0
+    cacheable = len(names) <= PARENT_PLAN_NAMES
+    for name in names:
+        parts = _relative_plan(name).parts
+        text_bytes += _text_bytes(name)
+        if len(name) > PATH_PLAN_NAME_CHARS or len(parts) > PATH_PLAN_COMPONENTS:
+            cacheable = False
+        for end in range(1, len(parts)):
+            parent_parts = parts[:end]
+            parent = "/".join(parent_parts)
+            if parent not in folders:
+                folders[parent] = parent_parts
+                text_bytes += _text_bytes(parent)
+        if len(folders) > PARENT_PLAN_FOLDERS or text_bytes > PARENT_PLAN_TEXT_BYTES:
+            cacheable = False
+    plan = _ParentPlan(frozenset(folders), (("", ()), *tuple((folder, folders[folder]) for folder in sorted(folders))))
+    return plan, cacheable
+
+
+def _parent_plan(names: set[str]) -> _ParentPlan:
+    global _PARENT_PLAN_HITS, _PARENT_PLAN_MISSES
+    # A large index is not retained even as a cache key. Validation of each current name happens at the caller.
+    if len(names) > PARENT_PLAN_NAMES:
+        return _make_parent_plan(names)[0]
+    key = frozenset(names)
+    with _PARENT_PLAN_LOCK:
+        if key in _PARENT_PLANS:
+            _PARENT_PLAN_HITS += 1
+            _PARENT_PLANS.move_to_end(key)
+            return _PARENT_PLANS[key]
+        _PARENT_PLAN_MISSES += 1
+    plan, cacheable = _make_parent_plan(key)
+    if cacheable:
+        with _PARENT_PLAN_LOCK:
+            if key in _PARENT_PLANS:  # another reader may have computed the same immutable plan in the meantime
+                _PARENT_PLANS.move_to_end(key)
+                return _PARENT_PLANS[key]
+            _PARENT_PLANS[key] = plan
+            while len(_PARENT_PLANS) > PARENT_PLAN_CACHE_SIZE:
+                _PARENT_PLANS.popitem(last=False)
+    return plan
+
+
+def _parent_plan_cache_info() -> _ParentPlanInfo:
+    with _PARENT_PLAN_LOCK:
+        return _ParentPlanInfo(_PARENT_PLAN_HITS, _PARENT_PLAN_MISSES, PARENT_PLAN_CACHE_SIZE, len(_PARENT_PLANS))
+
+
+def _clear_path_plans() -> None:
+    """Clear text-only caches for tests and first-reading measurements; no filesystem state is held here."""
+    global _PARENT_PLAN_HITS, _PARENT_PLAN_MISSES
+    _cached_relative_plan.cache_clear()
+    with _PARENT_PLAN_LOCK:
+        _PARENT_PLANS.clear()
+        _PARENT_PLAN_HITS = _PARENT_PLAN_MISSES = 0
 
 
 def _pure(text: str):
@@ -271,22 +399,22 @@ def tracked_problem(tree: Path, root: Path, staged: list[tuple[str, str, str]]) 
     """Why git status must not run in this worktree (a code), or "": git would read a .git it finds where the index
     expects a file (a tracked file turned into a folder) or a submodule (a gitlink), and follow it, a network share
     included; and a link or junction where the index expects a file or a folder would lead it outside the worktree."""
-    checked: dict[str, str] = {}
+    checked: dict[tuple[str, ...], str] = {}
     for item in staged:
         tag, mode, name = item if len(item) == 3 else ("H", *item)
-        relative = PurePosixPath(name)
-        if not safe_relative(name):
+        plan = _relative_plan(name)
+        if not _safe_plan(name, plan):
             return "odd_tracked_path"
         if tag.islower():
             return "assumed_tracked"
-        path = Path(tree).joinpath(*relative.parts)
+        path = Path(tree).joinpath(*plan.parts)
         if os.name == "nt" and len(str(path).encode("utf-16-le", "surrogatepass")) // 2 >= MAX_PATH:
             # git, kept to short paths (counted in UTF-16 units), cannot read it; nor may the board, which would take
             # it for a deleted file
             return "long_tracked_path"
-        folder = str(relative.parent)
+        folder = plan.parent
         if folder not in checked:
-            checked[folder] = _folder_state(Path(tree).joinpath(*relative.parent.parts), root)
+            checked[folder] = _folder_state(Path(tree).joinpath(*folder), root)
         if checked[folder] == "gone":
             continue  # its folder is gone: git sees deleted files, and looks for nothing in them
         if checked[folder] != "plain":
@@ -618,20 +746,24 @@ class TooManyWorktrees(GitFailed):
     """The admin entry count is past the limit; no session may silently disappear."""
 
 
-def _entry_kind(entry: os.DirEntry) -> str:
+def _entry_info(entry: os.DirEntry) -> tuple[str, os.stat_result | None]:
     if os.name == "nt" and _windows_odd(entry.name):
-        return "name"
+        return "name", None
     try:
         info = entry.stat(follow_symlinks=False)
     except FileNotFoundError:
-        return "gone"
+        return "gone", None
     except OSError:
-        return "unreadable"
+        return "unreadable", None
     if _is_link(info):
-        return "link"
+        return "link", info
     if stat.S_ISDIR(info.st_mode):
-        return "folder"
-    return "file" if stat.S_ISREG(info.st_mode) else "special"
+        return "folder", info
+    return ("file" if stat.S_ISREG(info.st_mode) else "special"), info
+
+
+def _entry_kind(entry: os.DirEntry) -> str:
+    return _entry_info(entry)[0]
 
 
 def _walk_problem(base: Path, spots: tuple[tuple[str, bool], ...], root: Path,
@@ -959,23 +1091,45 @@ def _read_tail(path: Path, root: Path, limit: int) -> tuple[bytes | None, str]:
     return None, "unreadable"
 
 
-def _entries(folder: Path) -> list[os.DirEntry] | None:
-    """The entries of a folder: [] when it is gone (or is now a file), None when it is there but cannot be listed
-    (never taken for an empty folder: what it holds is unknown). A folder git is deleting is looked at again a little
-    later (Windows denies it for a moment)."""
+def _entries(folder: Path, *, budget: Budget | None = None,
+             reasons: set[str] | None = None) -> list[os.DirEntry] | None:
+    """The entries of a folder: [] when it is gone (or is now a file), None when it is there but cannot be listed.
+    Budget-backed candidate scans also return None after a kind/disappearance race: their earlier directory
+    observation cannot prove an empty folder. A folder git is deleting is looked at again a little later (Windows
+    denies it for a moment)."""
     for wait in LIST_WAITS:
+        if budget is not None:
+            budget.check()
+            if budget.left <= 0:
+                if reasons is not None:
+                    reasons.add("limit")
+                return []
         if wait:
             time.sleep(wait)
+        if budget is not None:
+            budget.check()
         try:
             with os.scandir(folder) as found:
                 entries = []
-                for entry in found:
+                iterator = iter(found)
+                while True:
+                    if budget is not None:
+                        budget.check()
+                        if budget.left <= 0:
+                            if reasons is not None:
+                                reasons.add("limit")
+                            return entries
+                    try:
+                        entry = next(iterator)
+                    except StopIteration:
+                        return entries
+                    if budget is not None:
+                        budget.left -= 1
                     if len(entries) >= MAX_LIST_ENTRIES:
                         return None
                     entries.append(entry)
-                return entries
         except (FileNotFoundError, NotADirectoryError):
-            return []
+            return None if budget is not None else []
         except OSError:
             continue
     return None
@@ -988,7 +1142,9 @@ def _plain_entry(entry: os.DirEntry) -> bool:
         return False
 
 
-def untracked(tree: Path, root: Path, tracked: set[str], limit: int = MAX_DATED) -> list[str] | None:
+def untracked(tree: Path, root: Path, tracked: set[str], limit: int = MAX_DATED, *,
+              observations: dict[str, os.stat_result] | None = None,
+              dated: set[str] | frozenset[str] = frozenset()) -> list[str] | None:
     """Untracked candidates, relative to the worktree: files beside tracked ones, and new folders as one entry ending
     with "/". Only folders that hold tracked files are listed, never through a link; an entry named .git is never
     opened, and a new folder is never entered (so a nested .git file there is never read). A tracked name that is not
@@ -996,15 +1152,11 @@ def untracked(tree: Path, root: Path, tracked: set[str], limit: int = MAX_DATED)
     tracked folder (a submodule) is never a new folder. None when one of those folders cannot be listed: what it holds
     is unknown, never nothing."""
     tracked = {name for name in tracked if safe_relative(name)}
-    known_folders: set[str] = set()
-    for name in tracked:
-        parent = PurePosixPath(name).parent
-        while str(parent) not in ("", "."):
-            known_folders.add(str(parent))
-            parent = parent.parent
+    plan = _parent_plan(tracked)
+    known_folders = plan.known
     found: list[str] = []
-    for folder in sorted({""} | known_folders):
-        path = Path(tree).joinpath(*folder.split("/")) if folder else Path(tree)
+    for folder, parts in plan.ordered:
+        path = Path(tree).joinpath(*parts) if folder else Path(tree)
         if folder and not no_link(path, root):
             continue
         listed = _entries(path)
@@ -1014,38 +1166,66 @@ def untracked(tree: Path, root: Path, tracked: set[str], limit: int = MAX_DATED)
             if entry.name == ".git":
                 continue
             relative = f"{folder}/{entry.name}" if folder else entry.name
-            kind = _entry_kind(entry)
+            kind, info = _entry_info(entry)
             if kind == "gone":
                 continue
+            candidate = False
             if kind == "folder" and relative not in known_folders and relative not in tracked:
                 found.append(relative + "/")
+                candidate = True
             elif kind != "folder" and relative not in tracked:
                 found.append(relative)
+                candidate = True
             if len(found) > limit:
                 return None  # ignored candidates must never hide unknown untracked work after this boundary
+            if observations is not None and info is not None and (candidate or relative in dated):
+                observations[relative] = info
     return found
 
 
-def children(tree: Path, root: Path, folder: str, limit: int = MAX_DATED, depth: int = 3) -> dict | None:
+def children(tree: Path, root: Path, folder: str, limit: int = MAX_DATED, depth: int = 3, *,
+             observations: dict[str, os.stat_result] | None = None, budget: Budget | None = None,
+             reasons: set[str] | None = None) -> dict | None:
     """The content of a new folder, a few levels deep, to learn whether all of it is ignored: its leaves ("folder/name",
     and "folder/sub/" past the last level), the folders walked through ("folder/sub/"), and the sealed folders, those
     holding a .git: never entered nor handed to git, they count as ignored only under an ignored folder. None when it
-    cannot be told: too many entries, a link, a folder that cannot be listed, or a .git right in the folder."""
+    cannot be told: too many entries, a link, a folder that cannot be listed, or a .git right in the folder. An optional
+    shared budget counts directory entries during iteration, including directories, and checks the deadline before
+    listings and between entries. Exhaustion preserves the guarded prefix with complete=False; the unvisited
+    remainder cannot be claimed ignored. Without a shared budget, the legacy caps still return None."""
     found: dict = {"leaves": [], "folders": [], "sealed": []}
+    if budget is not None:
+        found["complete"] = True
     stack = [(folder.rstrip("/"), 1)]
     while stack:
+        if budget is not None:
+            budget.check()
+            if budget.left <= 0:
+                if reasons is not None:
+                    reasons.add("limit")
+                found["complete"] = False
+                return found
         current, level = stack.pop()
         path = Path(tree).joinpath(*current.split("/"))
         if not no_link(path, root):
             return None
-        listed = _entries(path)
+        listing_reasons: set[str] = set()
+        listed = _entries(path, budget=budget, reasons=listing_reasons) if budget is not None else _entries(path)
+        if listing_reasons:
+            if reasons is not None:
+                reasons.update(listing_reasons)
+            found["complete"] = False
         if listed is None:
             return None
         for entry in listed:
-            kind = "" if entry.name == ".git" else _entry_kind(entry)
+            if budget is not None:
+                budget.check()
+            kind, info = ("", None) if entry.name == ".git" else _entry_info(entry)
             if kind not in ("folder", "file", "special"):
                 return None
             relative = f"{current}/{entry.name}"
+            if observations is not None and info is not None:
+                observations[relative] = info
             if kind != "folder":
                 found["leaves"].append(relative)
             elif _exists(Path(entry.path) / ".git"):
@@ -1055,8 +1235,10 @@ def children(tree: Path, root: Path, folder: str, limit: int = MAX_DATED, depth:
                 stack.append((relative, level + 1))
             else:
                 found["leaves"].append(relative + "/")
-            if sum(len(names) for names in found.values()) > limit:
+            if sum(len(found[key]) for key in ("leaves", "folders", "sealed")) > limit:
                 return None
+        if listing_reasons:
+            return found
     return found
 
 
@@ -1064,6 +1246,8 @@ def all_ignored(found: dict, ignored: set[str]) -> bool:
     """Whether everything children() found is ignored: each leaf itself or by an ignored folder above it, each sealed
     folder by an ignored folder above it (it is never asked about). An empty folder is ignored too: git never shows
     it."""
+    if found.get("complete") is False:
+        return False
     above = [name for name in found["folders"] if name in ignored]
 
     def covered(name: str) -> bool:
@@ -1200,10 +1384,7 @@ def safe_relative(name: str) -> bool:
     Windows no part may end with a dot or a space, nor be a device name (nul, con, com1...): Windows reads them one
     way as the last part of a path and another in the middle of one, so the board's checks and git would look at two
     different files."""
-    relative = PurePosixPath(name)
-    return bool(name) and not relative.is_absolute() and ".." not in relative.parts and ":" not in name \
-        and "\\" not in name and "\0" not in name and not any("\ud800" <= c <= "\udfff" for c in name) \
-        and (_written_as_utf8(name) if os.name != "nt" else not any(_windows_odd(part) for part in relative.parts))
+    return _safe_plan(name, _relative_plan(name))
 
 
 def _windows_odd(part: str) -> bool:
@@ -1221,27 +1402,115 @@ def _written_as_utf8(name: str) -> bool:
         return False
 
 
-def last_write(tree: Path, root: Path, names: list[str]) -> datetime | None:
-    """The latest modification time among the files git status names, each reached through plain folders only."""
+def last_write_info(tree: Path, root: Path, names: list[str]) -> tuple[datetime | None, bool]:
+    """The latest observed entry time and whether every requested file was dated within the existing cap.
+
+    Directory times remain useful activity observations, but cannot date all the files beneath them. No additional
+    metadata is read to determine completeness; it comes from the same guarded lstat results.
+    """
     latest, checked = None, {}
+    complete = len(names) <= MAX_DATED
     for name in names[:MAX_DATED]:
         if not safe_relative(name):
+            complete = False
             continue
-        relative = PurePosixPath(name.rstrip("/"))
-        folder = relative.parent
+        plan = _relative_plan(name.rstrip("/"))
+        folder = plan.parent
         if folder not in checked:
-            checked[folder] = no_link(Path(tree).joinpath(*folder.parts), root)
+            checked[folder] = no_link(Path(tree).joinpath(*folder), root)
         if not checked[folder]:
+            complete = False
             continue
         try:
-            info = os.lstat(Path(tree).joinpath(*relative.parts))
+            info = os.lstat(Path(tree).joinpath(*plan.parts))
         except (OSError, ValueError):
+            complete = False
             continue
+        if not stat.S_ISREG(info.st_mode) or getattr(info, "st_file_attributes", 0) & REPARSE_POINT:
+            complete = False
         latest = info.st_mtime if latest is None else max(latest, info.st_mtime)
     try:
-        return datetime.fromtimestamp(latest, timezone.utc) if latest is not None else None
+        return (datetime.fromtimestamp(latest, timezone.utc) if latest is not None else None), complete
     except (OverflowError, OSError, ValueError):  # a file dated before 1970 or past what the platform holds
-        return None
+        return None, False
+
+
+def last_write(tree: Path, root: Path, names: list[str]) -> datetime | None:
+    """The latest modification time among the files git status names, each reached through plain folders only."""
+    return last_write_info(tree, root, names)[0]
+
+
+def activity_info(tree: Path, root: Path, legacy_names: list[str], names: list[str],
+                  observations: dict[str, os.stat_result], reasons: set[str]) -> dict:
+    """Date one bounded sample, reusing metadata already observed by this reading's guarded directory traversal.
+
+    Legacy entry times may include folders; positive tracking evidence is restricted to ordinary nonignored files.
+    The caller supplies only selected leaf names and the causes that prevent proving the sample complete. Existing
+    guarded observations are reused in full; MAX_DATED bounds additional metadata attempts across both dates.
+    """
+    reasons = set(reasons)
+    saved, checked, failed = dict(observations), {}, set()
+    remaining = MAX_DATED
+
+    def metadata(name: str):
+        nonlocal remaining
+        plain = name.rstrip("/")
+        if plain in failed:
+            return None
+        if not safe_relative(plain):
+            reasons.add("unsafe")
+            failed.add(plain)
+            return None
+        if plain in saved:
+            return saved[plain]
+        if remaining <= 0:
+            reasons.add("limit")
+            failed.add(plain)
+            return None
+        remaining -= 1  # failed fallback attempts consume the same allowance as successful ones
+        plan = _relative_plan(plain)
+        folder = plan.parent
+        if folder not in checked:
+            checked[folder] = no_link(Path(tree).joinpath(*folder), root)
+        if not checked[folder]:
+            reasons.add("unsafe")
+            failed.add(plain)
+            return None
+        try:
+            info = os.lstat(Path(tree).joinpath(*plan.parts))
+        except (OSError, ValueError):
+            reasons.add("unreadable")
+            failed.add(plain)
+            return None
+        saved[plain] = info
+        return info
+
+    legacy = None
+    for name in legacy_names[:MAX_DATED]:
+        info = metadata(name)
+        if info is not None:
+            legacy = info.st_mtime if legacy is None else max(legacy, info.st_mtime)
+
+    sample = None
+    for name in names:
+        info = metadata(name)
+        if info is None:
+            continue
+        if _is_link(info) or not stat.S_ISREG(info.st_mode):
+            reasons.add("unsafe")
+            continue
+        written = info.st_mtime_ns / 1e9  # match the guarded ledger identity's timestamp conversion
+        sample = written if sample is None else max(sample, written)
+
+    def dated(value):
+        try:
+            return datetime.fromtimestamp(value, timezone.utc) if value is not None else None
+        except (OverflowError, OSError, ValueError):
+            reasons.add("unreadable")
+            return None
+
+    last, observed = dated(legacy), dated(sample)
+    return {"last_write": last, "observed": observed, "complete": not reasons, "reasons": sorted(reasons)}
 
 
 def admin_name(root: Path) -> str | None:
