@@ -302,7 +302,8 @@ class StartupTest(unittest.TestCase):
             "limit = time.monotonic() + 5\n"
             "while not gate.exists() and time.monotonic() < limit:\n    time.sleep(0.02)\n"
             "if gate.exists():\n    print('SERVING after caller exit', flush=True)\n"
-            "    receipt.write_text('survived', encoding='utf-8')\n", encoding="utf-8")
+            "    receipt.write_text('survived', encoding='utf-8')\n"
+            "    time.sleep(0.2)\n", encoding="utf-8")  # leave a deliberate marker-to-exit interval
         settings = copy.deepcopy(self.settings)
         settings["python"] = sys.executable
         settings["trusted_python"].append(sys.executable)
@@ -312,22 +313,39 @@ class StartupTest(unittest.TestCase):
                                            "--port", "8791"]}]
         startup.save_config(settings, self.paths)
         code = (
-            "import contextlib, importlib, runpy\nfrom pathlib import Path\n"
+            "import contextlib, importlib, json, runpy\nfrom pathlib import Path\n"
             f"runpy.run_path({str(ENTRY)!r})['load']()\n"
             "m = importlib.import_module('flightboard.windows_startup')\n"
             "m.singleton = lambda paths: contextlib.nullcontext(True)\n"
             "m.inventory = lambda: {'processes': [], 'listeners': []}\n"
             f"paths = m.Paths(Path({str(self.paths.root)!r}), Path({str(ENTRY.parent)!r}), "
             f"Path({str(self.paths.startup_link)!r}))\n"
-            "assert m.run(paths, once=True)['status'] == 'running'\n"
+            "result = m.run(paths, once=True)\n"
+            "assert result['status'] == 'running'\n"
+            "print(json.dumps(result))\n"
         )
         caller = subprocess.run([sys.executable, "-I", "-B", "-c", code], capture_output=True,
                                 timeout=10, creationflags=startup.NO_WINDOW)
         self.assertEqual(caller.returncode, 0, caller.stderr.decode("utf-8", errors="replace"))
-        gate.touch()  # the child cannot print until its caller and pipe readers have exited
-        deadline = time.monotonic() + 6
-        while not receipt.exists() and time.monotonic() < deadline:
-            time.sleep(0.02)
+        handle = None
+        if os.name == "nt":
+            import _winapi
+            pid = json.loads(caller.stdout)["boards"][0]["pid"]
+            # Open the exact fixture process while it is still gated; this handle survives PID reuse.
+            handle = _winapi.OpenProcess(_winapi.SYNCHRONIZE, False, pid)
+        try:
+            gate.touch()  # the child cannot print until its caller and pipe readers have exited
+            deadline = time.monotonic() + 6
+            while not receipt.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+        finally:
+            if handle is not None:
+                try:
+                    exited = _winapi.WaitForSingleObject(handle, 10_000)
+                finally:
+                    _winapi.CloseHandle(handle)
+        if handle is not None:
+            self.assertEqual(exited, _winapi.WAIT_OBJECT_0, "fixture child did not exit before temporary cleanup")
         self.assertTrue(receipt.is_file(), "once left the child with a pipe whose reader exited")
         self.assertEqual(receipt.read_text(encoding="utf-8"), "survived")
 

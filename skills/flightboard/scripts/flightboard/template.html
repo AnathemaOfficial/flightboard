@@ -33,7 +33,7 @@ main{max-width:1308px;margin:auto;padding:18px 24px 60px}h2{font-size:19px;margi
 .waiting{list-style:none;margin:0;padding:0;display:grid;gap:7px}
 .wait{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--edge,var(--ready));border-radius:8px;padding:10px 13px;line-height:1.5;font-size:15px;display:flex;flex-wrap:wrap;gap:2px 8px;align-items:baseline}
 .wait b{white-space:nowrap}.wait .since{color:var(--muted);font-size:13px;margin-left:auto}
-.k-merge{--edge:var(--done)}.k-conflict,.k-alert{--edge:var(--blocked)}.k-check{--edge:var(--review)}.k-review{--edge:var(--progress)}.k-session{--edge:var(--planned)}
+.k-merge{--edge:var(--done)}.k-conflict,.k-alert{--edge:var(--blocked)}.k-check,.k-tracking{--edge:var(--review)}.k-review{--edge:var(--progress)}.k-session{--edge:var(--planned)}
 .pointer{color:var(--muted);font-size:13px;margin:8px 0 0}
 .sessions{display:grid;grid-template-columns:repeat(auto-fill,minmax(370px,1fr));gap:12px}
 .session{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--act,var(--planned));border-radius:10px;padding:13px 15px;display:grid;gap:8px;align-content:start;min-width:0}
@@ -144,7 +144,11 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
   const $ = id => document.getElementById(id);
   let data = JSON.parse($('flightboard-data').textContent);
   let lastKey = '';
-  let lastOk = data.main.state === 'ok' ? Date.now() : null;
+  function completedAt(state) {
+    const at = typeof state.generated_at === 'string' ? Date.parse(state.generated_at) : NaN;
+    return state.main.state === 'ok' && Number.isFinite(at) ? at : null;
+  }
+  let lastOk = completedAt(data);
   let lost = false;
   let timer = 0;
   let failed = data.main.state === 'ok' || data.main.state === 'loading' ? '' : data.main.reason_text;
@@ -450,6 +454,9 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
     if (!tracked()) return null;
     const diagnostic = own(c, 'tracking') || {};
     const state = own(diagnostic, 'state');
+    const kind = own(c, 'kind');
+    if ((kind === 'branch' || kind === 'remote') && state === 'none'
+        && !own(c, 'reason') && !own(c, 'operation') && !own(c, 'error')) return null;
     const title = state === 'check' ? t('page.tracking_check') : state === 'info' ? t('page.tracking_info')
       : state === 'unknown' ? t('page.tracking_unknown') : '';
     const reasons = {unassigned:'page.tracking_unassigned', settled:'page.tracking_settled',
@@ -782,7 +789,7 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
         const next = JSON.parse(text);
         if (version !== refreshVersion) return;
         if (!next || !next.main || !Array.isArray(next.sessions) || !Array.isArray(next.waiting)) throw new Error('invalid state');
-        if (next.main.state === 'ok') lastOk = Date.now();
+        if (next.main.state === 'ok') lastOk = completedAt(next);
         const recovered = Boolean(failed) || lost;
         lost = false;
         failed = next.main.state === 'ok' || next.main.state === 'loading' ? '' : next.main.reason_text;
@@ -792,6 +799,14 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
       } catch (error) {
         if (version !== refreshVersion) return;
         lost = true;
+        if (lastOk === null) {
+          const reason = t('page.initial_failed');
+          data = {...data, main: {...data.main, state: 'unreadable', reason_text: reason},
+            sources: Array.isArray(data.sources)
+              ? data.sources.map(source => ({...source, state: 'unreadable', detail: reason})) : []};
+          renderHeader();
+          renderFooter();
+        }
         $('resume').textContent = t('page.figures_unreadable');
         put($('waiting'), h('li', {className: 'empty'}, t('page.nothing_readable')));
         put($('sessions'), h('p', {className: 'empty'}, t('page.sessions_unreadable')));

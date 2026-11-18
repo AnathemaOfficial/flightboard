@@ -67,6 +67,21 @@ def runs(trace: tuple[str, Path] | None = None):
         yield calls
 
 
+@contextlib.contextmanager
+def ignore_queries(tree: Path):
+    """Actual check-ignore input paths for this worktree, including attempts that could block."""
+    queries: list[list[str]] = []
+    real = gitreads._spawn
+
+    def spy(command, env, cwd, stdin, timeout=None, limit=gitreads.MAX_OUTPUT_BYTES):
+        if "check-ignore" in command and f"--work-tree={tree}" in command:
+            queries.append([name for name in (stdin or b"").decode("utf-8").split("\0") if name])
+        return real(command, env, cwd, stdin, timeout, limit)
+
+    with mock.patch.object(gitreads, "_spawn", side_effect=spy):
+        yield queries
+
+
 @unittest.skipUnless(os.name == "nt", "Git for Windows' launchers")
 class LauncherTest(unittest.TestCase):
     """Killing a launcher leaves its git running, holding the board's pipes: a timeout must stop the real git."""
@@ -703,13 +718,43 @@ class SpecialFilesTest(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 (path.parent / "new.txt").write_text("new\n", encoding="utf-8")  # a new file: check-ignore is asked
                 os.mkfifo(path)
-                with runs() as calls:
+                with ignore_queries(tree) as asked:
                     found = within_git_time(lambda: read(repo.root))
                 self.assertIsNotNone(found, "the reading waits on the pipe")
-                self.assertGreaterEqual(by_name(found)["w"]["untracked"], 1)
-                asked = [command for command, _ in calls if "check-ignore" in command
-                         and f"--work-tree={tree}" in command]
-                self.assertEqual(asked, [])
+                card = by_name(found)["w"]
+                self.assertGreaterEqual(card["untracked"], 1)
+                # The safe root query cannot open the deeper pipe. The descendant batch must be refused.
+                self.assertEqual(asked, [] if place == ".gitignore" else [["deep/"]])
+                self.assertFalse(card["file_activity_complete"])
+                self.assertIn("ignore", card["file_activity_partial_reasons"])
+
+
+@unittest.skipIf(GIT is None, "git absent")
+class IgnorePreflightTest(unittest.TestCase):
+    def test_a_refused_gitignore_blocks_its_query_but_not_a_safe_ancestor_query(self) -> None:
+        """Exercise the FIFO preflight boundary even on systems without filesystem pipes."""
+        for place in (".gitignore", "deep/a/b/c/.gitignore"):
+            with self.subTest(place=place):
+                repo = Plain()
+                self.addCleanup(repo.close)
+                tree = repo.worktree("w", "claude/w")
+                refused = tree / place
+                refused.parent.mkdir(parents=True, exist_ok=True)
+                refused.write_text("# ordinary stand-in for a refused ignore file\n", encoding="utf-8")
+                (refused.parent / "new.txt").write_text("new\n", encoding="utf-8")
+                regular = files._regular_or_absent
+
+                def safe(path):
+                    return Path(path) != refused and regular(path)
+
+                with mock.patch.object(files, "_regular_or_absent", side_effect=safe), ignore_queries(tree) as asked:
+                    found = within_git_time(lambda: read(repo.root))
+                self.assertIsNotNone(found)
+                card = by_name(found)["w"]
+                self.assertGreaterEqual(card["untracked"], 1)
+                self.assertEqual(asked, [] if place == ".gitignore" else [["deep/"]])
+                self.assertFalse(card["file_activity_complete"])
+                self.assertIn("ignore", card["file_activity_partial_reasons"])
 
 
 def within_git_time(reading):

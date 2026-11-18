@@ -90,7 +90,7 @@ class FirstPageTest(unittest.TestCase):
 
     def test_html_and_head_return_while_json_is_still_reading(self):
         collector = Collector()
-        snapshots = server.Snapshots(collector, now=lambda: NOW)
+        snapshots = server.Snapshots(collector, clock=lambda: 100.0, now=lambda: NOW)
         application = server.make_server(snapshots, page.template(), 0, lang="fr")
         worker = threading.Thread(target=application.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
         worker.start()
@@ -113,7 +113,12 @@ class FirstPageTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(embedded(body)["main"]["state"], "loading")
         self.assertEqual(headers["Content-Security-Policy"], page.policy(page.template()))
-        self.assertEqual(request(method="HEAD")[2], b"")
+        head_status, head_headers, head_body = request(method="HEAD")
+        self.assertEqual(head_status, 200)
+        self.assertEqual(head_headers["Content-Security-Policy"], page.policy(page.template()))
+        self.assertTrue(head_headers["Content-Type"].startswith("text/html"))
+        self.assertGreater(int(head_headers["Content-Length"]), 0)
+        self.assertEqual(head_body, b"")
         self.assertEqual(collector.calls, 0)
 
         collector.release.clear()
@@ -139,18 +144,23 @@ class FirstPageTest(unittest.TestCase):
         state_worker = threading.Thread(target=read_json, daemon=True)
         html_worker = threading.Thread(target=read_html, daemon=True)
         state_worker.start()
-        self.assertTrue(collector.started.wait(1))
         try:
+            self.assertTrue(collector.started.wait(1))
             html_worker.start()
             returned_before_release = html_done.wait(2)
         finally:
             collector.release.set()
             state_worker.join(3)
-            html_worker.join(3)
+            if html_worker.ident is not None:
+                html_worker.join(3)
         self.assertTrue(returned_before_release, "HTML waited for the blocked repository reading")
         self.assertEqual(errors, [])
         self.assertEqual(embedded(page_result[0][2])["main"]["state"], "loading")
         self.assertEqual(embedded(page_result[0][2])["waiting"], [])
+        self.assertEqual(page_result[1][0], 200)
+        self.assertEqual(page_result[1][1]["Content-Security-Policy"], page.policy(page.template()))
+        self.assertTrue(page_result[1][1]["Content-Type"].startswith("text/html"))
+        self.assertGreater(int(page_result[1][1]["Content-Length"]), 0)
         self.assertEqual(page_result[1][2], b"")
         self.assertEqual(page_result[2][0], 403)
         self.assertEqual(collector.calls, 1)

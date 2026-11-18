@@ -6,8 +6,11 @@ const fs = require('node:fs');
 const source = fs.readFileSync(process.argv[2], 'utf8');
 const between = (first, last) => source.slice(source.indexOf(first), source.indexOf(last, source.indexOf(first)));
 const code = [between('  function renderTask(id)', '  function openTask(id)'),
+  between('  function completedAt(', '  let lastOk = '),
+  between('  function renderHeader()', '  function renderLive()'),
   between('  function renderLive()', '  // ---- what waits'),
   between('  function observedStamp(value)', '  function card(c)'),
+  between('  function renderFooter()', '  function draw('),
   source.split('\n').find(line => line.startsWith('  const render = ')),
   between('  function requestTimeout()', '  let resizing')].join('\n');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
@@ -16,8 +19,13 @@ const checks = new AsyncFunction('assert', `
   const $ = id => { if (!nodes.has(id)) nodes.set(id, {id, textContent:'', className:'', children:[]}); return nodes.get(id); };
   ${source.split('\n').find(line => line.startsWith('  const own = '))}
   const h = (tag, props, ...children) => ({tag, props, children});
-  const put = (node, ...children) => { node.children = children; node.textContent = JSON.stringify(children); };
+  const put = (node, ...children) => {
+    node.children = children;
+    const visible=children.flat(Infinity).filter(value=>value!==null && value!==undefined && value!==false);
+    node.textContent=visible.length?JSON.stringify(visible):'';
+  };
   const t = (key, values={}) => key + (Object.keys(values).length ? ' ' + JSON.stringify(values) : '');
+  const tn = (key, n, values={}) => t(key,{n,...values});
   const label = (group, value) => value;
   const statusName = value => value;
   const statusDot = value => value;
@@ -25,24 +33,29 @@ const checks = new AsyncFunction('assert', `
   const stamp = value => value;
   const ago = value => value;
   const when = value => Date.parse(value);
+  const live = value => value;
   const tracked = () => true;
   const document = {hidden:false, body:{classList:{toggle:(key, on) => { document.stale = on; }}}};
   const timers = new Map(); let timerId = 0;
   const setTimeout = (fn, delay) => { timers.set(++timerId,{fn,delay}); return timerId; };
   const clearTimeout = id => timers.delete(id);
   const polling = true;
-  let timer=0, refreshVersion=0, refreshController=null, failed='', lost=false, lastOk=Date.now(), lastKey='';
+  let timer=0, refreshVersion=0, refreshController=null, failed='', lost=false, lastKey='';
   const task = (title, status) => ({title,status,status_main:status,milestone:'M1',owner:'codex',priority:'P1',release:'',acceptance:['Works'],dependencies:[],waiting_on:[]});
-  const state = (title='old',status='planned',seconds=12) => ({generated_at:new Date().toISOString(),main:{state:'ok'},sessions:[],waiting:[],tasks:{'T-1':task(title,status)},refresh_seconds:10,settings:{read_seconds:seconds}});
+  const state = (title='old',status='planned',seconds=12) => ({generated_at:'2026-11-17T21:00:00-05:00',
+    main:{state:'ok',ref:'main',head:'123abcd',date:'2026-11-17T20:00:00-05:00',subject:'fixture',valid:true},
+    repository:'fixture',resume:'read',sources:[{key:'git',label:'Git',state:'ok',detail:''}],
+    sessions:[],waiting:[],tasks:{'T-1':task(title,status)},refresh_seconds:10,settings:{read_seconds:seconds}});
   let data=state(), openedTask='T-1', fetch;
+  ${source.split('\n').find(line => line.startsWith('  let lastOk = '))}
   const redraw = fn => fn();
-  const renderStatic=()=>{}, renderNext=()=>{}, renderEvents=()=>{}, renderKpis=()=>{}, renderScope=()=>{}, renderCharts=()=>{}, renderFooter=()=>{};
+  const renderStatic=()=>{}, renderNext=()=>{}, renderEvents=()=>{}, renderKpis=()=>{}, renderScope=()=>{}, renderCharts=()=>{};
   const renderSessions=()=>{ put($('sessions'), data.sessions.map(trackingCard)); };
-  const renderHeader=()=>{ $('banner').textContent=''; };
   const renderWaiting=()=>{ $('waiting').textContent=JSON.stringify(data.waiting); };
   const keyOf = text => text.replace(/^\\{"generated_at":"[^"]*",/, '{');
   ${code}
   const response = next => ({ok:true,text:async()=>JSON.stringify(next)});
+  assert.equal(lastOk,Date.parse(data.generated_at),'initial success time belongs to the completed snapshot');
 
   const observed = (kind='check', reason='settled') => ({last_write:'2026-11-17T20:00:00-05:00',
     file_activity_observed_at:'2026-11-17T20:00:00-05:00',file_activity_complete:true,
@@ -78,6 +91,17 @@ const checks = new AsyncFunction('assert', `
   assert.match(safePartial,/page.tracking_partial_limit/);
   for (const reasons of ['limit',null,{toString:()=>{throw new Error('coerced list');}}]) {
     assert.doesNotThrow(()=>trackingCard({...partialCard,file_activity_partial_reasons:reasons}));
+  }
+  for (const kind of ['branch','remote']) {
+    const ref={...observed('none',''),kind,file_activity_complete:false,
+      file_activity_partial_reasons:['unreadable'],file_activity_observed_at:'',ledger_file_modified_at:''};
+    assert.equal(trackingCard(ref),null,'healthy refs have no local-file observation warning');
+    const refused={...ref,kind:'worktree',reason:'outside',files_read:false,
+      tracking:{state:'unknown',reason:'unreadable'}};
+    assert.match(JSON.stringify(trackingCard(refused)),/page.tracking_unknown/);
+    assert.match(JSON.stringify(trackingCard(refused)),/page.tracking_partial_unreadable/);
+    const brokenRef={...ref,reason:'read_failed',tracking:{state:'unknown',reason:'unreadable'}};
+    assert.match(JSON.stringify(trackingCard(brokenRef)),/page.tracking_unknown/);
   }
 
   assert.equal(requestTimeout(),20000);
@@ -135,6 +159,7 @@ const checks = new AsyncFunction('assert', `
   // Observation dates and notices are replaced by refreshed data and cleared on a failed refresh.
   const dated=state(); dated.generated_at='2026-11-17T21:00:00-05:00'; dated.sessions=[observed()];
   fetch=async()=>response(dated); await refresh();
+  assert.equal(lastOk,Date.parse(dated.generated_at),'cached success keeps its observation time');
   assert.match($('reading').textContent,/2026-11-17T21:00/);
   assert.match($('sessions').textContent,/page.tracking_check/);
   assert.match($('sessions').textContent,/2026-11-15T18:00/);
@@ -148,6 +173,7 @@ const checks = new AsyncFunction('assert', `
   fetch=async()=>response(nextReading); await refresh();
   assert.match($('reading').textContent,/2026-11-17T21:00:10/);
   fetch=async()=>{throw new Error('connection lost');}; await refresh();
+  assert.match($('banner').textContent,/2026-11-18T02:00:10.000Z/);
   assert.equal($('reading').textContent,'');
   assert.doesNotMatch($('sessions').textContent,/page.tracking_check|2026-11-15T18:00/);
   fetch=async()=>response(nextReading); await refresh();
@@ -173,25 +199,35 @@ const checks = new AsyncFunction('assert', `
   // The first HTML shell is neutral and fetches immediately with its known large-repository deadline.
   data=state('loading','planned',120); data.main={state:'loading',reason_text:''};
   data.tasks={}; data.waiting=[]; lastOk=null; failed=''; lost=false; openedTask=null;
-  renderLive();
+  render();
   assert.equal($('live').className,'live loading');
   assert.equal($('live-state').textContent,'page.spoken_loading');
   assert.equal(document.stale,false);
-  let immediateCalls=0;
-  fetch=async()=>{immediateCalls++;return response(state('first result','done',120));};
-  await startPolling();
+  let immediateCalls=0, finishInitial;
+  const existingTimers=new Set(timers.keys());
+  fetch=()=>{immediateCalls++;return new Promise(resolve=>{finishInitial=resolve;});};
+  const initialRequest=startPolling();
   assert.equal(immediateCalls,1);
+  assert.equal(data.main.state,'loading');
+  assert.ok(Array.from(timers).some(([id,entry])=>!existingTimers.has(id) && entry.delay===128000));
+  finishInitial(response(state('first result','done',120))); await initialRequest;
   assert.equal(data.main.state,'ok'); assert.equal($('live').className,'live on');
   assert.notEqual(lastOk,null); assert.equal(requestTimeout(),128000);
 
   // An initial failure does not pretend that any repository data was read successfully.
   data=state('loading','planned',120); data.main={state:'loading',reason_text:''};
+  data.sources=[{key:'git',label:'Git',state:'loading',detail:'loading reading'}];
   data.tasks={}; data.waiting=[]; lastOk=null; failed=''; lost=false;
+  render();
   fetch=async()=>{throw new Error('initial transport failure');};
   await startPolling();
   assert.equal(lastOk,null); assert.equal(lost,true);
   assert.equal($('live').className,'live lost');
   assert.match($('banner').textContent,/page.initial_failed/);
+  assert.match($('snapshot').textContent,/page.unreadable/);
+  assert.doesNotMatch($('snapshot').textContent,/page.loading/);
+  assert.match($('footer').textContent,/unreadable/);
+  assert.doesNotMatch($('footer').textContent,/loading/);
   fetch=async()=>response(state('eventual result','done',120)); await refresh();
   assert.equal(lost,false); assert.equal(failed,''); assert.equal($('live').className,'live on');
 

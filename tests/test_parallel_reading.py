@@ -117,32 +117,44 @@ class ParallelRunnerTest(unittest.TestCase):
                 with lock:
                     active -= 1
 
-        self.reader.git.deadline = time.monotonic() + 0.5
+        started_reading = threading.Event()
+        actual = slow
+
+        def expire_after_start(job, git):
+            self.reader.git.deadline = time.monotonic() - 1
+            started_reading.set()
+            return actual(job, git)
+
         with self.assertRaises(gitreads.ReadingTooLong):
-            self.reader._parallel_results(list(range(collector_module.PARALLEL_MIN)), slow)
+            self.reader._parallel_results(list(range(collector_module.PARALLEL_MIN)), expire_after_start)
+        self.assertTrue(started_reading.is_set())
         self.assertGreater(started, 0)
         self.assertLessEqual(started, collector_module.READ_WORKERS)
         self.assertEqual(active, 0, "a worker survived the failed reading")
 
-    def test_failed_graph_reads_are_not_cached_and_can_be_retried(self) -> None:
+    def test_failed_graph_prefetch_propagates_without_a_sequential_retry(self) -> None:
         main = "a" * 40
         tips = [f"{number:040x}" for number in range(collector_module.PARALLEL_MIN)]
         bad = tips[0]
 
+        failed = gitreads.GitFailed("retry this pair on the next reading")
+        attempts = []
+
         def counts(git, common, base, tip):
             if tip == bad:
-                raise gitreads.GitFailed("retry this pair")
+                attempts.append(tip)
+                raise failed
             return 0, 1
 
         with mock.patch.object(gitreads.Git, "counts", counts), \
                 mock.patch.object(gitreads.Git, "merge_bases", return_value=[main]):
             self.reader._prefetch_pairs(main, tips)
+            with self.assertRaises(gitreads.GitFailed) as caught:
+                self.reader._pair(main, bad)
         self.assertNotIn((main, bad), self.reader._pairs)
         self.assertEqual(len(self.reader._pairs), len(tips) - 1)
-        with mock.patch.object(gitreads.Git, "counts", return_value=(0, 1)) as retried, \
-                mock.patch.object(gitreads.Git, "merge_bases", return_value=[main]):
-            self.assertEqual(self.reader._pair(main, bad), (0, 1, [main]))
-        retried.assert_called_once()
+        self.assertIs(caught.exception, failed)
+        self.assertEqual(attempts, [bad])
 
     def test_worker_file_results_are_published_only_when_the_parent_consumes_them(self) -> None:
         jobs = [{"id": str(number), "path": Path(self.temporary.name)}
@@ -185,9 +197,75 @@ class ParallelSnapshotTest(unittest.TestCase):
     def test_parallel_and_sequential_snapshots_match(self) -> None:
         with mock.patch.object(collector_module, "PARALLEL_MIN", 100_000):
             sequential = collector_module.Collector(self.repo.root, self.settings).snapshot(NOW)
-        parallel = collector_module.Collector(self.repo.root, self.settings).snapshot(NOW)
+        actual = gitreads.Git.fork
+        forks = []
+
+        def fork(git):
+            child = actual(git)
+            forks.append(child)
+            return child
+
+        with mock.patch.object(gitreads.Git, "fork", fork):
+            parallel = collector_module.Collector(self.repo.root, self.settings).snapshot(NOW)
+        self.assertTrue(forks, "the comparison never exercised parallel reads")
         self.assertEqual(parallel["main"]["state"], "ok", parallel["main"])
         self.assertEqual(parallel, sequential)
+
+    def test_a_failed_pair_is_read_once_and_retried_on_the_next_snapshot(self) -> None:
+        main = self.repo.git("rev-parse", "main")
+        tip = self.repo.git("rev-parse", "HEAD", where=self.trees[0])
+        actual = gitreads.Git.counts
+        failed, attempts = True, 0
+
+        def counts(git, common, base, current):
+            nonlocal attempts
+            if (base, current) == (main, tip):
+                attempts += 1
+                if failed:
+                    raise gitreads.GitFailed("temporarily unavailable graph")
+            return actual(git, common, base, current)
+
+        reader = collector_module.Collector(self.repo.root, self.settings)
+        with mock.patch.object(gitreads.Git, "counts", counts):
+            first = reader.snapshot(NOW)
+            self.assertEqual(first["main"]["state"], "ok", first["main"])
+            card = next(card for card in first["sessions"] if card["name"] == self.trees[0].name)
+            self.assertEqual(card["reason"], "distance_unreadable")
+            self.assertEqual(attempts, 1, "failed prefetch ran again in the sequential path")
+            failed = False
+            second = reader.snapshot(NOW)
+        card = next(card for card in second["sessions"] if card["name"] == self.trees[0].name)
+        self.assertTrue(card["files_read"], card)
+        self.assertEqual(card["reason"], "")
+        self.assertEqual(attempts, 2)
+
+    def test_a_failed_range_is_read_once_and_retried_on_the_next_snapshot(self) -> None:
+        main = self.repo.git("rev-parse", "main")
+        tip = self.repo.git("rev-parse", "HEAD", where=self.trees[0])
+        actual = gitreads.Git.commits
+        failed, attempts = True, 0
+
+        def commits(git, common, base, current, limit=gitreads.MAX_COMMITS):
+            nonlocal attempts
+            if (base, current, limit) == (main, tip, gitreads.MAX_SESSION_COMMITS + 1):
+                attempts += 1
+                if failed:
+                    raise gitreads.GitFailed("temporarily unavailable range")
+            return actual(git, common, base, current, limit)
+
+        reader = collector_module.Collector(self.repo.root, self.settings)
+        with mock.patch.object(gitreads.Git, "commits", commits):
+            first = reader.snapshot(NOW)
+            self.assertEqual(first["main"]["state"], "ok", first["main"])
+            card = next(card for card in first["sessions"] if card["name"] == self.trees[0].name)
+            self.assertEqual(card["reason"], "commit_history_unreadable")
+            self.assertEqual(attempts, 1, "failed prefetch ran again in the sequential path")
+            failed = False
+            second = reader.snapshot(NOW)
+        card = next(card for card in second["sessions"] if card["name"] == self.trees[0].name)
+        self.assertTrue(card["files_read"], card)
+        self.assertEqual(card["reason"], "")
+        self.assertEqual(attempts, 2)
 
     def test_changed_files_and_ignore_rules_are_read_again_on_refresh(self) -> None:
         reader = collector_module.Collector(self.repo.root, self.settings)

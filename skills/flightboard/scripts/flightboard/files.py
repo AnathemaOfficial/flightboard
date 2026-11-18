@@ -1091,21 +1091,42 @@ def _read_tail(path: Path, root: Path, limit: int) -> tuple[bytes | None, str]:
     return None, "unreadable"
 
 
-def _entries(folder: Path) -> list[os.DirEntry] | None:
+def _entries(folder: Path, *, budget: Budget | None = None,
+             reasons: set[str] | None = None) -> list[os.DirEntry] | None:
     """The entries of a folder: [] when it is gone (or is now a file), None when it is there but cannot be listed
     (never taken for an empty folder: what it holds is unknown). A folder git is deleting is looked at again a little
     later (Windows denies it for a moment)."""
     for wait in LIST_WAITS:
+        if budget is not None:
+            budget.check()
+            if budget.left <= 0:
+                if reasons is not None:
+                    reasons.add("limit")
+                return []
         if wait:
             time.sleep(wait)
+        if budget is not None:
+            budget.check()
         try:
             with os.scandir(folder) as found:
                 entries = []
-                for entry in found:
+                iterator = iter(found)
+                while True:
+                    if budget is not None:
+                        budget.check()
+                        if budget.left <= 0:
+                            if reasons is not None:
+                                reasons.add("limit")
+                            return entries
+                    try:
+                        entry = next(iterator)
+                    except StopIteration:
+                        return entries
+                    if budget is not None:
+                        budget.left -= 1
                     if len(entries) >= MAX_LIST_ENTRIES:
                         return None
                     entries.append(entry)
-                return entries
         except (FileNotFoundError, NotADirectoryError):
             return []
         except OSError:
@@ -1168,9 +1189,12 @@ def children(tree: Path, root: Path, folder: str, limit: int = MAX_DATED, depth:
     and "folder/sub/" past the last level), the folders walked through ("folder/sub/"), and the sealed folders, those
     holding a .git: never entered nor handed to git, they count as ignored only under an ignored folder. None when it
     cannot be told: too many entries, a link, a folder that cannot be listed, or a .git right in the folder. An optional
-    shared budget counts metadata inspections, including directories, and checks the reading deadline before any
-    new directory listing and between entries; exhausting it leaves the result explicitly partial."""
+    shared budget counts directory entries during iteration, including directories, and checks the deadline before
+    listings and between entries. Exhaustion preserves the guarded prefix with complete=False; the unvisited
+    remainder cannot be claimed ignored. Without a shared budget, the legacy caps still return None."""
     found: dict = {"leaves": [], "folders": [], "sealed": []}
+    if budget is not None:
+        found["complete"] = True
     stack = [(folder.rstrip("/"), 1)]
     while stack:
         if budget is not None:
@@ -1178,22 +1202,19 @@ def children(tree: Path, root: Path, folder: str, limit: int = MAX_DATED, depth:
             if budget.left <= 0:
                 if reasons is not None:
                     reasons.add("limit")
-                return None
+                found["complete"] = False
+                return found
         current, level = stack.pop()
         path = Path(tree).joinpath(*current.split("/"))
         if not no_link(path, root):
             return None
-        listed = _entries(path)
+        listing_reasons: set[str] = set()
+        listed = _entries(path, budget=budget, reasons=listing_reasons) if budget is not None else _entries(path)
         if listed is None:
             return None
         for entry in listed:
             if budget is not None:
                 budget.check()
-                if budget.left <= 0:
-                    if reasons is not None:
-                        reasons.add("limit")
-                    return None
-                budget.left -= 1
             kind, info = ("", None) if entry.name == ".git" else _entry_info(entry)
             if kind not in ("folder", "file", "special"):
                 return None
@@ -1209,8 +1230,13 @@ def children(tree: Path, root: Path, folder: str, limit: int = MAX_DATED, depth:
                 stack.append((relative, level + 1))
             else:
                 found["leaves"].append(relative + "/")
-            if sum(len(names) for names in found.values()) > limit:
+            if sum(len(found[key]) for key in ("leaves", "folders", "sealed")) > limit:
                 return None
+        if listing_reasons:
+            if reasons is not None:
+                reasons.update(listing_reasons)
+            found["complete"] = False
+            return found
     return found
 
 
@@ -1218,6 +1244,8 @@ def all_ignored(found: dict, ignored: set[str]) -> bool:
     """Whether everything children() found is ignored: each leaf itself or by an ignored folder above it, each sealed
     folder by an ignored folder above it (it is never asked about). An empty folder is ignored too: git never shows
     it."""
+    if found.get("complete") is False:
+        return False
     above = [name for name in found["folders"] if name in ignored]
 
     def covered(name: str) -> bool:
@@ -1419,19 +1447,23 @@ def activity_info(tree: Path, root: Path, legacy_names: list[str], names: list[s
     guarded observations are reused in full; MAX_DATED bounds additional metadata attempts across both dates.
     """
     reasons = set(reasons)
-    saved, checked = dict(observations), {}
+    saved, checked, failed = dict(observations), {}, set()
     remaining = MAX_DATED
 
     def metadata(name: str):
         nonlocal remaining
         plain = name.rstrip("/")
+        if plain in failed:
+            return None
         if not safe_relative(plain):
             reasons.add("unsafe")
+            failed.add(plain)
             return None
         if plain in saved:
             return saved[plain]
         if remaining <= 0:
             reasons.add("limit")
+            failed.add(plain)
             return None
         remaining -= 1  # failed fallback attempts consume the same allowance as successful ones
         plan = _relative_plan(plain)
@@ -1440,11 +1472,13 @@ def activity_info(tree: Path, root: Path, legacy_names: list[str], names: list[s
             checked[folder] = no_link(Path(tree).joinpath(*folder), root)
         if not checked[folder]:
             reasons.add("unsafe")
+            failed.add(plain)
             return None
         try:
             info = os.lstat(Path(tree).joinpath(*plan.parts))
         except (OSError, ValueError):
             reasons.add("unreadable")
+            failed.add(plain)
             return None
         saved[plain] = info
         return info

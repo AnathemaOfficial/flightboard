@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import copy
-from datetime import datetime
+from datetime import datetime, timedelta
 import unittest
 
 from tests.fixtures import BASE, encoded, load, roadmap
@@ -26,14 +26,15 @@ def observed(**changes) -> dict:
     return card
 
 
-def build(card: dict) -> dict:
+def build(card: dict | list[dict], **context_changes) -> dict:
     adapter = roadmap()
     ledger = adapter.parse(encoded(BASE))
     context = {"lang": "en", "ledger": ledger, "ledger_adapter": adapter, "ledger_missing": "",
                "ref": "refs/heads/main", "sha": "a" * 40, "head": {"at": NOW.timestamp(), "subject": "main"},
                "note": [], "note_text": "", "limits": {}, "planted": False, "tool": "flightboard",
                "repository": "demo", "entries": []}
-    return view.build_view(NOW, "live", context, [card], [])
+    context.update(context_changes)
+    return view.build_view(NOW, "live", context, [card] if isinstance(card, dict) else card, [])
 
 
 class TrackingViewTest(unittest.TestCase):
@@ -115,6 +116,36 @@ class TrackingViewTest(unittest.TestCase):
         self.assertEqual(self.state(observed(), False), {"state": "none", "reason": ""})
         self.assertEqual(self.state(observed(modified=0, untracked=0, last_write="")),
                          {"state": "none", "reason": ""})
+
+    def test_healthy_refs_without_a_worktree_have_no_local_file_tracking(self) -> None:
+        for kind in ("branch", "remote"):
+            with self.subTest(kind=kind):
+                card = observed(kind=kind, modified=0, untracked=0, file_activity_complete=False,
+                                file_activity_observed_at="", ledger_file_modified_at="")
+                self.assertEqual(self.state(card), {"state": "none", "reason": ""})
+                self.assertEqual(self.state({**card, "reason": "read_failed"})["state"], "unknown")
+
+    def test_files_written_during_the_reading_use_its_completion_bound(self) -> None:
+        end = NOW + timedelta(seconds=2)
+        card = observed(file_activity_observed_at=(NOW + timedelta(seconds=1)).isoformat(),
+                        ledger_file_modified_at=(NOW - timedelta(seconds=1)).isoformat())
+        value = build(card, observed_until=end)
+        self.assertEqual(value["sessions"][0]["tracking"], {"state": "check", "reason": "unassigned"})
+        future = build({**card, "file_activity_observed_at": (end + timedelta(seconds=1)).isoformat()},
+                       observed_until=end)
+        self.assertEqual(future["sessions"][0]["tracking"], {"state": "unknown", "reason": "dates"})
+        self.assertEqual(value["generated_at"], NOW.isoformat(timespec="seconds"))
+
+    def test_tracking_reminders_cannot_hide_preservation_alerts_at_the_waiting_cap(self) -> None:
+        cards = [observed(id=f"worker-{number}", name=f"worker-{number}", activity="active")
+                 for number in range(35)]
+        cards.append(observed(id="preserve", name="preserve", stash="here", activity="active",
+                              modified=0, file_activity_observed_at="", last_write=""))
+        value = build(cards)
+        self.assertEqual(len(value["waiting"]), 30)
+        self.assertEqual(value["waiting"][0]["kind"], "alert")
+        self.assertEqual(value["waiting"][0]["session"], "preserve")
+        self.assertTrue(any(item["kind"] == "tracking" for item in value["waiting"]))
 
     def test_build_adds_diagnostics_without_changing_tasks_events_or_advice(self) -> None:
         card = observed(tasks=["FB-001"], _head_tasks={"FB-001": {"status": "awaiting_review"}})

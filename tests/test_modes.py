@@ -353,25 +353,38 @@ class ReadSecondsTest(unittest.TestCase):
     def test_the_configured_deadline_is_shared_and_cleared_after_success(self) -> None:
         collector = self.make_collector()
         expected = {"settings": collector.settings.public()}
+        clock = [100.0]
 
-        def read(now, mode):
+        def read(now, mode, *_):
             self.assertEqual(collector.git.deadline, 130)
+            clock[0] = 129.0
             return expected
 
-        with mock.patch.object(collector_module.time, "monotonic", side_effect=[100, 129]), \
+        with mock.patch.object(collector_module.time, "monotonic", side_effect=lambda: clock[0]), \
                 mock.patch.object(collector, "_snapshot", side_effect=read):
             self.assertEqual(collector.snapshot(NOW), expected)
         self.assertIsNone(collector.git.deadline)
 
     def test_errors_and_expired_readings_keep_the_budget_for_the_page(self) -> None:
-        for failure in (collector_module.GitFailed("failed"), collector_module.GitRefused("refused"),
-                        RuntimeError("failed"), None):
+        for failure, expected_reason in ((collector_module.GitFailed("failed"), "git_failed"),
+                                         (collector_module.GitRefused("refused"), "git_failed"),
+                                         (RuntimeError("failed"), "read_failed"), (None, "git_failed")):
             with self.subTest(failure=failure):
                 collector = self.make_collector()
-                with mock.patch.object(collector_module.time, "monotonic", side_effect=[100, 130]), \
-                        mock.patch.object(collector, "_snapshot", side_effect=failure, return_value={}):
+                clock = [100.0]
+
+                def read(now, mode, *_):
+                    self.assertEqual(collector.git.deadline, 130)
+                    if failure is not None:
+                        raise failure
+                    clock[0] = 130.0
+                    return {}
+
+                with mock.patch.object(collector_module.time, "monotonic", side_effect=lambda: clock[0]), \
+                        mock.patch.object(collector, "_snapshot", side_effect=read):
                     found = collector.snapshot(NOW)
                 self.assertEqual(found["main"]["state"], "unreadable")
+                self.assertEqual(found["main"]["reason"], expected_reason)
                 self.assertEqual(found["settings"]["read_seconds"], 30)
                 self.assertIsNone(collector.git.deadline)
         early = self.make_collector()._error(NOW, "live", "no_repository")

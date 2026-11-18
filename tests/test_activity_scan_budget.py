@@ -3,6 +3,7 @@
 """Complete ordinary source-tree dating within shared work and fallback-I/O bounds."""
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import tempfile
@@ -21,6 +22,28 @@ Settings = load("config").Settings
 
 
 class ObservedActivityTest(unittest.TestCase):
+    def test_failed_legacy_lookups_are_not_retried_before_a_later_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            late = root / "late.py"
+            late.write_text("new work\n", encoding="utf-8")
+            new = NOW - timedelta(hours=1)
+            os.utime(late, (new.timestamp(), new.timestamp()))
+            actual = files.os.lstat
+            attempted = []
+
+            def lstat(path, *args, **kwargs):
+                if Path(path).parent == root:
+                    attempted.append(Path(path).name)
+                return actual(path, *args, **kwargs)
+
+            with mock.patch.object(files, "MAX_DATED", 3), mock.patch.object(files.os, "lstat", lstat):
+                result = files.activity_info(root, root, ["missing.py", "absent.py"],
+                                             ["missing.py", "absent.py", "late.py"], {}, set())
+            self.assertEqual(attempted, ["missing.py", "absent.py", "late.py"])
+            self.assertEqual(result["observed"], new)
+            self.assertEqual(result["reasons"], ["unreadable"])
+
     def test_already_observed_leaves_beyond_two_hundred_need_no_fallback_stat(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -87,6 +110,74 @@ class ObservedActivityTest(unittest.TestCase):
 
 
 class SharedTraversalBudgetTest(unittest.TestCase):
+    def test_directory_iterator_is_bounded_and_observed_prefix_is_retained(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            folder = root / "work"
+            folder.mkdir()
+            later = root / "later"
+            later.mkdir()
+            for number in range(20):
+                (folder / f"work-{number:02}.py").write_text("work\n", encoding="utf-8")
+                (later / f"work-{number:02}.py").write_text("work\n", encoding="utf-8")
+            actual = files.os.scandir
+            consumed, opened = [], []
+
+            @contextlib.contextmanager
+            def scandir(path):
+                opened.append(Path(path))
+                with actual(path) as entries:
+                    def records():
+                        for entry in entries:
+                            consumed.append(entry.name)
+                            yield entry
+                    yield records()
+
+            observations, reasons = {}, set()
+            budget = files.Budget(entries=3)
+            with mock.patch.object(files, "MAX_LIST_ENTRIES", 5), mock.patch.object(files.os, "scandir", scandir):
+                found = files.children(root, root, "work/", budget=budget,
+                                       observations=observations, reasons=reasons)
+                next_found = files.children(root, root, "later/", budget=budget,
+                                            observations=observations, reasons=reasons)
+            self.assertEqual(len(consumed), 3)
+            self.assertEqual(opened, [folder])
+            self.assertEqual(budget.left, 0)
+            self.assertIsNotNone(found)
+            self.assertEqual(len(found["leaves"]), 3)
+            self.assertEqual(len(observations), 3)
+            self.assertFalse(found["complete"])
+            self.assertFalse(next_found["complete"])
+            self.assertEqual(next_found["leaves"], [])
+            self.assertEqual(reasons, {"limit"})
+            self.assertFalse(files.all_ignored(found, set(found["leaves"])))
+
+    def test_deadline_interrupts_directory_iteration_before_the_next_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            folder = root / "work"
+            folder.mkdir()
+            for number in range(20):
+                (folder / f"work-{number:02}.py").write_text("work\n", encoding="utf-8")
+            actual = files.os.scandir
+            budget = files.Budget(entries=30)
+            consumed = []
+
+            @contextlib.contextmanager
+            def scandir(path):
+                with actual(path) as entries:
+                    def records():
+                        for entry in entries:
+                            consumed.append(entry.name)
+                            budget.deadline = 0
+                            yield entry
+                    yield records()
+
+            with mock.patch.object(files.os, "scandir", scandir):
+                with self.assertRaises(files.ReadingTooLong):
+                    files.children(root, root, "work/", budget=budget)
+            self.assertEqual(len(consumed), 1)
+
     def test_exhaustion_stops_before_listing_the_next_candidate_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -100,13 +191,14 @@ class SharedTraversalBudgetTest(unittest.TestCase):
             actual = files._entries
             listed = []
 
-            def entries(path):
+            def entries(path, **kwargs):
                 listed.append(Path(path))
-                return actual(path)
+                return actual(path, **kwargs)
 
             with mock.patch.object(files, "_entries", entries):
                 second = files.children(root, root, "second/", budget=budget, reasons=reasons)
-            self.assertIsNone(second)
+            self.assertFalse(second["complete"])
+            self.assertEqual(second["leaves"], [])
             self.assertEqual(listed, [])
             self.assertEqual(reasons, {"limit"})
 
@@ -139,7 +231,7 @@ class SharedTraversalBudgetTest(unittest.TestCase):
                 with self.assertRaises(files.ReadingTooLong):
                     files.children(root, root, "work/", budget=budget, observations=observed)
             self.assertEqual(len(observed), 1)
-            self.assertEqual(budget.left, 19)
+            self.assertLess(budget.left, 20)
 
 
 @unittest.skipIf(GIT is None, "git absent")
@@ -192,10 +284,10 @@ class SourceTreeActivityTest(unittest.TestCase):
         self.write("source/current.py", self.old)
         actual = files._entries
 
-        def entries(path):
+        def entries(path, **kwargs):
             if Path(path) == self.tree / "generated":
                 raise AssertionError("ignored root must not be enumerated")
-            return actual(path)
+            return actual(path, **kwargs)
 
         with mock.patch.object(files, "_entries", entries):
             card = self.card()

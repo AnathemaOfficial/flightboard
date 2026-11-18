@@ -33,7 +33,7 @@ MAX_DETAILS = 500  # the tasks whose detail the page holds
 HISTORY_MAX = 300
 STARTED = ("in_progress", "awaiting_review", "done")
 PRIORITY = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
-WAITING_ORDER = ("merge", "conflict", "check", "alert", "review", "session")
+WAITING_ORDER = ("merge", "conflict", "check", "alert", "tracking", "review", "session")
 WORD = re.compile(r"[A-Za-z0-9]+(?:[._-]+[A-Za-z0-9]+)*")
 
 
@@ -78,6 +78,9 @@ def tracking(session: dict, enabled: bool, now: datetime) -> dict[str, str]:
     none = {"state": "none", "reason": ""}
     if not enabled:
         return none
+    if session.get("kind") in ("branch", "remote") and not session.get("reason") \
+            and not session.get("operation") and not session.get("error"):
+        return none  # a healthy Git ref has no local working files whose tracking can be evaluated
     if not session.get("files_read") or session.get("reason") or session.get("operation") \
             or session.get("ledger") != "ok" or session.get("error"):
         return {"state": "unknown", "reason": "unreadable"}
@@ -396,7 +399,7 @@ class Waiting:
                 safe = self.say("wait.tracking_safe")
                 if named:
                     safe += " " + listed(self.lang, named)
-                items.append(_item("check", self.say("verb.check"), self.say("wait.tracking", name=card["name"]),
+                items.append(_item("tracking", self.say("verb.check"), self.say("wait.tracking", name=card["name"]),
                                    safe, named, card["name"]))
         return items
 
@@ -583,7 +586,8 @@ def build_view(now: datetime, mode: str, context: dict, sessions: list[dict], ve
         stage = _stage(session)
         staged.append({**session, "stage": stage})
     sessions = [{**session, "advice": _advice(session, live, tracked)} for session in staged]
-    sessions = [{**session, "tracking": tracking(session, adapter is not None, now)} for session in sessions]
+    observed_until = context.get("observed_until", now)
+    sessions = [{**session, "tracking": tracking(session, adapter is not None, observed_until)} for session in sessions]
     sessions = [{**session, "reason_text": M.reason(lang, session["reason"], session.get("reason_detail", ""))
                  if session["reason"] else ""} for session in sessions]
     sessions = sorted(sessions, key=lambda c: (-_when(c["last_activity"]), c["name"]))

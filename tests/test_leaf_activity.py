@@ -67,8 +67,8 @@ class LeafActivityTest(unittest.TestCase):
                 stats[Path(self.value.path)] += 1
                 return self.value.stat(**kwargs)
 
-        def entries(path):
-            found = actual_entries(path)
+        def entries(path, **kwargs):
+            found = actual_entries(path, **kwargs)
             walks[Path(path)] += 1
             return [Entry(entry) for entry in found] if found is not None else None
 
