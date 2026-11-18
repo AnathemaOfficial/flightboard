@@ -211,10 +211,15 @@ class Collector:
                 self._pair_failures[pair] = error
 
     def _prefetch_remote_relations(self, relations) -> None:
-        jobs = [pair for pair in dict.fromkeys(relations) if pair[0] != pair[1]
-                and self._ancestors.get(pair) is not True
-                and pair not in self._ancestor_failures and (pair[1], pair[0]) not in self._ancestor_failures
-                and (pair not in self._ancestors or (pair[1], pair[0]) not in self._ancestors)]
+        jobs, seen = [], set()
+        for pair in relations:
+            relation = frozenset(pair)
+            if relation in seen or pair[0] == pair[1] or self._ancestors.get(pair) is True \
+                    or pair in self._ancestor_failures or (pair[1], pair[0]) in self._ancestor_failures \
+                    or (pair in self._ancestors and (pair[1], pair[0]) in self._ancestors):
+                continue
+            seen.add(relation)  # one worker owns both directions, including a failed reverse read
+            jobs.append(pair)
 
         def read(pair, git):
             older, newer = pair
@@ -601,6 +606,9 @@ class Collector:
 
     def _candidate(self, base: dict, main: str) -> dict:
         """A candidate with its distance to main; a tip git cannot read marks it broken, never the whole page."""
+        if base["remote"] is None:
+            return {**base, "behind": None, "ahead": None, "bases": [], "broken": True,
+                    "known": True, "unread": "read_failed"}
         try:
             behind, ahead, bases = self._pair(main, base["tip"])
         except GitFailed:
@@ -630,7 +638,8 @@ class Collector:
                     "name": tree["name"], "ref": branch, "tip": tip or "", "path": tree["path"], "git_dir": tree["git_dir"],
                     "boundary": tree.get("boundary", self.root),
                     "created": tree["created"], "operation": tree["operation"]["kind"], "reason": tree["reason"],
-                    "stale": False, "gone": tree["reason"] == FILES.GONE, "remote": self._remote(refs, branch, tip),
+                    "stale": False, "gone": tree["reason"] == FILES.GONE,
+                    "remote": self._guarded_remote(refs, branch, tip),
                     "held": held, "moves": self._moves(tree)}
             items.append(self._candidate(base, main) if tip in existing else {
                 **base, "behind": None, "ahead": None, "bases": [], "broken": True, "known": False,
@@ -658,7 +667,7 @@ class Collector:
             if kind == "branch" and self.remote_prefix + short in refs])
         selected = []
         for _, name, kind, short, info in others[:cap]:
-            remote = "pushed" if kind == "remote" else self._remote(refs, name, info["sha"])
+            remote = "pushed" if kind == "remote" else self._guarded_remote(refs, name, info["sha"])
             front = refs[self.remote_prefix + short] if remote == "behind" else info
             selected.append((name, kind, short, front, remote))
         self._prefetch_pairs(main, [front["sha"] for _, _, _, front, _ in selected])
@@ -672,6 +681,15 @@ class Collector:
             if item["broken"] or item["ahead"]:
                 items.append(item)
         return items, {"branches_cut": max(0, len(others) - cap), "branches_unread": unread}
+
+    def _guarded_remote(self, refs: dict, branch: str | None, tip: str | None) -> str | None:
+        """A session's unread remote relation is unknown; the shared reading deadline still ends the board read."""
+        try:
+            return self._remote(refs, branch, tip)
+        except GIT.ReadingTooLong:
+            raise
+        except GitFailed:
+            return None
 
     def _remote(self, refs: dict, branch: str | None, tip: str | None) -> str:
         """Where the remote's copy of a local branch stands: pushed (same tip), ahead (local holds commits the remote

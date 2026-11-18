@@ -230,6 +230,60 @@ class TrackingViewTest(unittest.TestCase):
         self.assertEqual(value["tasks"]["VISIBLE-1"]["title"], "Visible current work")
         self.assertLessEqual(len(value["tasks"]), 500)
 
+    def test_quiet_session_history_does_not_preempt_a_current_card_task_detail(self) -> None:
+        adapter = load("ledgers").make("tasks", "tasks.json")
+        history = [f"OLD-{number:03}" for number in range(520)]
+        raw = {"version": 1, "tasks": [
+            {"id": "VISIBLE-1", "title": "Visible current work", "status": "in_progress", "owner": "codex"},
+            *({"id": tid, "title": "Past work", "status": "done", "owner": "codex"} for tid in history)]}
+        ledger = adapter.parse(json.dumps(raw).encode("utf-8"))
+        self.assertTrue(ledger["valid"], ledger["error"])
+        cards = []
+        for number in range(13):
+            names = history[number * 40:(number + 1) * 40]
+            cards.append(observed(id=f"aa-{number:02}", name=f"aa-{number:02}", tasks=names,
+                                  ledger_file_modified_at=RECENT,
+                                  _head_tasks={tid: ledger["tasks"][tid] for tid in names}))
+        cards.append(observed(id="zz-current", name="zz-current", activity="active", tasks=["VISIBLE-1"],
+                              _head_tasks={"VISIBLE-1": ledger["tasks"]["VISIBLE-1"]}))
+        value = build(cards, ledger=ledger, ledger_adapter=adapter)
+        self.assertEqual(value["next"], [])
+        self.assertEqual(len(value["waiting"]), 13)
+        self.assertTrue(all(item["kind"] == "session" for item in value["waiting"]))
+        self.assertEqual(sum(len(item["tasks"]) for item in value["waiting"]), 520)
+        self.assertIn("VISIBLE-1", value["tasks"])
+        self.assertEqual(value["tasks"]["VISIBLE-1"]["title"], "Visible current work")
+        self.assertLessEqual(len(value["tasks"]), 500)
+
+    def test_head_only_completed_tasks_do_not_preempt_a_current_card_task_detail(self) -> None:
+        adapter = load("ledgers").make("tasks", "tasks.json")
+        history = [f"OLD-{number:03}" for number in range(520)]
+        main = {"version": 1, "tasks": [
+            {"id": "VISIBLE-1", "title": "Visible current work", "status": "in_progress", "owner": "codex"}]}
+        ledger = adapter.parse(json.dumps(main).encode("utf-8"))
+        head = adapter.parse(json.dumps({"version": 1, "tasks": [
+            {"id": tid, "title": "Past session work", "status": "done", "owner": "codex"}
+            for tid in history]}).encode("utf-8"))
+        self.assertTrue(ledger["valid"], ledger["error"])
+        self.assertTrue(head["valid"], head["error"])
+        cards = []
+        for number in range(13):
+            names = history[number * 40:(number + 1) * 40]
+            cards.append(observed(id=f"aa-{number:02}", name=f"aa-{number:02}", activity="active", tasks=names,
+                                  _head_tasks={tid: head["tasks"][tid] for tid in names}))
+        cards.append(observed(id="zz-current", name="zz-current", activity="active", tasks=["VISIBLE-1"],
+                              _head_tasks={"VISIBLE-1": ledger["tasks"]["VISIBLE-1"]}))
+        value = build(cards, ledger=ledger, ledger_adapter=adapter)
+        self.assertEqual(value["next"], [])
+        self.assertTrue(all(item["kind"] == "tracking" for item in value["waiting"]))
+        self.assertEqual(sum(len(item["tasks"]) for item in value["waiting"]), 520)
+        self.assertIn("VISIBLE-1", value["tasks"])
+        self.assertEqual(value["tasks"]["VISIBLE-1"]["title"], "Visible current work")
+        historical = next(tid for tid in history if tid in value["tasks"])
+        self.assertEqual(value["tasks"][historical]["status"], "done")
+        self.assertTrue(value["tasks"][historical]["declared_in"].startswith("aa-"))
+        self.assertLessEqual(len(value["tasks"]), 500)
+
     def test_build_adds_diagnostics_without_changing_tasks_events_or_advice(self) -> None:
         card = observed(tasks=["FB-001"], _head_tasks={"FB-001": {"status": "awaiting_review"}})
         before = copy.deepcopy(card)

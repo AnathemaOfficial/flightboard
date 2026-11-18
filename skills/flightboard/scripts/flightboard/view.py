@@ -599,12 +599,14 @@ def build_view(now: datetime, mode: str, context: dict, sessions: list[dict], ve
     waiting = Waiting(lang).all(sessions, live, notes, events, slots, tracked)
     nexts = _next(live, sessions, adapter, raw, order) if tracked else []
     shown = events[:MAX_EVENTS]
-    # Interactive tasks retain detail before informational tracking reminders, at most MAX_DETAILS.
+    # Current interactive tasks retain detail before quiet-session history and tracking reminders.
     visible_waiting = waiting[:MAX_WAITING]
     wanted = [item["id"] for item in nexts]
-    wanted += [tid for item in visible_waiting if item["kind"] != "tracking" for tid in item["tasks"]]
+    wanted += [tid for item in visible_waiting if item["kind"] not in ("tracking", "session")
+               for tid in item["tasks"]]
     card_tasks = [tid for c in sessions for tid in c["tasks"][:MAX_SESSION_TASKS]]
-    wanted += [tid for tid in card_tasks if live.get(tid, {}).get("status") not in ("done", "dropped")]
+    wanted += [tid for c in sessions for tid in c["tasks"][:MAX_SESSION_TASKS]
+               if live.get(tid, (c.get("_head_tasks") or {}).get(tid, {})).get("status") not in ("done", "dropped")]
     wanted += [event["task"] for event in shown] + card_tasks
     wanted += sorted(tid for tid, e in live.items() if e["sources"])
     wanted += [tid for item in visible_waiting if item["kind"] == "tracking" for tid in item["tasks"]]

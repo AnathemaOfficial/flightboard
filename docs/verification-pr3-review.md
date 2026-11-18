@@ -114,3 +114,32 @@ The final full local Windows/Python 3.14 suite ran **638 tests in 338.514 second
 the previously approved JavaScript is unchanged. The latest live-clock check kept parallel readers enabled,
 all three sessions complete and counters unchanged, with a **0.5123-second warm median** across three samples.
 The pushed-head CI and provider reviews are recorded separately on the PR.
+
+## Session isolation and detail-priority follow-up
+
+The `cdffbb64761a3bc5ab37aacbe37f212cdbeb01eb` revision passed all eight CI jobs and its Codex review
+reported no findings. CodeRabbit subsequently identified a session-isolation regression and two remaining
+detail-priority cases. A failed session remote-ancestry comparison must remain unreadable without failing
+healthy sessions or claiming a pushed, behind or diverged relationship. The repository-wide deadline must
+still propagate. Quiet-session historical IDs and head-ledger completed tasks must not displace current
+interactive details under the existing cap. These are production behavior corrections, separate from
+test-harness reliability suggestions.
+
+The Windows test fixture has one explicitly deferred limitation (CodeRabbit `r4616388591`): a caller stalled
+between duplicating a child handle and publishing its ownership record can leave the child alive until its
+30-second watchdog expires, and the duplicated handle can remain open until the test process exits. Normal
+handoff and exceptions that run the rescue path are covered; a stalled handoff is not. A test-owned Windows
+job established before child launch would close that gap, but requires a separate fixture-lifecycle change.
+This is a test-only failure window, not a production startup fix or a claim of unconditional fixture ownership.
+
+The session-isolation regression failed before correction and now preserves main and healthy worktrees for
+both worktree and unheld-branch failures. Reciprocal ancestry jobs share one worker without losing directional
+failure evidence, and the shared-deadline control still fails the whole reading. Two detail-cap regressions
+cover quiet-session reminders and completed tasks declared only in a session ledger. Fixture controls verify
+atomic receipt publication, explicit wait-timeout injection and child-held pipes after caller exit.
+
+The final full local Windows/Python 3.14 suite ran **644 tests in 305.763 seconds: OK, with 2 skipped**
+(642 passed). Independent Python, general and security reviews approved these source/test hashes; unchanged
+JavaScript retains its earlier verification. `git diff --check` passed, and the original performance worktree's
+dirty-patch SHA-256 remains `9f2f73c70e82cf42f06ef2da888f8c6c971eee561b9484e54203df8eaba8139c`.
+Later pushed-head CI and bot results are separate PR evidence; the deferred test-only item remains explicit.

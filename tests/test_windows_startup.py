@@ -306,7 +306,9 @@ class StartupTest(unittest.TestCase):
             "limit = time.monotonic() + 30\n"
             "while not gate.exists() and time.monotonic() < limit:\n    time.sleep(0.02)\n"
             "if gate.exists():\n    print('SERVING after caller exit', flush=True)\n"
-            "    receipt.write_text('survived', encoding='utf-8')\n"
+            "    temporary = receipt.with_suffix('.tmp')\n"
+            "    temporary.write_text('survived', encoding='utf-8')\n"
+            "    temporary.replace(receipt)\n"
             f"    time.sleep({pause})\n", encoding="utf-8")
         settings = copy.deepcopy(self.settings)
         settings["python"] = sys.executable
@@ -456,16 +458,19 @@ class StartupTest(unittest.TestCase):
                     child_stopped = True
                 except BaseException as error:
                     errors.append(error)
+            caller_stopped, pipes_drained = False, False
             if caller is not None:
                 try:
                     caller.wait(timeout=5)
+                    caller_stopped = True
                     if child_stopped:
                         caller.communicate(timeout=5)
+                        pipes_drained = True
                 except BaseException as error:
                     errors.append(error)
                 finally:
                     # A live inherited pipe holder can block BufferedReader.close on its reader's lock.
-                    if child_stopped:
+                    if caller_stopped and child_stopped and pipes_drained:
                         for stream in (caller.stdout, caller.stderr):
                             if stream is not None:
                                 clean(stream.close)
@@ -506,11 +511,16 @@ class StartupTest(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "owned Windows fixture process handles")
     def test_owned_once_child_is_cleaned_after_failure_without_masking_the_error(self) -> None:
         import _winapi
+
+        class ChildWaitExpired(RuntimeError):
+            pass
+
         for failure in ("status", "caller", "stdout", "gate", "wait"):
             with self.subTest(failure=failure):
                 observer = None
                 expected = {"status": AssertionError, "caller": subprocess.TimeoutExpired,
-                            "stdout": json.JSONDecodeError, "gate": FileNotFoundError, "wait": AssertionError}[failure]
+                            "stdout": json.JSONDecodeError, "gate": FileNotFoundError,
+                            "wait": ChildWaitExpired}[failure]
                 try:
                     with self.assertRaises(expected) as raised:
                         with self._owned_once_child(failure) as child:
@@ -523,7 +533,8 @@ class StartupTest(unittest.TestCase):
                             if failure == "gate":
                                 child["gate"].parent.rmdir()
                             child["gate"].touch()
-                            self.assertEqual(_winapi.WaitForSingleObject(child["handle"], 1), _winapi.WAIT_OBJECT_0)
+                            self.assertEqual(_winapi.WaitForSingleObject(child["handle"], 1), _winapi.WAIT_TIMEOUT)
+                            raise ChildWaitExpired("fixture child wait expired")
                     if failure == "status":
                         self.assertIn("fixture status unavailable", str(raised.exception))
                     self.assertEqual(_winapi.WaitForSingleObject(observer, 0), _winapi.WAIT_OBJECT_0,
@@ -582,12 +593,39 @@ class StartupTest(unittest.TestCase):
             self.assertEqual(_winapi.WaitForSingleObject(child["handle"], 0), _winapi.WAIT_OBJECT_0)
 
     @unittest.skipUnless(os.name == "nt", "owned Windows fixture process handles")
+    def test_owned_once_child_does_not_close_pipes_when_caller_wait_is_unconfirmed(self) -> None:
+        caller = None
+        try:
+            with contextlib.ExitStack() as patches:
+                with self.assertRaisesRegex(ValueError, "fixture primary error") as raised:
+                    with self._owned_once_child() as child:
+                        caller = child["caller"]
+                        caller.communicate(timeout=10)
+                        patches.enter_context(mock.patch.object(
+                            caller, "wait", side_effect=subprocess.TimeoutExpired("fixture caller", 5)))
+                        stdout_close = patches.enter_context(mock.patch.object(caller.stdout, "close"))
+                        stderr_close = patches.enter_context(mock.patch.object(caller.stderr, "close"))
+                        raise ValueError("fixture primary error")
+                stdout_close.assert_not_called()
+                stderr_close.assert_not_called()
+                self.assertTrue(any("TimeoutExpired" in note for note in raised.exception.__notes__))
+        finally:
+            if caller is not None:
+                caller.wait(timeout=5)
+                caller.stdout.close()
+                caller.stderr.close()
+
+    @unittest.skipUnless(os.name == "nt", "owned Windows fixture process handles")
     def test_owned_once_child_stops_inherited_pipe_holder_before_draining(self) -> None:
         import _winapi
         drain_states = []
         with contextlib.ExitStack() as patches:
             with self.assertRaises(subprocess.TimeoutExpired):
                 with self._owned_once_child("pipe") as child:
+                    child["caller"].wait(timeout=10)
+                    self.assertEqual(child["caller"].returncode, 0)
+                    self.assertEqual(_winapi.WaitForSingleObject(child["handle"], 0), _winapi.WAIT_TIMEOUT,
+                                     "the inherited pipe holder must still be running")
                     communicate = child["caller"].communicate
 
                     def drain(*args, **kwargs):

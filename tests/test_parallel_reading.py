@@ -203,6 +203,29 @@ class ParallelRunnerTest(unittest.TestCase):
             self.assertEqual(self.reader._tracked[job["id"]], {job["id"]})
         self.assertEqual(self.reader._prefetched_files, {})
 
+    def test_reciprocal_remote_relations_share_the_failed_direction(self) -> None:
+        bad = ("a" * 40, "b" * 40)
+        relations = [bad, bad[::-1]] + [(f"{number:040x}", f"{number + 100:040x}")
+                                       for number in range(collector_module.PARALLEL_MIN - 1)]
+        attempts = []
+        unavailable = gitreads.GitFailed("temporarily unreadable direction")
+
+        def ancestor(git, common, older, newer):
+            attempts.append((older, newer))
+            if (older, newer) == bad:
+                raise unavailable
+            return False
+
+        refs = {"refs/remotes/origin/forward": {"sha": bad[0]},
+                "refs/remotes/origin/reverse": {"sha": bad[1]}}
+        with mock.patch.object(gitreads.Git, "is_ancestor", ancestor):
+            self.reader._prefetch_remote_relations(relations)
+            self.assertIsNone(self.reader._guarded_remote(refs, "refs/heads/forward", bad[1]))
+            self.assertIsNone(self.reader._guarded_remote(refs, "refs/heads/reverse", bad[0]))
+        self.assertIs(self.reader._ancestor_failures[bad], unavailable)
+        self.assertEqual(attempts.count(bad), 1, "reciprocal workers repeated the failed direction")
+        self.assertEqual(len(self.reader._ancestors), 2 * (collector_module.PARALLEL_MIN - 1) + 1)
+
 
 @unittest.skipIf(GIT is None, "git absent")
 class ParallelSnapshotTest(unittest.TestCase):
@@ -317,6 +340,12 @@ class ParallelSnapshotTest(unittest.TestCase):
         tips = [self.repo.git("rev-parse", "HEAD", where=tree) for tree in self.trees]
         branches = [self.repo.git("branch", "--show-current", where=tree) for tree in self.trees]
         remotes = [f"refs/remotes/origin/{branch}" for branch in branches]
+
+        def clean_refs():
+            for remote in remotes:
+                self.repo.git("update-ref", "-d", remote)
+
+        self.addCleanup(clean_refs)  # cleanup also covers a partially completed setup
         for number, remote in enumerate(remotes):
             self.repo.git("update-ref", remote, tips[(number + 1) % len(tips)])
         actual, actual_fork = gitreads.Git.is_ancestor, gitreads.Git.fork
@@ -343,8 +372,14 @@ class ParallelSnapshotTest(unittest.TestCase):
                     with mock.patch.object(gitreads.Git, "is_ancestor", ancestor), \
                             mock.patch.object(gitreads.Git, "fork", fork):
                         first = reader.snapshot(NOW)
-                        self.assertEqual(first["main"]["state"], "unreadable")
-                        self.assertEqual(first["main"]["reason"], "git_failed")
+                        self.assertEqual(first["main"]["state"], "ok", first["main"])
+                        cards = {card["name"]: card for card in first["sessions"]}
+                        unread = cards[self.trees[0].name]
+                        self.assertEqual(unread["reason"], "read_failed", unread)
+                        self.assertFalse(unread["files_read"], unread)
+                        self.assertEqual(unread["remote"], "", unread)
+                        self.assertFalse(unread["pushed"], unread)
+                        self.assertTrue(all(cards[tree.name]["files_read"] for tree in self.trees[1:]), cards)
                         self.assertEqual(len(attempts), 1, "failed remote prefetch ran again sequentially")
                         self.assertIsNot(attempts[0], reader.git)
                         self.assertTrue(any(child is attempts[0] for child in forks))
@@ -359,8 +394,62 @@ class ParallelSnapshotTest(unittest.TestCase):
                     card = next(card for card in second["sessions"] if card["name"] == self.trees[0].name)
                     self.assertEqual(card["remote"], "diverged")
         finally:
-            for remote in remotes:
-                self.repo.git("update-ref", "-d", remote)
+            clean_refs()
+
+    def test_failed_remote_ancestry_of_a_branch_preserves_the_other_sessions(self) -> None:
+        tips = [self.repo.git("rev-parse", "HEAD", where=tree) for tree in self.trees]
+        branches = [f"refs/heads/unheld-{number}" for number in range(len(tips))]
+        remotes = [branch.replace("refs/heads/", "refs/remotes/origin/") for branch in branches]
+
+        def clean_refs():
+            for name in branches + remotes:
+                self.repo.git("update-ref", "-d", name)
+
+        self.addCleanup(clean_refs)
+        for number, (branch, remote) in enumerate(zip(branches, remotes)):
+            self.repo.git("update-ref", branch, tips[number])
+            self.repo.git("update-ref", remote, tips[(number + 1) % len(tips)])
+        actual, attempts = gitreads.Git.is_ancestor, []
+        bad = (tips[1], tips[0])
+
+        def ancestor(git, common, older, newer):
+            if (older, newer) == bad:
+                attempts.append(git)
+                raise gitreads.GitFailed("temporarily unavailable branch ancestry")
+            return actual(git, common, older, newer)
+
+        reader = collector_module.Collector(self.repo.root, self.settings)
+        with mock.patch.object(gitreads.Git, "is_ancestor", ancestor):
+            found = reader.snapshot(NOW)
+        self.assertEqual(found["main"]["state"], "ok", found["main"])
+        cards = {card["name"]: card for card in found["sessions"]}
+        self.assertEqual(cards["unheld-0"]["reason"], "read_failed", cards["unheld-0"])
+        self.assertEqual(cards["unheld-0"]["remote"], "")
+        self.assertFalse(cards["unheld-0"]["pushed"])
+        self.assertTrue(all(cards[tree.name]["files_read"] for tree in self.trees), cards)
+        self.assertTrue(all(cards[f"unheld-{number}"]["reason"] == "" for number in range(1, len(tips))), cards)
+        self.assertEqual(len(attempts), 1)
+        self.assertIsNot(attempts[0], reader.git, "branch failure did not exercise the parallel prefetch")
+
+    def test_remote_ancestry_shared_deadline_still_fails_the_whole_reading(self) -> None:
+        tip = self.repo.git("rev-parse", "HEAD", where=self.trees[0])
+        remote = "refs/remotes/origin/topic-0"
+        other = self.repo.git("rev-parse", "HEAD", where=self.trees[1])
+        self.addCleanup(self.repo.git, "update-ref", "-d", remote)
+        self.repo.git("update-ref", remote, other)
+        actual, attempted = gitreads.Git.is_ancestor, []
+
+        def ancestor(git, common, older, newer):
+            if (older, newer) == (other, tip):
+                attempted.append((older, newer))
+                raise gitreads.ReadingTooLong("the whole reading exceeded its time budget")
+            return actual(git, common, older, newer)
+
+        with mock.patch.object(gitreads.Git, "is_ancestor", ancestor):
+            found = collector_module.Collector(self.repo.root, self.settings).snapshot(NOW)
+        self.assertEqual(attempted, [(other, tip)])
+        self.assertEqual(found["main"]["state"], "unreadable")
+        self.assertEqual(found["main"]["reason"], "git_failed")
 
     def test_changed_files_and_ignore_rules_are_read_again_on_refresh(self) -> None:
         reader = collector_module.Collector(self.repo.root, self.settings)
