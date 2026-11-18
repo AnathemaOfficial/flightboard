@@ -40,6 +40,9 @@ WORKTREES = ((".claude", "worktrees"),)  # the default worktree folders, as part
 MAX_LEDGER_BYTES = 5_000_000
 MAX_SMALL_BYTES = 4096
 MAX_DATED = 200
+# Shared work for dating a normal source tree; existing metadata costs no second filesystem lookup.
+MAX_ACTIVITY_ENTRIES = 2000
+MAX_ACTIVITY_DEPTH = 8
 MAX_WORKTREES = 100
 MAX_LIST_ENTRIES = 50_000
 MAX_KEPT_ENTRIES = 2000
@@ -743,20 +746,24 @@ class TooManyWorktrees(GitFailed):
     """The admin entry count is past the limit; no session may silently disappear."""
 
 
-def _entry_kind(entry: os.DirEntry) -> str:
+def _entry_info(entry: os.DirEntry) -> tuple[str, os.stat_result | None]:
     if os.name == "nt" and _windows_odd(entry.name):
-        return "name"
+        return "name", None
     try:
         info = entry.stat(follow_symlinks=False)
     except FileNotFoundError:
-        return "gone"
+        return "gone", None
     except OSError:
-        return "unreadable"
+        return "unreadable", None
     if _is_link(info):
-        return "link"
+        return "link", info
     if stat.S_ISDIR(info.st_mode):
-        return "folder"
-    return "file" if stat.S_ISREG(info.st_mode) else "special"
+        return "folder", info
+    return ("file" if stat.S_ISREG(info.st_mode) else "special"), info
+
+
+def _entry_kind(entry: os.DirEntry) -> str:
+    return _entry_info(entry)[0]
 
 
 def _walk_problem(base: Path, spots: tuple[tuple[str, bool], ...], root: Path,
@@ -1113,7 +1120,9 @@ def _plain_entry(entry: os.DirEntry) -> bool:
         return False
 
 
-def untracked(tree: Path, root: Path, tracked: set[str], limit: int = MAX_DATED) -> list[str] | None:
+def untracked(tree: Path, root: Path, tracked: set[str], limit: int = MAX_DATED, *,
+              observations: dict[str, os.stat_result] | None = None,
+              dated: set[str] | frozenset[str] = frozenset()) -> list[str] | None:
     """Untracked candidates, relative to the worktree: files beside tracked ones, and new folders as one entry ending
     with "/". Only folders that hold tracked files are listed, never through a link; an entry named .git is never
     opened, and a new folder is never entered (so a nested .git file there is never read). A tracked name that is not
@@ -1135,26 +1144,41 @@ def untracked(tree: Path, root: Path, tracked: set[str], limit: int = MAX_DATED)
             if entry.name == ".git":
                 continue
             relative = f"{folder}/{entry.name}" if folder else entry.name
-            kind = _entry_kind(entry)
+            kind, info = _entry_info(entry)
             if kind == "gone":
                 continue
+            candidate = False
             if kind == "folder" and relative not in known_folders and relative not in tracked:
                 found.append(relative + "/")
+                candidate = True
             elif kind != "folder" and relative not in tracked:
                 found.append(relative)
+                candidate = True
             if len(found) > limit:
                 return None  # ignored candidates must never hide unknown untracked work after this boundary
+            if observations is not None and info is not None and (candidate or relative in dated):
+                observations[relative] = info
     return found
 
 
-def children(tree: Path, root: Path, folder: str, limit: int = MAX_DATED, depth: int = 3) -> dict | None:
+def children(tree: Path, root: Path, folder: str, limit: int = MAX_DATED, depth: int = 3, *,
+             observations: dict[str, os.stat_result] | None = None, budget: Budget | None = None,
+             reasons: set[str] | None = None) -> dict | None:
     """The content of a new folder, a few levels deep, to learn whether all of it is ignored: its leaves ("folder/name",
     and "folder/sub/" past the last level), the folders walked through ("folder/sub/"), and the sealed folders, those
     holding a .git: never entered nor handed to git, they count as ignored only under an ignored folder. None when it
-    cannot be told: too many entries, a link, a folder that cannot be listed, or a .git right in the folder."""
+    cannot be told: too many entries, a link, a folder that cannot be listed, or a .git right in the folder. An optional
+    shared budget counts metadata inspections, including directories, and checks the reading deadline before any
+    new directory listing and between entries; exhausting it leaves the result explicitly partial."""
     found: dict = {"leaves": [], "folders": [], "sealed": []}
     stack = [(folder.rstrip("/"), 1)]
     while stack:
+        if budget is not None:
+            budget.check()
+            if budget.left <= 0:
+                if reasons is not None:
+                    reasons.add("limit")
+                return None
         current, level = stack.pop()
         path = Path(tree).joinpath(*current.split("/"))
         if not no_link(path, root):
@@ -1163,10 +1187,19 @@ def children(tree: Path, root: Path, folder: str, limit: int = MAX_DATED, depth:
         if listed is None:
             return None
         for entry in listed:
-            kind = "" if entry.name == ".git" else _entry_kind(entry)
+            if budget is not None:
+                budget.check()
+                if budget.left <= 0:
+                    if reasons is not None:
+                        reasons.add("limit")
+                    return None
+                budget.left -= 1
+            kind, info = ("", None) if entry.name == ".git" else _entry_info(entry)
             if kind not in ("folder", "file", "special"):
                 return None
             relative = f"{current}/{entry.name}"
+            if observations is not None and info is not None:
+                observations[relative] = info
             if kind != "folder":
                 found["leaves"].append(relative)
             elif _exists(Path(entry.path) / ".git"):
@@ -1339,27 +1372,108 @@ def _written_as_utf8(name: str) -> bool:
         return False
 
 
-def last_write(tree: Path, root: Path, names: list[str]) -> datetime | None:
-    """The latest modification time among the files git status names, each reached through plain folders only."""
+def last_write_info(tree: Path, root: Path, names: list[str]) -> tuple[datetime | None, bool]:
+    """The latest observed entry time and whether every requested file was dated within the existing cap.
+
+    Directory times remain useful activity observations, but cannot date all the files beneath them. No additional
+    metadata is read to determine completeness; it comes from the same guarded lstat results.
+    """
     latest, checked = None, {}
+    complete = len(names) <= MAX_DATED
     for name in names[:MAX_DATED]:
         if not safe_relative(name):
+            complete = False
             continue
         plan = _relative_plan(name.rstrip("/"))
         folder = plan.parent
         if folder not in checked:
             checked[folder] = no_link(Path(tree).joinpath(*folder), root)
         if not checked[folder]:
+            complete = False
             continue
         try:
             info = os.lstat(Path(tree).joinpath(*plan.parts))
         except (OSError, ValueError):
+            complete = False
             continue
+        if not stat.S_ISREG(info.st_mode) or getattr(info, "st_file_attributes", 0) & REPARSE_POINT:
+            complete = False
         latest = info.st_mtime if latest is None else max(latest, info.st_mtime)
     try:
-        return datetime.fromtimestamp(latest, timezone.utc) if latest is not None else None
+        return (datetime.fromtimestamp(latest, timezone.utc) if latest is not None else None), complete
     except (OverflowError, OSError, ValueError):  # a file dated before 1970 or past what the platform holds
-        return None
+        return None, False
+
+
+def last_write(tree: Path, root: Path, names: list[str]) -> datetime | None:
+    """The latest modification time among the files git status names, each reached through plain folders only."""
+    return last_write_info(tree, root, names)[0]
+
+
+def activity_info(tree: Path, root: Path, legacy_names: list[str], names: list[str],
+                  observations: dict[str, os.stat_result], reasons: set[str]) -> dict:
+    """Date one bounded sample, reusing metadata already observed by this reading's guarded directory traversal.
+
+    Legacy entry times may include folders; positive tracking evidence is restricted to ordinary nonignored files.
+    The caller supplies only selected leaf names and the causes that prevent proving the sample complete. Existing
+    guarded observations are reused in full; MAX_DATED bounds additional metadata attempts across both dates.
+    """
+    reasons = set(reasons)
+    saved, checked = dict(observations), {}
+    remaining = MAX_DATED
+
+    def metadata(name: str):
+        nonlocal remaining
+        plain = name.rstrip("/")
+        if not safe_relative(plain):
+            reasons.add("unsafe")
+            return None
+        if plain in saved:
+            return saved[plain]
+        if remaining <= 0:
+            reasons.add("limit")
+            return None
+        remaining -= 1  # failed fallback attempts consume the same allowance as successful ones
+        plan = _relative_plan(plain)
+        folder = plan.parent
+        if folder not in checked:
+            checked[folder] = no_link(Path(tree).joinpath(*folder), root)
+        if not checked[folder]:
+            reasons.add("unsafe")
+            return None
+        try:
+            info = os.lstat(Path(tree).joinpath(*plan.parts))
+        except (OSError, ValueError):
+            reasons.add("unreadable")
+            return None
+        saved[plain] = info
+        return info
+
+    legacy = None
+    for name in legacy_names[:MAX_DATED]:
+        info = metadata(name)
+        if info is not None:
+            legacy = info.st_mtime if legacy is None else max(legacy, info.st_mtime)
+
+    sample = None
+    for name in names:
+        info = metadata(name)
+        if info is None:
+            continue
+        if _is_link(info) or not stat.S_ISREG(info.st_mode):
+            reasons.add("unsafe")
+            continue
+        sample = info.st_mtime if sample is None else max(sample, info.st_mtime)
+
+    def dated(value):
+        try:
+            return datetime.fromtimestamp(value, timezone.utc) if value is not None else None
+        except (OverflowError, OSError, ValueError):
+            reasons.add("unreadable")
+            return None
+
+    last, observed = dated(legacy), dated(sample)
+    return {"last_write": last, "observed": observed, "complete": not reasons, "reasons": sorted(reasons)}
 
 
 def admin_name(root: Path) -> str | None:

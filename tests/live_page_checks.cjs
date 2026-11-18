@@ -7,6 +7,7 @@ const source = fs.readFileSync(process.argv[2], 'utf8');
 const between = (first, last) => source.slice(source.indexOf(first), source.indexOf(last, source.indexOf(first)));
 const code = [between('  function renderTask(id)', '  function openTask(id)'),
   between('  function renderLive()', '  // ---- what waits'),
+  between('  function observedStamp(value)', '  function card(c)'),
   source.split('\n').find(line => line.startsWith('  const render = ')),
   between('  function requestTimeout()', '  let resizing')].join('\n');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
@@ -16,7 +17,7 @@ const checks = new AsyncFunction('assert', `
   ${source.split('\n').find(line => line.startsWith('  const own = '))}
   const h = (tag, props, ...children) => ({tag, props, children});
   const put = (node, ...children) => { node.children = children; node.textContent = JSON.stringify(children); };
-  const t = key => key;
+  const t = (key, values={}) => key + (Object.keys(values).length ? ' ' + JSON.stringify(values) : '');
   const label = (group, value) => value;
   const statusName = value => value;
   const statusDot = value => value;
@@ -24,6 +25,7 @@ const checks = new AsyncFunction('assert', `
   const stamp = value => value;
   const ago = value => value;
   const when = value => Date.parse(value);
+  const tracked = () => true;
   const document = {hidden:false, body:{classList:{toggle:(key, on) => { document.stale = on; }}}};
   const timers = new Map(); let timerId = 0;
   const setTimeout = (fn, delay) => { timers.set(++timerId,{fn,delay}); return timerId; };
@@ -34,12 +36,49 @@ const checks = new AsyncFunction('assert', `
   const state = (title='old',status='planned',seconds=12) => ({generated_at:new Date().toISOString(),main:{state:'ok'},sessions:[],waiting:[],tasks:{'T-1':task(title,status)},refresh_seconds:10,settings:{read_seconds:seconds}});
   let data=state(), openedTask='T-1', fetch;
   const redraw = fn => fn();
-  const renderStatic=()=>{}, renderSessions=()=>{}, renderNext=()=>{}, renderEvents=()=>{}, renderKpis=()=>{}, renderScope=()=>{}, renderCharts=()=>{}, renderFooter=()=>{};
+  const renderStatic=()=>{}, renderNext=()=>{}, renderEvents=()=>{}, renderKpis=()=>{}, renderScope=()=>{}, renderCharts=()=>{}, renderFooter=()=>{};
+  const renderSessions=()=>{ put($('sessions'), data.sessions.map(trackingCard)); };
   const renderHeader=()=>{ $('banner').textContent=''; };
   const renderWaiting=()=>{ $('waiting').textContent=JSON.stringify(data.waiting); };
   const keyOf = text => text.replace(/^\\{"generated_at":"[^"]*",/, '{');
   ${code}
   const response = next => ({ok:true,text:async()=>JSON.stringify(next)});
+
+  const observed = (kind='check', reason='settled') => ({last_write:'2026-11-17T20:00:00-05:00',
+    file_activity_observed_at:'2026-11-17T20:00:00-05:00',file_activity_complete:true,
+    file_activity_partial_reasons:[],ledger_file_modified_at:'2026-11-15T18:00:00-05:00',
+    tracking:{state:kind,reason}});
+  const described = trackingCard(observed());
+  assert.match(JSON.stringify(described),/2026-11-17T20:00/);
+  assert.match(JSON.stringify(described),/2026-11-15T18:00/);
+  assert.match(JSON.stringify(described),/page.tracking_check/);
+  assert.match(JSON.stringify(trackingCard(observed('info','ongoing'))),/page.tracking_info/);
+  assert.match(JSON.stringify(trackingCard(observed('unknown','partial'))),/page.tracking_unknown/);
+  const noSignal=JSON.stringify(trackingCard(observed('none','')));
+  assert.doesNotMatch(noSignal,/page.tracking_(check|info|unknown)/);
+  const hostileDate=trackingCard({...observed(),file_activity_observed_at:'<img src=x onerror=alert(1)>'});
+  assert.doesNotMatch(JSON.stringify(hostileDate),/onerror/);
+  assert.match(JSON.stringify(hostileDate),/page.date_unknown/);
+  assert.doesNotMatch(JSON.stringify(trackingCard(observed('check','<script>'))),/<script>/);
+  assert.doesNotThrow(()=>trackingCard(observed('check',{toString:'not callable'})));
+  assert.doesNotThrow(()=>trackingCard({...observed(),file_activity_observed_at:{toString:()=>{throw new Error('coerced date');}}}));
+  const directoryOnly=JSON.stringify(trackingCard({...observed(),file_activity_observed_at:''}));
+  assert.doesNotMatch(directoryOnly,/2026-11-17T20:00/);
+  assert.match(directoryOnly,/page.date_unknown/);
+  const partialCard={...observed(),file_activity_complete:false,file_activity_partial_reasons:['limit','depth']};
+  const partialText=JSON.stringify(trackingCard(partialCard));
+  assert.match(partialText,/page.tracking_check/);
+  assert.match(partialText,/page.tracking_partial_note/);
+  assert.match(partialText,/page.tracking_partial_limit/);
+  assert.match(partialText,/page.tracking_partial_depth/);
+  const hostileReasons=['<script>',{toString:()=>{throw new Error('coerced reason');}},['limit'],'__proto__','limit'];
+  let safePartial;
+  assert.doesNotThrow(()=>{safePartial=JSON.stringify(trackingCard({...partialCard,file_activity_partial_reasons:hostileReasons}));});
+  assert.doesNotMatch(safePartial,/<script>|__proto__/);
+  assert.match(safePartial,/page.tracking_partial_limit/);
+  for (const reasons of ['limit',null,{toString:()=>{throw new Error('coerced list');}}]) {
+    assert.doesNotThrow(()=>trackingCard({...partialCard,file_activity_partial_reasons:reasons}));
+  }
 
   assert.equal(requestTimeout(),20000);
   for (const [seconds,expected] of [[12,20000],[30,38000],[120,128000]]) {
@@ -92,6 +131,28 @@ const checks = new AsyncFunction('assert', `
   const good=state('recovered','done'); fetch=async()=>response(good); await refresh();
   assert.equal(lost,false); assert.equal(failed,''); assert.equal($('live').className,'live on');
   assert.equal($('banner').textContent,'');
+
+  // Observation dates and notices are replaced by refreshed data and cleared on a failed refresh.
+  const dated=state(); dated.generated_at='2026-11-17T21:00:00-05:00'; dated.sessions=[observed()];
+  fetch=async()=>response(dated); await refresh();
+  assert.match($('reading').textContent,/2026-11-17T21:00/);
+  assert.match($('sessions').textContent,/page.tracking_check/);
+  assert.match($('sessions').textContent,/2026-11-15T18:00/);
+  const partialReading={...dated,sessions:[partialCard]};
+  fetch=async()=>response(partialReading); await refresh();
+  assert.match($('sessions').textContent,/page.tracking_partial_note/);
+  assert.match($('sessions').textContent,/page.tracking_partial_limit/);
+  fetch=async()=>response(dated); await refresh();
+  assert.doesNotMatch($('sessions').textContent,/page.tracking_partial_note/);
+  const nextReading={...dated,generated_at:'2026-11-17T21:00:10-05:00'};
+  fetch=async()=>response(nextReading); await refresh();
+  assert.match($('reading').textContent,/2026-11-17T21:00:10/);
+  fetch=async()=>{throw new Error('connection lost');}; await refresh();
+  assert.equal($('reading').textContent,'');
+  assert.doesNotMatch($('sessions').textContent,/page.tracking_check|2026-11-15T18:00/);
+  fetch=async()=>response(nextReading); await refresh();
+  assert.match($('sessions').textContent,/page.tracking_check/);
+  assert.match($('reading').textContent,/2026-11-17T21:00:10/);
   lost=true; $('banner').textContent='old error'; fetch=async()=>response(good); await refresh();
   assert.equal($('banner').textContent,'');
 
@@ -136,6 +197,6 @@ const checks = new AsyncFunction('assert', `
 
   document.hidden=true; let calls=0; fetch=async()=>{calls++;return response(state());}; await refresh();
   assert.equal(calls,0);
-  return '11 live-page checks passed';
+  return '14 live-page checks passed';
 `);
 checks(assert).then(result => console.log(result)).catch(error => { console.error(error); process.exitCode=1; });

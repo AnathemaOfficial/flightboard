@@ -291,6 +291,20 @@ class RulesTest(unittest.TestCase):
         dropped = {**live, "FB-001": {"status": "dropped", "status_main": "dropped"}}
         self.assertEqual(view._advice(merged, dropped), "ended")  # a task dropped in main leaves nothing waiting
 
+    def test_uncommitted_work_is_open_even_when_its_head_is_in_main(self) -> None:
+        live = {"FB-001": {"status": "awaiting_review", "status_main": "planned"}}
+        base = {"kind": "worktree", "ahead": 0, "tasks": ["FB-001"], "reason": "",
+                "activity": "quiet", "kept": 0, "files_read": True, "conflicted": 0,
+                "operation": "", "remote": "", "modified": 0, "untracked": 0}
+        for pending in ({"modified": 1}, {"untracked": 1},
+                        {"changes": [{"uncommitted": True}]}):
+            with self.subTest(pending=pending):
+                session_ = {**base, **pending}
+                session_["stage"] = view._stage(session_)
+                self.assertEqual(session_["stage"], "uncommitted")
+                for tracked in (True, False):
+                    self.assertEqual(view._advice(session_, live, tracked), "open")
+
     def test_a_copy_the_remote_carried_further_is_never_in_main(self) -> None:
         state = {"conflicted": 0, "operation": "", "modified": 0, "untracked": 0, "kind": "worktree", "ahead": 0,
                  "remote": "behind"}

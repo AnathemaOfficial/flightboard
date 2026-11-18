@@ -210,7 +210,7 @@ class LiveReadingTest(unittest.TestCase):
         (self.tree / "work" / ".gitignore").write_text("# nothing ignored\n", encoding="utf-8")
         session = self.session()
         self.assertEqual(session["untracked"], 1)
-        self.assertNotEqual(session["advice"], "ended")
+        self.assertEqual((session["stage"], session["advice"]), ("uncommitted", "open"))
 
     def test_a_folder_that_cannot_be_listed_keeps_a_session_from_ending(self) -> None:
         self.assertEqual(self.session()["advice"], "ended")

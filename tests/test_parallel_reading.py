@@ -155,14 +155,17 @@ class ParallelRunnerTest(unittest.TestCase):
                 threads.add(threading.get_ident())
             self.assertEqual(reader._tracked, {})
             self.assertEqual(reader._used, set())
-            return [], [], "", {item["id"]}
+            return [], [], "", {item["id"]}, {"last_write": None, "observed": None,
+                                               "complete": True, "reasons": []}
 
         with mock.patch.object(collector_module.Collector, "_read_files_of", read):
             self.reader._prefetch_working_files(jobs, False)
         self.assertEqual(self.reader._tracked, {})
         self.assertNotIn(threading.get_ident(), threads)
         for job in jobs:
-            self.assertEqual(self.reader._files_of(job, False), ([], [], ""))
+            self.assertEqual(self.reader._files_of(job, False),
+                             ([], [], "", {"last_write": None, "observed": None,
+                                           "complete": True, "reasons": []}))
             self.assertEqual(self.reader._tracked[job["id"]], {job["id"]})
         self.assertEqual(self.reader._prefetched_files, {})
 

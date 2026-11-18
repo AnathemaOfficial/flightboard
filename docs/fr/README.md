@@ -16,6 +16,18 @@ flightboard réunit le dépôt principal, ses arbres de travail autorisés et le
 fichier de tâches, il compare les déclarations de chaque session à la feuille de route de `main` avant toute fusion.
 Sans fichier de tâches, il fournit la vue des sessions à partir de Git seul.
 
+La date de lecture du tableau, l'activité locale observée et l'enregistrement du registre de travail sont affichés
+séparément. Une activité plus récente que le registre affiche « Suivi à vérifier » si aucun lot n'est identifié ou
+si les lots identifiés sont déjà en revue ou terminés. Un autre statut connu reçoit une note informative. Un fichier
+ordinaire récent observé avec certitude peut donner un rappel même dans un échantillon partiel, avec ses limites
+affichées ; une absence de preuve dans un échantillon incomplet reste non évaluée. Ces observations ne modifient ni les statuts ni
+l'avancement. Réenregistrer le registre peut retirer le signal temporel sans prouver la couverture du travail.
+La datation réutilise les métadonnées des feuilles non ignorées déjà découvertes dans les nouveaux dossiers,
+dans une enveloppe commune de 2000 entrées et huit niveaux ; au plus 200 recherches de métadonnées supplémentaires
+sont permises. Les racines candidates ignorées sont écartées avant la descente. Une date de dossier
+seule ne prouve aucune activité de fichier. Les limites de profondeur, dossiers non résolus et suppressions restent
+explicites ; les limites de lecture et les racines autorisées restent les mêmes.
+
 Il ne lit pas les conversations, les API des fournisseurs ni la CI, et ne fait jamais de `fetch`. Claude Code,
 Codex et d'autres outils peuvent suivre le même flux, dès lors qu'ils travaillent dans des branches et arbres Git.
 Une session silencieuse peut encore réfléchir, lire ou attendre une réponse : le tableau n'en déduit pas qu'elle a
@@ -578,7 +590,8 @@ qui a accès au site peut lire la page. Pour signaler une vulnérabilité, voir 
 - Une branche poussée par une session dans le nuage n'apparaît qu'une fois récupérée : le tableau ne fait jamais de
   `fetch`. Quand une session a continué ailleurs alors que son arbre local est resté en arrière, le tableau lit l'arbre
   local et le dit en retard sur son remote.
-- Un nouveau dossier est regardé sur trois niveaux. Ignoré plus profond, ou s'il contient lui-même un dépôt imbriqué,
+- Les nouveaux dossiers partagent un parcours borné sur huit niveaux. Ignoré plus profond, ou s'il contient lui-même
+  un dépôt imbriqué,
   il compte comme un nouveau fichier : l'erreur va du côté prudent, et la session n'est jamais dite terminée pour
   autant. Un dossier qu'on ne peut lister (ses permissions, par exemple) n'est jamais pris pour un dossier vide : les
   nouveaux fichiers de cet arbre ne sont pas lus.

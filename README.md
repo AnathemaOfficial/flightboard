@@ -24,6 +24,18 @@ go. flightboard is one local page, and a few lines of text for an agent, that an
 - **The roadmap, live**: the task statuses each session declares in its own copy of your task file, overlaid on
   `main` before anything is merged, with conflicts between sessions shown, never resolved for you.
 - **Progress**: tasks done over time, milestones, moves per day, each with a table view.
+- **Tracking dates**: the board reading, observed local activity and working-ledger save time are shown separately.
+  Recent work after the ledger was saved prompts a tracking check when no lot is identified or the identified lots
+  are already in review/finished. Ongoing work gets an informational note. A trusted recent ordinary file can
+  supply a reminder even in a partial sample, with its limits displayed; incomplete absence stays unevaluated.
+
+Tracking notices describe observations, not missing-task proof or acceptance. They do not change task statuses or
+progress. Saving a ledger can remove the temporal signal without establishing coverage. Activity dating reuses
+already discovered nonignored leaves under untracked directories. Their guarded metadata is reused within a shared
+2000-entry traversal budget, eight levels deep; at most 200 additional metadata lookups are allowed. Ignored
+candidate roots are pruned before descent. Directory timestamps alone never establish tracking evidence.
+Depth/count limits, unresolved folders and deleted files remain explicit; existing read-root and Git/file-read
+bounds remain in force.
 
 It works without any task file too: a repository without one gets the whole sessions view from git alone.
 
@@ -565,8 +577,9 @@ read the page. See [SECURITY.md](SECURITY.md) to report a vulnerability.
 - A branch pushed by a cloud session shows only once fetched: the board never fetches. When a session went on
   elsewhere while its local worktree stayed behind, the board reads the local worktree and says it is behind its
   remote.
-- A new folder is looked at three levels deep. Ignored deeper down, or holding a nested repository of its own, it
-  counts as a new file: the error leans the safe way, and the session is never called ended for it. A folder that
+- New folders share a bounded traversal, up to eight levels deep. Ignored deeper down, or holding a nested
+  repository of its own, a folder counts as a new file: the error leans the safe way, and the session is never
+  called ended for it. A folder that
   cannot be listed (its permissions, say) is never taken for an empty one: that worktree's new files are not read.
 - A session whose reading fails within a successful snapshot is marked unreadable. If the whole live reading fails,
   the page removes the old session verdicts and announces the failure. Retrying never turns old data into evidence

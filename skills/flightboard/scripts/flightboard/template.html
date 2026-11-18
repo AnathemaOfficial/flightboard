@@ -40,6 +40,11 @@ main{max-width:1308px;margin:auto;padding:18px 24px 60px}h2{font-size:19px;margi
 .act-active{--act:var(--done)}.act-recent{--act:var(--ready)}.act-quiet,.act-unknown{--act:var(--planned)}
 .c-title{font-weight:700;font-size:16px;line-height:1.35;overflow-wrap:anywhere}.c-sub,.c-meta,.c-last{font-size:13px;color:var(--muted);margin:0;line-height:1.5;overflow-wrap:anywhere}
 .c-badges{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.observed-dates{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:3px 10px;margin:0;font-size:12px;color:var(--muted);line-height:1.5}
+.observed-dates dt,.observed-dates dd{margin:0;overflow-wrap:anywhere}.observed-dates dd{text-align:right}
+.tracking-note{font-size:13px;line-height:1.5;padding:8px 10px;background:var(--soft);border-radius:6px;margin:6px 0 0}
+.tracking-note.check{border-left:3px solid var(--review)}.tracking-note strong{display:block}
+.tracking-partial{display:block;margin-top:6px;color:var(--muted)}
 .pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;border-radius:999px;padding:3px 9px;background:var(--soft);white-space:nowrap}
 .badge{font-size:12px;border-radius:4px;padding:2px 7px;background:var(--soft);color:var(--ink);white-space:nowrap}
 .badge.hot{background:var(--hot);color:var(--hot-ink);font-weight:600}.badge.warn{background:#fff2d6;color:#6b4500}
@@ -97,7 +102,7 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
 <body>
 <header>
   <div class="mark" aria-hidden="true">flight<span>board</span></div>
-  <div class="head-text"><h1><span id="repo"></span> <span class="accent" id="mode"></span></h1><p class="resume" id="resume"></p><p class="snapshot" id="snapshot"></p></div>
+  <div class="head-text"><h1><span id="repo"></span> <span class="accent" id="mode"></span></h1><p class="resume" id="resume"></p><p class="snapshot" id="snapshot"></p><p class="snapshot" id="reading"></p></div>
   <div class="live snapshot" id="live"><span class="beacon" aria-hidden="true"></span><span id="live-text"></span></div>
   <p class="sr" role="status" id="live-state"></p>
 </header>
@@ -364,6 +369,8 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
     $('live').className = 'live ' + state;
     $('mode').textContent = t(state === 'on' ? 'page.mode_live' : state === 'loading' ? 'page.mode_loading' : state === 'failed' ? 'page.mode_failed' : state === 'lost' ? 'page.mode_lost' : 'page.mode_snapshot');
     $('live-text').textContent = text;
+    $('reading').textContent = !lost && !failed && data.main.state === 'ok'
+      ? t('page.board_read_at', {when: observedStamp(data.generated_at)}) : '';
     const spoken = t(state === 'on' ? 'page.spoken_live' : state === 'loading' ? 'page.spoken_loading' : state === 'failed' ? 'page.spoken_failed' : state === 'lost' ? 'page.spoken_lost' : 'page.spoken_snapshot');
     if ($('live-state').textContent !== spoken) $('live-state').textContent = spoken;
     document.body.classList.toggle('stale', lost || Boolean(failed));
@@ -422,6 +429,43 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
       c.sections.length ? h('p', {className: 'quiet'}, t('page.also_changes', {sections: c.sections.map(name => label('section', name)).join(', ')})) : null,
       c.ledger === 'ok' || c.ledger === 'absent' || c.ledger === 'none' ? null : h('p', {className: 'warn-text'}, label('ledger', c.ledger))];
   }
+  function observedStamp(value) {
+    const at = typeof value === 'string' ? when(value) : null;
+    return typeof at === 'number' && Number.isFinite(at) ? stamp(value) : t('page.date_unknown');
+  }
+  function partialTracking(c) {
+    if (own(c, 'file_activity_complete') !== false) return '';
+    const reasons = {limit:'page.tracking_partial_limit', depth:'page.tracking_partial_depth',
+      folder:'page.tracking_partial_folder', unsafe:'page.tracking_partial_unsafe',
+      deleted:'page.tracking_partial_deleted', ignore:'page.tracking_partial_ignore',
+      unreadable:'page.tracking_partial_unreadable'};
+    const codes = own(c, 'file_activity_partial_reasons');
+    const known = Array.isArray(codes)
+      ? codes.slice(0, 7).filter(code => typeof code === 'string' && own(reasons, code)) : [];
+    const labels = [...new Set(known)].map(code => t(own(reasons, code)));
+    return t('page.tracking_partial_note',
+      {reasons: labels.length ? labels.join('; ') : t('page.tracking_partial_unspecified')});
+  }
+  function trackingCard(c) {
+    if (!tracked()) return null;
+    const diagnostic = own(c, 'tracking') || {};
+    const state = own(diagnostic, 'state');
+    const title = state === 'check' ? t('page.tracking_check') : state === 'info' ? t('page.tracking_info')
+      : state === 'unknown' ? t('page.tracking_unknown') : '';
+    const reasons = {unassigned:'page.tracking_unassigned', settled:'page.tracking_settled',
+      ongoing:'page.tracking_ongoing', unreadable:'page.tracking_unreadable', partial:'page.tracking_partial',
+      dates:'page.tracking_dates', task_state:'page.tracking_task_state'};
+    const reasonCode = own(diagnostic, 'reason');
+    const reason = (typeof reasonCode === 'string' ? own(reasons, reasonCode) : null) || 'page.tracking_unreadable';
+    const partial = partialTracking(c);
+    return h('div', {className:'tracking-observation'},
+      h('dl', {className:'observed-dates'},
+        h('dt', null, t('page.observed_activity')), h('dd', null, observedStamp(own(c, 'file_activity_observed_at'))),
+        h('dt', null, t('page.ledger_saved_at')), h('dd', null, observedStamp(own(c, 'ledger_file_modified_at')))),
+      title || partial ? h('p', {className:'tracking-note' + (title ? ' ' + state : '')},
+        title ? h('strong', null, title) : null, title ? t(reason) : null,
+        partial ? h('span', {className:'tracking-partial'}, partial) : null) : null);
+  }
   function card(c) {
     const meta = cardMeta(c);
     return h('article', {className: 'session act-' + c.activity},
@@ -431,6 +475,7 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
         h('span', {className: 'badge'}, label('stage', c.stage)), c.operation ? h('span', {className: 'badge warn'}, label('operation', c.operation)) : null,
         c.advice && label('advice', c.advice) !== label('stage', c.stage) ? h('span', {className: 'badge' + (c.advice === 'ready_to_merge' ? ' hot' : '')}, label('advice', c.advice)) : null),
       meta.length ? h('p', {className: 'c-meta'}, meta.join(' · ')) : null,
+      trackingCard(c),
       tracked() ? cardLedger(c) : null,
       c.files_read === false && c.files_issue && !c.gone && c.kind !== 'branch' && c.kind !== 'remote' ? h('p', {className: 'warn-text'}, t('page.files_not_read', {issue: c.files_issue_text})) : null,
       c.reason ? h('p', {className: 'warn-text'}, t(tracked() ? 'page.not_applied' : 'page.note_reason', {reason: c.reason_text})) : null,

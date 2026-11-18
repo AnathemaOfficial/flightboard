@@ -16,7 +16,7 @@ from datetime import datetime
 
 from . import messages as M
 from . import overlay as OVERLAY
-from .ledgers import SATISFIED, Ledger
+from .ledgers import SATISFIED, STATUSES, Ledger
 from .ledgers.base import countable
 from .text import clean, instant, iso, parse_time, safe_branch
 
@@ -73,6 +73,35 @@ def _when(value: str) -> float:
     return instant(parse_time(value))
 
 
+def tracking(session: dict, enabled: bool, now: datetime) -> dict[str, str]:
+    """An observed temporal gap, never a task attribution or a coverage/acceptance verdict."""
+    none = {"state": "none", "reason": ""}
+    if not enabled:
+        return none
+    if not session.get("files_read") or session.get("reason") or session.get("operation") \
+            or session.get("ledger") != "ok" or session.get("error"):
+        return {"state": "unknown", "reason": "unreadable"}
+    complete = session.get("file_activity_complete") is True
+    if not (session.get("modified") or session.get("untracked") or session.get("conflicted")):
+        return none if complete else {"state": "unknown", "reason": "partial"}
+    written = parse_time(session.get("file_activity_observed_at"))
+    saved = parse_time(session.get("ledger_file_modified_at"))
+    if written is None or saved is None or instant(written) > instant(now) or instant(saved) > instant(now):
+        return {"state": "unknown", "reason": "dates" if complete else "partial"}
+    if instant(written) <= instant(saved):
+        return none if complete else {"state": "unknown", "reason": "partial"}
+    named = session.get("tasks") or []
+    if not named:
+        return {"state": "check", "reason": "unassigned"}
+    own = session.get("_head_tasks") or {}
+    statuses = [own.get(tid, {}).get("status") for tid in named]
+    if any(status not in STATUSES for status in statuses):
+        return {"state": "unknown", "reason": "task_state"}
+    if all(status in ("awaiting_review", "done", "dropped") for status in statuses):
+        return {"state": "check", "reason": "settled"}
+    return {"state": "info", "reason": "ongoing"}
+
+
 def _stage(session: dict) -> str:
     if session["conflicted"]:
         return "conflict"
@@ -103,8 +132,8 @@ def _advice(session: dict, live: dict[str, dict], tracked: bool = True) -> str:
         return "gone"
     read = session["files_read"] and not (session.get("stash") or session.get("left_behind")
                                          or session.get("held") or session.get("reason"))
-    if stage == "behind_origin" and not session["ahead"]:
-        return "open"  # all of this copy is in main, but the remote holds more
+    if stage == "uncommitted" or (stage == "behind_origin" and not session["ahead"]):
+        return "open"  # main may hold HEAD, but not pending files or further remote commits
     if session["ahead"]:
         settled = stage in ("committed", "pushed") and not session["reason"] and read \
             and session["activity"] != "active"
@@ -135,6 +164,8 @@ def unreadable_session(item: dict, reason: str, detail: str = "") -> dict:
             "files_read": False, "files_issue": "unreadable", "stale": bool(item.get("stale")),
             "gone": bool(item.get("gone")),
             "last_write": "", "last_activity": "", "activity": "unknown",
+            "ledger_file_modified_at": "", "file_activity_complete": False,
+            "file_activity_observed_at": "", "file_activity_partial_reasons": ["unreadable"],
             "operation": item["operation"], "remote": "", "pushed": False, "ledger": "unreadable", "error": "",
             "reason": reason, "reason_detail": detail, "overlay": False, "changes": [], "hidden_changes": 0,
             "decisions": [], "sections": [], "tasks": [], "inferred": [], "commits": [], "updated_at": "",
@@ -357,6 +388,18 @@ class Waiting:
                                    [tid], "", entered.get(tid, "")))
         return items
 
+    def tracking(self, sessions: list[dict]) -> list[dict]:
+        items = []
+        for card in sessions:
+            if card.get("tracking", {}).get("state") == "check":
+                named = _named(card)
+                safe = self.say("wait.tracking_safe")
+                if named:
+                    safe += " " + listed(self.lang, named)
+                items.append(_item("check", self.say("verb.check"), self.say("wait.tracking", name=card["name"]),
+                                   safe, named, card["name"]))
+        return items
+
     def quiet(self, sessions: list[dict]) -> list[dict]:
         items = []
         for c in sessions:
@@ -370,7 +413,7 @@ class Waiting:
     def all(self, sessions: list[dict], live: dict[str, dict], notes: list[dict], events: list[dict],
             slots: int | None, tracked: bool) -> list[dict]:
         items = self.merges(sessions, tracked) + self.conflicts(live, notes) + self.checks(sessions, live, notes) \
-            + self.alerts(sessions) + self.reviews(live, events, slots) + self.quiet(sessions)
+            + self.alerts(sessions) + self.tracking(sessions) + self.reviews(live, events, slots) + self.quiet(sessions)
         return sorted(items, key=lambda item: WAITING_ORDER.index(item["kind"]))
 
 
@@ -540,6 +583,7 @@ def build_view(now: datetime, mode: str, context: dict, sessions: list[dict], ve
         stage = _stage(session)
         staged.append({**session, "stage": stage})
     sessions = [{**session, "advice": _advice(session, live, tracked)} for session in staged]
+    sessions = [{**session, "tracking": tracking(session, adapter is not None, now)} for session in sessions]
     sessions = [{**session, "reason_text": M.reason(lang, session["reason"], session.get("reason_detail", ""))
                  if session["reason"] else ""} for session in sessions]
     sessions = sorted(sessions, key=lambda c: (-_when(c["last_activity"]), c["name"]))

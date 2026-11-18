@@ -6,10 +6,10 @@ A session is a git working folder (the main checkout or one under the worktree f
 session) or a branch holding commits that main lacks. Its changes are its ledger against its merge base with main; the
 overlay rules live in overlay.py, the git reads in gitreads.py (git's reading of a configuration's bytes, outside any
 repository, in gitconfig.py), the file reads in files.py, the ledger formats in ledgers/. Without a ledger, or when
-main's ledger cannot be read, the view is git's alone. Whatever a commit id fixes is kept between readings, and only
-while it is still used, so a steady refresh runs four git commands (one of them reads .git/config's bytes) plus two
-per worktree, one more for each config.worktree, and check-ignore for a worktree holding new files. What a session can
-change in place (its index, its ignore rules) is read again at every reading. One session that cannot be read never
+main's ledger cannot be read, the view is git's alone. Successful reads fixed by a commit id are kept between readings,
+and only while still used. A steady refresh runs four git commands (one reads .git/config's bytes), one more for auto
+ledger detection, plus two per worktree, one for each config.worktree, and check-ignore for a worktree holding new files.
+What a session can change in place (its index, its ignore rules) is read again at every reading. One unread session never
 stops the others, and a failed read is never cached. Standard library only, safe under -I.
 """
 from __future__ import annotations
@@ -71,7 +71,6 @@ class Collector:
         self._version_ok = False
         self._no_lazy_fetch = False  # whether this git honours GIT_NO_LAZY_FETCH (a partial clone is then read)
         self._adapter_key: tuple | None = None
-        self._detected: tuple[str, Ledger | None] | None = None  # main's commit -> the ledger auto found there
         self._parsed: dict[str, dict | str | None] = {}  # commit -> its ledger, validated (or None, UNREADABLE)
         self._slim: dict[str, dict | str | None] = {}  # commit -> what history and dating need of its ledger
         self._pairs: dict[tuple[str, str], tuple[int, int, list[str]]] = {}
@@ -96,6 +95,11 @@ class Collector:
         with self._lock:
             self._prefetched_files = {}
             self._tracked.clear()  # names belong to this reading; keep no previous set beside the parallel results
+            # A missing object can be restored without changing its commit id. Only successful ledger reads are
+            # immutable evidence across readings; negative entries still avoid repeated work within this one.
+            for cache in (self._parsed, self._slim):
+                for sha in [sha for sha, value in cache.items() if not isinstance(value, dict)]:
+                    del cache[sha]
             self._used, self._used_full, self._used_slim = set(), set(), set()
             self.git.blank = ()  # the filter drivers are read again by this reading: none carried over
             self.git.graph = False  # and the commit-graph stays off until this reading finds its chain plain
@@ -386,13 +390,12 @@ class Collector:
         if settings.ledger != "auto":
             adapter = LEDGERS.make(settings.ledger, settings.ledger_path)
         else:
-            if self._detected is None or self._detected[0] != main:
-                candidates = [(kind, path) for kind, path in LEDGERS.AUTO]
-                sizes = self.git.blob_sizes(self.common, [(main, path) for _, path in candidates])
-                found = next(((kind, path) for (kind, path), size in zip(candidates, sizes) if size is not None),
-                             None)
-                self._detected = (main, LEDGERS.make(*found) if found else None)
-            adapter = self._detected[1]
+            # Missing objects may be restored at the same commit, including a preferred ledger above a fallback.
+            # Retry this bounded batch each reading; parsed ledgers remain cached while the selected path is stable.
+            candidates = [(kind, path) for kind, path in LEDGERS.AUTO]
+            sizes = self.git.blob_sizes(self.common, [(main, path) for _, path in candidates])
+            found = next(((kind, path) for (kind, path), size in zip(candidates, sizes) if size is not None), None)
+            adapter = LEDGERS.make(*found) if found else None
         key = (adapter.kind, adapter.path) if adapter is not None else None
         if key != self._adapter_key:  # another format: nothing parsed for the last one is reused
             self._adapter_key = key
@@ -664,7 +667,7 @@ class Collector:
         written = identity[1] / 1e9 if identity else None
         return (parsed, "ok", written) if parsed is not None else (tip_ledger, "writing", None)
 
-    def _files_of(self, item: dict, planted: bool) -> tuple[list[dict], list[str], str]:
+    def _files_of(self, item: dict, planted: bool) -> tuple[list[dict], list[str], str, dict]:
         prefetched = self._prefetched_files.pop(item["id"], None)
         if prefetched is not None:
             value, error = prefetched
@@ -672,11 +675,11 @@ class Collector:
                 raise error
         else:
             value = self._read_files_of(item, planted, self.git)
-        entries, candidates, issue, tracked = value
+        entries, candidates, issue, tracked, activity = value
         self._tracked[item["id"]] = tracked
-        return entries, candidates, issue
+        return entries, candidates, issue, activity
 
-    def _read_files_of(self, item: dict, planted: bool, git: GIT.Git) -> tuple[list[dict], list[str], str, set[str]]:
+    def _read_files_of(self, item: dict, planted: bool, git: GIT.Git) -> tuple[list[dict], list[str], str, set[str], dict]:
         """A worktree's modified tracked files (git, without walking anything), its untracked candidates (listed
         here, never by git, the ignored ones left out), and why the modified files were not read (a code), if they
         were not. Before git status runs, every tracked path is checked: a .git where the index expects a file or a
@@ -685,7 +688,8 @@ class Collector:
         handed to git, which would write its trees into .git/objects to read it: nothing of that worktree is asked."""
         state = FILES.index_state(item["git_dir"], self.root)
         if state:  # nothing of that worktree is asked of git: neither its modified files nor its new ones
-            return [], [], INDEX_ISSUES.get(state, "tracked_unreadable"), set()
+            return [], [], INDEX_ISSUES.get(state, "tracked_unreadable"), set(), {
+                "last_write": None, "observed": None, "complete": False, "reasons": ["unreadable"]}
         staged = git.staged(item["git_dir"], item["path"])
         names = {entry[-1] for entry in staged if FILES.safe_relative(entry[-1])}
         boundary = item.get("boundary", self.root)
@@ -696,31 +700,87 @@ class Collector:
         else:
             issue = FILES.tracked_problem(item["path"], boundary, staged)
         entries = [] if issue else git.status(item["git_dir"], item["path"])
-        candidates = FILES.untracked(item["path"], boundary, names)
+        observations = {}
+        dated = [entry["path"] for entry in entries if not entry["deleted"]]
+        candidates = FILES.untracked(item["path"], boundary, names, observations=observations,
+                                     dated=set(dated[:FILES.MAX_DATED]))
         if candidates is None:  # a folder holding tracked files cannot be listed: its new files are unknown
-            return entries, [], issue or "folder_unlisted", names
+            legacy = [entry["path"] for entry in entries if not entry["deleted"]]
+            activity = FILES.activity_info(item["path"], boundary, legacy, [], observations, {"unreadable"})
+            return entries, [], issue or "folder_unlisted", names, activity
         if item["kind"] == "checkout":  # the worktree folders, and the folders that hold them, are the sessions' own
             candidates = [name for name in candidates if not _sessions_folder(name, self.settings.worktrees)]
         nested = [name for name in candidates if name.endswith("/") and _holds_git(item["path"] / name)]
-        inside = {name: FILES.children(item["path"], boundary, name) for name in candidates
-                  if name.endswith("/") and name not in nested}
-        asked = [name for name in candidates if name not in nested] \
-            + [child for found in inside.values() if found for child in found["folders"] + found["leaves"]]
-        # asked again at every reading: an ignore rule can change (a .gitignore rewritten, info/exclude) while the
-        # names stay the same
+        # Prune confirmed ignored roots before spending the shared traversal budget on their descendants.
+        # No untracked path is enumerated by git, and nested repositories are never handed to check-ignore.
+        roots = [name for name in candidates if name not in nested]
         ignored: set[str] = set()
-        if asked and not FILES.ignore_file_special(item["path"], boundary, asked):  # git would wait on a pipe
+        roots_ok = not roots
+        if roots and not FILES.ignore_file_special(item["path"], boundary, roots):
             try:
-                ignored = git.ignored(item["git_dir"], item["path"], asked)
+                ignored = git.ignored(item["git_dir"], item["path"], roots)
+                roots_ok = True
             except GitFailed:  # git cannot tell (a path inside a submodule, say): every candidate counts
                 ignored = set()
+        scan = FILES.Budget(entries=FILES.MAX_ACTIVITY_ENTRIES, deadline=git.deadline)
+        inside, scan_reasons = {}, {}
+        if roots_ok:
+            for name in candidates:
+                if not name.endswith("/") or name in nested or name in ignored:
+                    continue
+                scan_reasons[name] = set()
+                inside[name] = FILES.children(item["path"], boundary, name,
+                                              limit=FILES.MAX_ACTIVITY_ENTRIES, depth=FILES.MAX_ACTIVITY_DEPTH,
+                                              observations=observations, budget=scan, reasons=scan_reasons[name])
+        asked = [child for found in inside.values() if found for child in found["folders"] + found["leaves"]]
+        # Both batches are asked again each reading: ignore rules can change while names and timestamps do not.
+        ignore_ok = roots_ok and not asked
+        if roots_ok and asked and not FILES.ignore_file_special(item["path"], boundary, asked):
+            try:
+                ignored.update(git.ignored(item["git_dir"], item["path"], asked))
+                ignore_ok = True
+            except GitFailed:
+                pass
         kept = []
         for name in candidates:
             found = inside.get(name)
-            if name in ignored or (found is not None and FILES.all_ignored(found, ignored)):
+            if name in ignored or (ignore_ok and found is not None and FILES.all_ignored(found, ignored)):
                 continue  # ignored, or a new folder whose whole content is ignored (or empty): git would not show it
             kept.append(name)
-        return entries, kept, issue, names
+        selected = [entry["path"] for entry in entries if not entry["deleted"]]
+        legacy = selected + kept
+        reasons = {"deleted"} if any(entry["deleted"] for entry in entries) else set()
+        if not ignore_ok:
+            reasons.add("ignore")
+        if ignore_ok:
+            selected.extend(name for name in kept if not name.endswith("/"))
+        for name in kept if ignore_ok else []:
+            if not name.endswith("/"):
+                continue
+            found = inside.get(name)
+            if name in nested or found is None:
+                reasons.add("folder")
+                reasons.update(scan_reasons.get(name, ()))
+                continue
+            above = [folder for folder in found["folders"] if folder in ignored]
+
+            def excluded(path):
+                return path in ignored or any(path.startswith(folder) for folder in above)
+
+            for leaf in found["leaves"]:
+                if excluded(leaf):
+                    continue
+                if leaf.endswith("/"):
+                    reasons.add("depth")
+                else:
+                    selected.append(leaf)
+            if any(not excluded(folder) for folder in found["sealed"]):
+                reasons.add("folder")
+        if issue:
+            reasons.add("unreadable")
+            selected = []
+        activity = FILES.activity_info(item["path"], boundary, legacy, selected, observations, reasons)
+        return entries, kept, issue, names, activity
 
     def _kept_count(self, item: dict, tracked: set[str]) -> int:
         """Ignored work an agent must not lose (in the kept folders the owner named), counted at every reading: a file
@@ -772,6 +832,8 @@ class Collector:
     def _session(self, item: dict, adapter: Ledger | None, main_ledger: dict | None, main: str,
                  commits: list[dict], planted: bool, now: datetime) -> dict:
         entries, candidates, written, kept, ledger_time = [], [], None, 0, None
+        file_activity_complete = False
+        file_activity_observed, file_activity_reasons = None, ["unreadable"]
         issue = (FILES.GONE if item.get("gone") else "not_read") \
             if item["path"] is None and item["kind"] in ("checkout", "worktree") else ""
         tip_ledger = self._ledger(item["tip"]) if adapter else None
@@ -779,10 +841,12 @@ class Collector:
         ledger_state = "none" if adapter is None else "ok" if tip_ledger else (
             "unreadable" if self._parsed.get(item["tip"]) == UNREADABLE else "absent")
         if item["path"] is not None:
-            entries, candidates, issue = self._files_of(item, planted)
+            entries, candidates, issue, activity = self._files_of(item, planted)
             issue = issue or ("" if item.get("moves") is not None else "head_log_unreadable")
-            written = FILES.last_write(item["path"], item.get("boundary", self.root), [entry["path"] for entry in entries
-                                                                 if not entry["deleted"]] + candidates)
+            written = activity["last_write"]
+            file_activity_observed = activity["observed"] if not issue else None
+            file_activity_reasons = sorted(set(activity["reasons"]) | ({"unreadable"} if issue else set()))
+            file_activity_complete = activity["complete"] and not issue
             if adapter is not None:
                 head_ledger, ledger_state, ledger_time = self._working_ledger(item, adapter, tip_ledger)
             if not entries and not candidates and not issue and not item["ahead"] and item["kind"] == "worktree":
@@ -833,6 +897,12 @@ class Collector:
             "conflicted": sum(1 for entry in entries if entry["kind"] == "conflict"), "kept": kept,
             "files_read": not issue, "files_issue": issue, "stale": item["stale"], "gone": item.get("gone", False),
             "last_write": written.astimezone(now.tzinfo).isoformat(timespec="seconds") if written else "",
+            "ledger_file_modified_at": iso(ledger_time, now.tzinfo)
+            if ledger_time is not None and ledger_state == "ok" and head_ledger and head_ledger["valid"] else "",
+            "file_activity_complete": file_activity_complete,
+            "file_activity_observed_at": file_activity_observed.astimezone(now.tzinfo).isoformat(timespec="seconds")
+            if file_activity_observed else "",
+            "file_activity_partial_reasons": file_activity_reasons,
             "last_activity": latest.isoformat(timespec="seconds") if latest else "",
             "activity": state, "operation": item["operation"], "remote": item["remote"],
             "pushed": item["remote"] == "pushed",
