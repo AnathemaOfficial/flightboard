@@ -103,6 +103,7 @@ class Collector:
         self._prefetched_files: dict[str, tuple[object, Exception | None]] = {}
         self._pair_failures: dict[tuple[str, str], Exception] = {}
         self._range_failures: dict[tuple[str, str, int], Exception] = {}
+        self._ancestor_failures: dict[tuple[str, str], Exception] = {}
 
     def snapshot(self, now: datetime, mode: str = "live") -> dict:
         started = time.monotonic()
@@ -110,6 +111,7 @@ class Collector:
             self._prefetched_files = {}
             self._pair_failures.clear()
             self._range_failures.clear()
+            self._ancestor_failures.clear()
             self._tracked.clear()  # names belong to this reading; keep no previous set beside the parallel results
             # A missing object can be restored without changing its commit id. Only successful ledger reads are
             # immutable evidence across readings; negative entries still avoid repeated work within this one.
@@ -132,6 +134,7 @@ class Collector:
                 self._prefetched_files = {}
                 self._pair_failures.clear()
                 self._range_failures.clear()
+                self._ancestor_failures.clear()
                 self.git.deadline = None
             self._prune()
             return view
@@ -210,6 +213,7 @@ class Collector:
     def _prefetch_remote_relations(self, relations) -> None:
         jobs = [pair for pair in dict.fromkeys(relations) if pair[0] != pair[1]
                 and self._ancestors.get(pair) is not True
+                and pair not in self._ancestor_failures and (pair[1], pair[0]) not in self._ancestor_failures
                 and (pair not in self._ancestors or (pair[1], pair[0]) not in self._ancestors)]
 
         def read(pair, git):
@@ -220,13 +224,20 @@ class Collector:
             if ahead:
                 return True, None
             reverse = self._ancestors.get((newer, older))
-            return False, reverse if reverse is not None else git.is_ancestor(self.common, newer, older)
+            try:
+                return False, reverse if reverse is not None else git.is_ancestor(self.common, newer, older)
+            except Exception as exc:
+                return False, exc  # retain the successful forward result and the exact failed direction
 
         for pair, value, error in self._parallel_results(jobs, read):
             if error is None:
                 self._ancestors[pair] = value[0]
-                if value[1] is not None:
+                if isinstance(value[1], Exception):
+                    self._ancestor_failures[(pair[1], pair[0])] = value[1]
+                elif value[1] is not None:
                     self._ancestors[(pair[1], pair[0])] = value[1]
+            else:
+                self._ancestor_failures[pair] = error
 
     def _prefetch_ranges(self, items: list[dict]) -> None:
         jobs = list(dict.fromkeys((item["bases"][0], item["tip"], GIT.MAX_SESSION_COMMITS)
@@ -265,7 +276,13 @@ class Collector:
         key = (older, newer)
         self._use(key)
         if key not in self._ancestors:
-            self._ancestors[key] = self.git.is_ancestor(self.common, older, newer)
+            if key in self._ancestor_failures:
+                raise self._ancestor_failures[key]
+            try:
+                self._ancestors[key] = self.git.is_ancestor(self.common, older, newer)
+            except Exception as exc:
+                self._ancestor_failures[key] = exc
+                raise
         return self._ancestors[key]
 
     def _pair(self, main: str, tip: str) -> tuple[int, int, list[str]]:
@@ -792,7 +809,7 @@ class Collector:
                 reasons.add("folder")
         if not ignore_ok:
             reasons.add("ignore")
-        if ignore_ok:
+        if roots_ok:
             for name in kept:
                 if not GIT.ignore_eligible(name):
                     reasons.add("ignore")  # counted conservatively, but its exclusion state was never evaluated

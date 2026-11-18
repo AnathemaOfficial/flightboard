@@ -83,6 +83,51 @@ class ReadingRecoveryTest(unittest.TestCase):
         self.assertEqual(card["tracking"], {"state": "unknown", "reason": "partial"})
         self.assertEqual(card["untracked"], 1)
 
+    def test_confirmed_loose_file_keeps_evidence_when_descendant_exclusions_fail(self) -> None:
+        self.write("notes.txt", self.new)
+        self.write("new-folder/nested.txt", self.new + timedelta(minutes=1))
+        actual = gitreads.Git.ignored
+
+        def ignored(git, git_dir, tree, paths):
+            if tree == self.tree and "new-folder/nested.txt" in paths:
+                raise gitreads.GitFailed("descendant exclusions unavailable")
+            return actual(git, git_dir, tree, paths)
+
+        with mock.patch.object(gitreads.Git, "ignored", ignored):
+            card = self.card()
+        self.assertEqual(card["file_activity_observed_at"], self.new.isoformat(timespec="seconds"))
+        self.assertFalse(card["file_activity_complete"])
+        self.assertIn("ignore", card["file_activity_partial_reasons"])
+        self.assertEqual(card["tracking"], {"state": "check", "reason": "settled"})
+        self.assertEqual(card["untracked"], 2)
+
+    def test_failed_root_exclusions_still_distrust_loose_file_dates(self) -> None:
+        self.write("notes.txt", self.new)
+        with mock.patch.object(gitreads.Git, "ignored", side_effect=gitreads.GitFailed("root exclusions unavailable")):
+            card = self.card()
+        self.assertEqual(card["file_activity_observed_at"], "")
+        self.assertFalse(card["file_activity_complete"])
+        self.assertIn("ignore", card["file_activity_partial_reasons"])
+        self.assertEqual(card["tracking"], {"state": "unknown", "reason": "partial"})
+
+    def test_unqueryable_loose_name_stays_untrusted_after_descendant_failure(self) -> None:
+        self.write("notes[1].txt", self.new)
+        self.write("new-folder/nested.txt", self.new + timedelta(minutes=1))
+        actual = gitreads.Git.ignored
+
+        def ignored(git, git_dir, tree, paths):
+            if tree == self.tree and "new-folder/nested.txt" in paths:
+                raise gitreads.GitFailed("descendant exclusions unavailable")
+            return actual(git, git_dir, tree, paths)
+
+        with mock.patch.object(gitreads.Git, "ignored", ignored):
+            card = self.card()
+        self.assertEqual(card["file_activity_observed_at"], "")
+        self.assertFalse(card["file_activity_complete"])
+        self.assertIn("ignore", card["file_activity_partial_reasons"])
+        self.assertEqual(card["tracking"], {"state": "unknown", "reason": "partial"})
+        self.assertEqual(card["untracked"], 2)
+
     def test_subsecond_file_order_is_preserved_only_for_tracking_observations(self) -> None:
         second = NOW - timedelta(seconds=2)
         ledger_time, file_time = second.replace(microsecond=100_000), second.replace(microsecond=900_000)

@@ -1093,9 +1093,10 @@ def _read_tail(path: Path, root: Path, limit: int) -> tuple[bytes | None, str]:
 
 def _entries(folder: Path, *, budget: Budget | None = None,
              reasons: set[str] | None = None) -> list[os.DirEntry] | None:
-    """The entries of a folder: [] when it is gone (or is now a file), None when it is there but cannot be listed
-    (never taken for an empty folder: what it holds is unknown). A folder git is deleting is looked at again a little
-    later (Windows denies it for a moment)."""
+    """The entries of a folder: [] when it is gone (or is now a file), None when it is there but cannot be listed.
+    Budget-backed candidate scans also return None after a kind/disappearance race: their earlier directory
+    observation cannot prove an empty folder. A folder git is deleting is looked at again a little later (Windows
+    denies it for a moment)."""
     for wait in LIST_WAITS:
         if budget is not None:
             budget.check()
@@ -1128,7 +1129,7 @@ def _entries(folder: Path, *, budget: Budget | None = None,
                         return None
                     entries.append(entry)
         except (FileNotFoundError, NotADirectoryError):
-            return []
+            return None if budget is not None else []
         except OSError:
             continue
     return None

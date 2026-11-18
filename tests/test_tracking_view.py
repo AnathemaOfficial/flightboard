@@ -175,6 +175,8 @@ class TrackingViewTest(unittest.TestCase):
         value = build(cards, ledger=ledger, ledger_adapter=adapter)
         self.assertEqual([row["id"] for row in value["next"]], ["NEXT-1"])
         self.assertTrue(all(item["kind"] == "tracking" for item in value["waiting"]))
+        reminder_ids = {tid for item in value["waiting"] for tid in item["tasks"]}
+        self.assertEqual(len(reminder_ids), 520)
         self.assertTrue("NEXT-1" in value["tasks"], "the visible next task must retain its detail")
         self.assertEqual(value["tasks"]["NEXT-1"]["title"], "Next visible work")
         self.assertLessEqual(len(value["tasks"]), 500)
@@ -199,6 +201,32 @@ class TrackingViewTest(unittest.TestCase):
         self.assertEqual(len(value["waiting"]), 30)
         self.assertTrue(all(not item["tasks"] for item in value["waiting"]))
         self.assertTrue("VISIBLE-1" in value["tasks"], "a visible card task must not lose detail to hidden reminders")
+        self.assertEqual(value["tasks"]["VISIBLE-1"]["title"], "Visible current work")
+        self.assertLessEqual(len(value["tasks"]), 500)
+
+    def test_visible_reminder_ids_do_not_preempt_an_interactive_session_task_detail(self) -> None:
+        adapter = load("ledgers").make("tasks", "tasks.json")
+        history = [f"OLD-{number:03}" for number in range(520)]
+        raw = {"version": 1, "tasks": [
+            {"id": "VISIBLE-1", "title": "Visible current work", "status": "in_progress", "owner": "codex"},
+            *({"id": tid, "title": "Past work", "status": "done", "owner": "codex"} for tid in history)]}
+        ledger = adapter.parse(json.dumps(raw).encode("utf-8"))
+        self.assertTrue(ledger["valid"], ledger["error"])
+        cards = []
+        for number in range(13):
+            names = history[number * 40:(number + 1) * 40]
+            cards.append(observed(id=f"aa-{number:02}", name=f"aa-{number:02}", activity="active", tasks=names,
+                                  _head_tasks={tid: ledger["tasks"][tid] for tid in names}))
+        cards.append(observed(id="zz-current", name="zz-current", activity="active", tasks=["VISIBLE-1"],
+                              _head_tasks={"VISIBLE-1": ledger["tasks"]["VISIBLE-1"]}))
+        value = build(cards, ledger=ledger, ledger_adapter=adapter)
+        self.assertEqual(value["next"], [])
+        self.assertTrue(all(item["kind"] == "tracking" for item in value["waiting"]))
+        reminder_ids = {tid for item in value["waiting"] for tid in item["tasks"]}
+        self.assertEqual(len(reminder_ids), 520)
+        visible = next(card for card in value["sessions"] if card["id"] == "zz-current")
+        self.assertEqual(visible["tasks"], ["VISIBLE-1"])
+        self.assertTrue("VISIBLE-1" in value["tasks"], "visible reminders must not evict an interactive task detail")
         self.assertEqual(value["tasks"]["VISIBLE-1"]["title"], "Visible current work")
         self.assertLessEqual(len(value["tasks"]), 500)
 

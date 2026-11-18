@@ -313,6 +313,55 @@ class ParallelSnapshotTest(unittest.TestCase):
         self.assertEqual(card["reason"], "")
         self.assertEqual(attempts, 2)
 
+    def test_failed_remote_ancestry_is_read_once_and_recovers_on_the_next_snapshot(self) -> None:
+        tips = [self.repo.git("rev-parse", "HEAD", where=tree) for tree in self.trees]
+        branches = [self.repo.git("branch", "--show-current", where=tree) for tree in self.trees]
+        remotes = [f"refs/remotes/origin/{branch}" for branch in branches]
+        for number, remote in enumerate(remotes):
+            self.repo.git("update-ref", remote, tips[(number + 1) % len(tips)])
+        actual, actual_fork = gitreads.Git.is_ancestor, gitreads.Git.fork
+        try:
+            for bad in ((tips[1], tips[0]), (tips[0], tips[1])):
+                with self.subTest(failed_pair=bad):
+                    reader = collector_module.Collector(self.repo.root, self.settings)
+                    failed, attempts, forks, queries = True, [], [], []
+                    unavailable = gitreads.GitFailed("temporarily unavailable remote ancestry")
+
+                    def fork(git):
+                        child = actual_fork(git)
+                        forks.append(child)
+                        return child
+
+                    def ancestor(git, common, older, newer):
+                        queries.append((older, newer))
+                        if (older, newer) == bad:
+                            attempts.append(git)
+                            if failed:
+                                raise unavailable
+                        return actual(git, common, older, newer)
+
+                    with mock.patch.object(gitreads.Git, "is_ancestor", ancestor), \
+                            mock.patch.object(gitreads.Git, "fork", fork):
+                        first = reader.snapshot(NOW)
+                        self.assertEqual(first["main"]["state"], "unreadable")
+                        self.assertEqual(first["main"]["reason"], "git_failed")
+                        self.assertEqual(len(attempts), 1, "failed remote prefetch ran again sequentially")
+                        self.assertIsNot(attempts[0], reader.git)
+                        self.assertTrue(any(child is attempts[0] for child in forks))
+                        if bad == (tips[0], tips[1]):
+                            self.assertIs(reader._ancestors[(tips[1], tips[0])], False)
+                            self.assertEqual(queries.count((tips[1], tips[0])), 1,
+                                             "successful forward ancestry was lost with the reverse failure")
+                        failed = False
+                        second = reader.snapshot(NOW)
+                    self.assertEqual(second["main"]["state"], "ok", second["main"])
+                    self.assertEqual(len(attempts), 2)
+                    card = next(card for card in second["sessions"] if card["name"] == self.trees[0].name)
+                    self.assertEqual(card["remote"], "diverged")
+        finally:
+            for remote in remotes:
+                self.repo.git("update-ref", "-d", remote)
+
     def test_changed_files_and_ignore_rules_are_read_again_on_refresh(self) -> None:
         reader = collector_module.Collector(self.repo.root, self.settings)
         tree = self.trees[0]

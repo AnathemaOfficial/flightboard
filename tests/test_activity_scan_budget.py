@@ -305,6 +305,34 @@ class SourceTreeActivityTest(unittest.TestCase):
         self.assertTrue(card["file_activity_complete"], card["file_activity_partial_reasons"])
         self.assertEqual(card["file_activity_observed_at"], self.new.isoformat(timespec="seconds"))
 
+    def test_a_candidate_folder_replaced_before_listing_is_not_treated_as_empty(self) -> None:
+        folder = self.tree / "source"
+        folder.mkdir()
+        actual = files.os.scandir
+        replaced = []
+
+        def scandir(path):
+            if Path(path) == folder and not replaced:
+                folder.rmdir()
+                folder.write_text("new ordinary work\n", encoding="utf-8")
+                self.stamp(folder, self.new)
+                replaced.append(folder)
+            return actual(path)
+
+        with mock.patch.object(files.os, "scandir", scandir):
+            card = self.card()
+        self.assertEqual(replaced, [folder])
+        self.assertTrue(folder.is_file())
+        self.assertTrue(card["files_read"])
+        self.assertEqual(card["untracked"], 1)
+        self.assertFalse(card["file_activity_complete"])
+        self.assertIn("folder", card["file_activity_partial_reasons"])
+        recovered = self.card()
+        self.assertEqual(recovered["untracked"], 1)
+        self.assertTrue(recovered["file_activity_complete"])
+        self.assertEqual(recovered["file_activity_partial_reasons"], [])
+        self.assertEqual(recovered["file_activity_observed_at"], self.new.isoformat(timespec="seconds"))
+
     def test_an_ignored_candidate_root_is_pruned_without_listing_its_children(self) -> None:
         self.repo.commit(self.tree, ".gitignore", "generated/\n", "docs: exclusions", "09:00")
         self.write("generated/private.log")
@@ -332,12 +360,12 @@ class SourceTreeActivityTest(unittest.TestCase):
         self.assertIn("limit", card["file_activity_partial_reasons"])
         self.assertEqual(card["untracked"], 2)
 
-    def test_failed_descendant_ignore_batch_does_not_trust_candidate_dates(self) -> None:
+    def test_failed_descendant_ignore_batch_does_not_trust_nested_dates(self) -> None:
         changed = self.tree / "app.py"
         changed.write_text("changed\n", encoding="utf-8")
         self.stamp(changed, self.old)
         self.write("source/work.py", self.new)
-        self.write("direct.py", self.new)
+        self.write("direct.py", self.old)
         actual = gitreads.Git.ignored
 
         def ignored(git, git_dir, work_tree, paths):

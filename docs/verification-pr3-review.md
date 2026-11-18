@@ -88,3 +88,29 @@ results and the custom-operation refusal control.
 Four read-only checks with the live clock configured report parallel reading enabled, all three representative
 sessions complete and unchanged work counters. Cold latency was 0.8713 seconds; the three warm samples gave
 a **0.4967-second median**. This is a local measurement, not a guarantee for other repositories or machines.
+
+## Bounded failure recovery and fixture ownership
+
+A further low-risk review of `be12036d64af066d4327aef1894801abbb80584d` identified additional edge cases.
+Remote-ancestry failures now use the same per-reading discipline as pair/range failures: the parent publishes
+direction-specific failures, preserves a successful forward `False` result when the reverse query fails, and
+retries after the next snapshot. A directly verified nonignored file retains its observation when only the
+descendant exclusion batch fails. Unsupported names and unverified descendants remain untrusted.
+
+A budgeted candidate-folder enumeration that observes a disappearance or folder-to-file replacement returns
+an incomplete result, never an empty-folder proof. The next reading recovers normally. Interactive task/event
+details are reserved before completed history and informational reminders under the existing 500-detail cap;
+tests exercise 520 distinct reminder IDs and a current visible card.
+
+The Windows startup fixture transfers the actual child process handle to the test process before status writes,
+independently of stdout. Cleanup terminates and waits only its owned processes, stops the child before draining
+captured caller pipes, and retains the primary exception if cleanup reports another error. Failure tests cover
+status output, caller timeout, malformed output, gate creation, child waiting, handle acquisition, inherited
+captured pipes and primary-error preservation. No production startup implementation or live service is changed
+by this fixture work; no child is terminated by an unverified or reusable PID.
+
+The final full local Windows/Python 3.14 suite ran **638 tests in 338.514 seconds: OK, with 2 skipped**
+(636 passed). Independent Python, security and general follow-up reviews approved the final code and fixture;
+the previously approved JavaScript is unchanged. The latest live-clock check kept parallel readers enabled,
+all three sessions complete and counters unchanged, with a **0.5123-second warm median** across three samples.
+The pushed-head CI and provider reviews are recorded separately on the PR.
