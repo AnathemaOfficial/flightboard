@@ -54,7 +54,8 @@ FIELDS = {
              "review_live_10", "progress_live", "blocked_live", "active_live", "active_live_10"),
     "waiting": ("kind", "verb", "text", "since"),
     "history": ("at", "sha", "via", "counts", "counts_10", "active", "active_10"),
-    "daily": ("day", "done_main", "review_main", "done_live", "review_live"),
+    "daily": ("day", "done_main", "review_main", "done_live", "review_live",
+              "new_main", "new_live", "progress_main", "progress_live"),
     "main": ("state", "reason_text", "ref", "head", "date", "subject", "updated_at", "note_text", "valid", "error"),
     "ledger": ("kind", "releases", "missing"),
     "yours": ("decisions", "tasks"),
@@ -192,7 +193,9 @@ class PageTest(unittest.TestCase):
             self.assertTrue(groups[group], group)
             for name in names:
                 with self.subTest(group=group, field=name):
-                    self.assertIn("." + name, script)
+                    # Daily series share a keyed definition for bars, legends, tooltips and table columns.
+                    reference = repr(name) if group == "daily" and name != "day" else "." + name
+                    self.assertIn(reference, script)
                     self.assertTrue(all(name in item for item in groups[group]), name)
         self.assertFalse([key for session in view["sessions"] for key in session if key.startswith("_")])
 

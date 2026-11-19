@@ -683,7 +683,15 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
     const days = data.daily;
     if (!days.length) { put(box, h('p', {className: 'empty'}, t('page.no_moves'))); return; }
     const width = widthOf(box), height = 230, m = {l: 32, r: 10, t: 12, b: 28};
-    const parts = [['done_main', 'var(--done)', 1, t('page.d_done_main')], ['review_main', 'var(--review)', 1, t('page.d_review_main')], ['done_live', 'var(--done)', .45, t('page.d_done_live')], ['review_live', 'var(--review)', .45, t('page.d_review_live')]];
+    const parts = [
+      ['new_main', 'var(--ready)', 1, t('page.d_new_main')],
+      ['progress_main', 'var(--progress)', 1, t('page.d_progress_main')],
+      ['review_main', 'var(--review)', 1, t('page.d_review_main')],
+      ['done_main', 'var(--done)', 1, t('page.d_done_main')],
+      ['new_live', 'var(--ready)', .45, t('page.d_new_live')],
+      ['progress_live', 'var(--progress)', .45, t('page.d_progress_live')],
+      ['review_live', 'var(--review)', .45, t('page.d_review_live')],
+      ['done_live', 'var(--done)', .45, t('page.d_done_live')]];
     const totals = days.map(d => parts.reduce((sum, [key]) => sum + (d[key] || 0), 0));
     const top0 = Math.max(...totals, 1), step = niceStep(top0, 4), top = Math.ceil(top0 / step) * step;
     const band = (width - m.l - m.r) / days.length, bar = Math.min(24, Math.max(4, band - 6));
@@ -707,7 +715,8 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
         day(d.day) + t('page.colon') + parts.map(([key, , , name]) => name.toLowerCase() + ' ' + (d[key] || 0)).join(', '), 'zone:daily|' + d.day));
     });
     put(box, svg, legend(parts.map(([, color, alpha, name]) => [color, name, alpha < 1 ? 'light' : ''])),
-      tableView('table:daily', [t('page.h_day'), t('page.h_done_main'), t('page.h_review_main'), t('page.h_done_live'), t('page.h_review_live')], days.slice().reverse().map(d => [day(d.day), d.done_main, d.review_main, d.done_live, d.review_live])));
+      tableView('table:daily', [t('page.h_day'), ...parts.map(([, , , name]) => name)],
+        days.slice().reverse().map(d => [day(d.day), ...parts.map(([key]) => d[key] || 0)])));
   }
 
   // ---- footer and the whole page

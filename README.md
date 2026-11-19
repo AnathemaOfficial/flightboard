@@ -23,7 +23,9 @@ go. flightboard is one local page, and a few lines of text for an agent, that an
   and what it may be called — "ready for your merge go" or "ended" only when its state allows it.
 - **The roadmap, live**: the task statuses each session declares in its own copy of your task file, overlaid on
   `main` before anything is merged, with conflicts between sessions shown, never resolved for you.
-- **Progress**: tasks done over time, milestones, moves per day, each with a table view.
+- **Progress**: tasks done over time, milestones, and daily new tasks, starts, reviews and completions, each with a
+  table view. Daily movements cover all releases; one task can contribute several movements. Session bars show
+  current net declarations, rather than a journal of every intermediate status.
 - **Tracking dates**: the board reading, observed local activity and working-ledger save time are shown separately.
   Recent work after the ledger was saved prompts a tracking check when no lot is identified or the identified lots
   are already in review/finished. Ongoing work gets an informational note. A trusted recent ordinary file can

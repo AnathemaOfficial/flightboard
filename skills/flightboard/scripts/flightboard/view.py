@@ -228,7 +228,9 @@ def _applied_moves(sessions: list[dict], live: dict[str, dict], events: list[dic
         key = (event["task"], event.get("session_id", event["where"]))
         if ("session_id" in event or event["where"] != "main") and key in applied and event["task"] not in seen:
             seen.add(event["task"])
-            moves.append(event)
+            # A branch addition may already exist in current main: only chart declarations gain this context;
+            # the public event keeps the branch's original from/to values.
+            moves.append({**event, "new": live[event["task"]]["status_main"] is None})
     return moves
 
 
