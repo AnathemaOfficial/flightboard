@@ -247,8 +247,10 @@ class HistoryTest(unittest.TestCase):
         days = overlay.daily(events, NOW, zone=NOW.tzinfo)
         self.assertEqual(len(days), overlay.DAYS)
         self.assertEqual(days[-1], {"day": "2026-11-07", "done_main": 1, "review_main": 0, "done_live": 0,
-                                    "review_live": 1})
+                                    "review_live": 1, "new_main": 0, "new_live": 0,
+                                    "progress_main": 0, "progress_live": 0})
         self.assertEqual(days[-2]["done_live"], 1)
+        self.assertEqual(days[-3]["progress_main"], 1)
         self.assertEqual(sum(d["done_main"] for d in days), 1)
 
 

@@ -16,6 +16,11 @@ flightboard réunit le dépôt principal, ses arbres de travail autorisés et le
 fichier de tâches, il compare les déclarations de chaque session à la feuille de route de `main` avant toute fusion.
 Sans fichier de tâches, il fournit la vue des sessions à partir de Git seul.
 
+Les graphiques montrent les tâches faites dans le temps, les jalons et les mouvements quotidiens : nouveaux lots,
+passages à « En cours », mises en revue et tâches terminées, avec une vue en tableau. Les mouvements couvrent tous
+les périmètres ; un lot peut compter plusieurs mouvements. Les barres des sessions représentent leurs déclarations
+nettes actuelles, et non un journal de chaque statut intermédiaire.
+
 La date de lecture du tableau, l'activité locale observée et l'enregistrement du registre de travail sont affichés
 séparément. Une activité plus récente que le registre affiche « Suivi à vérifier » si aucun lot n'est identifié ou
 si les lots identifiés sont déjà en revue ou terminés. Un autre statut connu reçoit une note informative. Un fichier

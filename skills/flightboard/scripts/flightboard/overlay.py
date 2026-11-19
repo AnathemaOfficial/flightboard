@@ -178,22 +178,30 @@ def counts(tasks: dict[str, dict], release: str | None = None) -> dict[str, int]
 
 
 def daily(events: list[dict], now: datetime, days: int = DAYS, zone=None) -> list[dict]:
-    """Tasks moved to done or to review each day, in main and in the sessions, for the last days. Each instant is
-    placed by the zone's own rules (this PC's by default), so a move near midnight stays on its day across a change of
-    time."""
+    """New task declarations and moves to progress, review or done, in main and in the sessions, for the last days.
+    A creation can also count in its initial status. Each instant is placed by the zone's own rules (this PC's by
+    default), so a move near midnight stays on its day across a change of time. Applied session moves carry a new
+    flag relative to current main; history additions have an explicit empty from value."""
     today = now.astimezone(zone).date()
     buckets = {today - timedelta(days=offset): Counter() for offset in range(days)}
+    kinds = {"done": "done", "awaiting_review": "review", "in_progress": "progress"}
     for event in events:
         moment = parse_time(event["at"])
-        if moment is None or moment.tzinfo is None or event["to"] not in ("done", "awaiting_review"):
+        kind = kinds.get(event["to"])
+        new = event["to"] is not None and event.get("new", "from" in event and event["from"] is None)
+        if moment is None or moment.tzinfo is None or not (kind or new):
             continue
         try:
             local = moment.astimezone(zone).date()
         except (OverflowError, OSError, ValueError):
             continue
         if local in buckets:
-            kind = "done" if event["to"] == "done" else "review"
-            buckets[local][kind + ("_main" if event["where"] == "main" else "_live")] += 1
+            suffix = "_main" if event["where"] == "main" and "session_id" not in event else "_live"
+            if new:
+                buckets[local]["new" + suffix] += 1
+            if kind:
+                buckets[local][kind + suffix] += 1
     return [{"day": day.isoformat(), **{key: buckets[day][key] for key in
-                                        ("done_main", "review_main", "done_live", "review_live")}}
+                                        ("done_main", "review_main", "done_live", "review_live",
+                                         "new_main", "new_live", "progress_main", "progress_live")}}
             for day in sorted(buckets)]

@@ -534,13 +534,15 @@ PAGE: dict[str, dict[str, object]] = {
         "page.h_milestone": "Milestone", "page.h_declared": "Declared in a session",
         "page.h_forecast": "Forecast (main)",
         "page.daily": "Moves per day",
-        "page.daily_caption": "Tasks moved to Done or Awaiting review each day, in main and, lighter, in the "
-                              "sessions.",
+        "page.daily_caption": "New tasks and moves to In progress, Awaiting review or Done each day. Main is solid; "
+                              "session declarations are lighter. A task can contribute several moves.",
         "page.no_moves": "No readable move.",
+        "page.d_new_main": "New tasks in main", "page.d_progress_main": "Moved to In progress in main",
         "page.d_done_main": "Done in main", "page.d_review_main": "In review in main",
+        "page.d_new_live": "New tasks, declared in a session",
+        "page.d_progress_live": "Moved to In progress, declared in a session",
         "page.d_done_live": "Done, declared in a session", "page.d_review_live": "In review, declared in a session",
-        "page.h_day": "Day", "page.h_done_main": "Done (main)", "page.h_review_main": "In review (main)",
-        "page.h_done_live": "Done (sessions)", "page.h_review_live": "In review (sessions)",
+        "page.h_day": "Day",
         "page.sources": "Sources: ",
         "page.branches_cut": ["{n} older branch not read.", "{n} older branches not read."],
         "page.branches_unread": "The branches not yet in main could not be listed in time (a very long history, "
@@ -704,14 +706,16 @@ PAGE: dict[str, dict[str, object]] = {
         "page.h_milestone": "Jalon", "page.h_declared": "Déclarées dans une session",
         "page.h_forecast": "Prévision (main)",
         "page.daily": "Mouvements par jour",
-        "page.daily_caption": "Les tâches passées à Faite ou En attente de revue chaque jour, dans main et, en plus "
-                              "clair, dans les sessions.",
+        "page.daily_caption": "Nouveaux lots et passages à En cours, En attente de revue ou Faite chaque jour. Main "
+                              "en plein, déclarations des sessions en plus clair. Un lot peut compter plusieurs mouvements.",
         "page.no_moves": "Aucun mouvement lisible.",
+        "page.d_new_main": "Nouveaux lots dans main", "page.d_progress_main": "Passages à En cours dans main",
         "page.d_done_main": "Faites dans main", "page.d_review_main": "En revue dans main",
+        "page.d_new_live": "Nouveaux lots, déclarés dans une session",
+        "page.d_progress_live": "Passages à En cours, déclarés dans une session",
         "page.d_done_live": "Faites, déclarées dans une session",
         "page.d_review_live": "En revue, déclarées dans une session",
-        "page.h_day": "Jour", "page.h_done_main": "Faites (main)", "page.h_review_main": "En revue (main)",
-        "page.h_done_live": "Faites (sessions)", "page.h_review_live": "En revue (sessions)",
+        "page.h_day": "Jour",
         "page.sources": "Sources : ",
         "page.branches_cut": ["{n} branche ancienne pas lue.", "{n} branches anciennes pas lues."],
         "page.branches_unread": "Les branches pas encore dans main n’ont pu être listées à temps (une très longue "
