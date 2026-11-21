@@ -46,6 +46,9 @@ CHECKOUT_ID = "@checkout"  # no admin folder can take it: their names start with
 MAX_INFERRED = 3
 MAX_REFS = 5000
 MAX_WALK = 200_000
+PUBLICATION_SECONDS = 2.0  # optional follow-up cannot spend the whole local reading budget
+PUBLICATION_RETURN_MARGIN = 1.0
+MAX_PUBLICATION_AGES = 2 * GIT.MAX_PUBLICATION_COMMITS
 READ_WORKERS = 4
 PARALLEL_MIN = 8  # small repositories and custom readers retain the simple sequential path
 UNREADABLE = "unreadable"  # a ledger that exists at a commit but cannot be read, unlike an absent one (None)
@@ -581,13 +584,30 @@ class Collector:
             from .github import repository_identity
             entries = GITCONFIG.entries(data, self.git.deadline)
             key = ("remote." + self.remote + ".url").encode("utf-8")
-            url = next((value for name, value in reversed(entries) if name == key and value is not None), b"")
+            url = b""
+            for name, value in entries:
+                if name == key:
+                    if not value:
+                        url = b""  # an empty URL resets earlier entries, as Git's fetch URL list does
+                    elif not url:
+                        url = value  # Git fetches from the first URL, not the last mirror in its list
             identity = repository_identity(url.decode("utf-8", errors="replace"))
             self._github_identity = digest, identity
         return self.github.current(self._github_identity[1])
 
     def _publication(self, now: datetime, refs: dict, trees: list[dict], sessions: list[dict],
                      main_ref: str, main: str) -> dict:
+        """Optional reads have an earlier cutoff; completed sessions retain time to reach the view."""
+        deadline = self.git.deadline
+        cutoff = time.monotonic() + PUBLICATION_SECONDS
+        self.git.deadline = min(cutoff, deadline - PUBLICATION_RETURN_MARGIN) if deadline is not None else cutoff
+        try:
+            return self._publication_with_budget(now, refs, trees, sessions, main_ref, main)
+        finally:
+            self.git.deadline = deadline
+
+    def _publication_with_budget(self, now: datetime, refs: dict, trees: list[dict], sessions: list[dict],
+                                 main_ref: str, main: str) -> dict:
         """Bounded local evidence only; the observer's current() never waits for network IO."""
         worktrees = [{"id": tree["id"] or CHECKOUT_ID, "kind": "checkout" if tree["main"] else "worktree",
                       "name": clean(tree["path"].parent.name if tree["path"] is not None and not tree["main"]
@@ -601,6 +621,10 @@ class Collector:
         except Exception:
             remote = {"state": "error", "complete": False, "heads": {}, "pull_requests": [],
                       "error": "repository_identity_unreadable"}
+
+        def expired():
+            return self.github is not None and "_expires_at" in remote and self.github.expired(remote)
+
         cached = {name[len(self.remote_prefix):]: info["sha"] for name, info in refs.items()
                   if name.startswith(self.remote_prefix) and not info.get("symref")}
         fresh = remote.get("state") == "fresh" and remote.get("complete") is True
@@ -613,12 +637,22 @@ class Collector:
         short = main_ref[len(HEADS):] if main_ref.startswith(HEADS) else main_ref[len(self.remote_prefix):]
         remote_main = heads.get(short)
         comparison = {"state": "unknown", "ahead": None, "behind": None, "comparison_source": source,
-                      "local_head": main, "remote_head": remote_main or ""}
+                      "local_head": main if main_ref.startswith(HEADS) else "", "remote_head": remote_main or ""}
         try:
+            self.git.time_left()
             shallow, shallow_state = FILES._read_file(self.common / "shallow", self.root, 1_000_000)
             shallow_key = hashlib.sha256(shallow).digest() if shallow is not None else shallow_state
             incomplete = bool(shallow) or shallow_state not in ("ok", "absent")
-            existing = self._existing(tips + published)
+            if fresh:
+                # Positive immutable-object caches do not prove that an object still exists after local GC/removal.
+                # One batch verifies every endpoint without walking the cached graph again.
+                checked = list(dict.fromkeys(tips + published))
+                existing = {tip for tip, present in zip(checked, self.git.commits_exist(self.common, checked)) if present}
+                self._commits.difference_update(set(checked) - existing)
+                self._commits.update(existing)
+                self._use(*checked)
+            else:
+                existing = self._existing(tips + published)
             missing_local = [tip for tip in tips if tip not in existing]
             missing = [tip for tip in published if tip not in existing]
             key = (tuple(tip for tip in tips if tip in existing),
@@ -631,12 +665,17 @@ class Collector:
             graph = {**evidence, "comparison_source": source, "missing_local_tips": missing_local}
             if missing or missing_local or incomplete:
                 graph.update(complete=False, reason="missing_objects" if missing or missing_local else "shallow")
-            if remote_main in existing and main in existing and not incomplete:
+            if any(not tree["gone"] and not tree["tip"] for tree in worktrees):
+                graph.update(complete=False, reason="unknown_tip")
+            if main_ref.startswith(HEADS) and remote_main in existing and main in existing and not incomplete:
                 behind, ahead, _ = self._pair(remote_main, main)
                 comparison.update(state="diverged" if ahead and behind else "ahead" if ahead else
                                   "behind" if behind else "equal", ahead=ahead, behind=behind)
         except (GitFailed, GitRefused):
             pass  # New follow-up evidence can be unknown without hiding sessions already read successfully.
+        if remote.get("state") == "fresh" and expired():
+            remote = {**remote, "state": "stale"}
+            fresh = False
         signature = (self._github_identity[1] if self._github_identity is not None else self.remote,)
         if signature != self._publication_signature:
             self._publication_commit_seen = {}
@@ -644,11 +683,35 @@ class Collector:
                 self._publication_seen.pop(code, None)
             self._publication_signature = signature
         observed = now.isoformat(timespec="seconds")
-        self._publication_commit_seen = {
-            commit: self._publication_commit_seen.get(commit, observed) for commit in graph.get("parents", {})}
-        if self._publication_commit_seen:
-            self._publication_seen["publication_pending"] = min(self._publication_commit_seen.values())
-        found = PUBLICATION.build(now, refs, worktrees, sessions, remote, graph, comparison, self._publication_seen)
+        current_commits = graph.get("parents", {})
+        if graph.get("complete") and (fresh or self.github is None):
+            self._publication_commit_seen = {
+                commit: self._publication_commit_seen.get(commit, observed) for commit in current_commits}
+        else:
+            # An inconclusive walk cannot establish that an older pending commit disappeared or was published.
+            self._publication_commit_seen.update({
+                commit: self._publication_commit_seen.get(commit, observed) for commit in current_commits})
+            current_ages = {commit: self._publication_commit_seen[commit] for commit in current_commits}
+            older = sorted(((commit, age) for commit, age in self._publication_commit_seen.items()
+                            if commit not in current_commits), key=lambda item: item[1])
+            self._publication_commit_seen = {
+                **current_ages, **dict(older[:max(0, MAX_PUBLICATION_AGES - len(current_ages))])}
+        if current_commits:
+            self._publication_seen["publication_pending"] = min(
+                self._publication_commit_seen.get(commit, observed) for commit in current_commits)
+
+        def build_publication():
+            public_remote = {key: value for key, value in remote.items() if not key.startswith("_")}
+            return PUBLICATION.build(now, refs, worktrees, sessions, public_remote, graph, comparison,
+                                     self._publication_seen)
+
+        if remote.get("state") == "fresh" and expired():
+            remote = {**remote, "state": "stale"}
+        found = build_publication()
+        if remote.get("state") == "fresh" and expired():
+            # Retain this graph's exact observed heads; a newer background response is a different observation.
+            remote = {**remote, "state": "stale"}
+            found = build_publication()
         active = {row["code"] for row in found["alerts"]}
         self._publication_seen = {code: self._publication_seen.get(code, now.isoformat(timespec="seconds"))
                                   for code in active}

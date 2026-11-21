@@ -976,6 +976,16 @@ def issue(lang: str, code: str) -> str:
     return say(lang, "issue." + code, limit=MAX_STAGED) if f"issue.{code}" in TEXT["en"] else code
 
 
+def publication_reason(lang: str, code: str) -> str:
+    """Coverage uses the existing complete reason/issue vocabulary, without exposing missing catalog keys."""
+    if f"reason.{code}" in TEXT["en"]:
+        return reason(lang, code, "—")
+    if f"issue.{code}" in TEXT["en"]:
+        return issue(lang, code)
+    messages = PAGE[_lang(lang)]
+    return str(messages.get("page.publication_reason_" + code, messages["page.publication_reason_unreadable"]))
+
+
 def trap(lang: str, problem: str) -> str:
     """What in .git stops every git command: a code, "link:<entry>", "many:<folder>" and "config_unreadable:<name>"
     naming the file."""

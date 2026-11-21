@@ -571,6 +571,16 @@ def _sources(lang: str, context: dict, ledger: dict | None, sessions: list[dict]
     return sources
 
 
+def _publication_info(found: dict | None, lang: str) -> dict | None:
+    if found is None:
+        return None
+    coverage = found.get("coverage", {})
+    codes = set(coverage.get("reasons", {}))
+    codes.update(tree["reason"] for tree in coverage.get("worktrees", []) if tree.get("reason"))
+    return {**found, "coverage": {**coverage,
+                                 "reason_labels": {code: M.publication_reason(lang, code) for code in codes}}}
+
+
 def _ledger_info(adapter: Ledger | None, context: dict, ledger: dict | None) -> dict:
     return {"kind": adapter.kind if adapter is not None and ledger is not None else "none",
             "path": adapter.path if adapter is not None else "",
@@ -628,7 +638,7 @@ def build_view(now: datetime, mode: str, context: dict, sessions: list[dict], ve
     return {
         "generated_at": now.isoformat(timespec="seconds"), "mode": mode, "refresh_seconds": REFRESH_SECONDS,
         "tool": context["tool"], "repository": context.get("repository", ""),
-        "publication": context.get("publication"),
+        "publication": _publication_info(context.get("publication"), lang),
         "main": {"state": "ok", "reason": "", "reason_text": "",
                  "ref": safe_branch(context["ref"].split("/", 2)[-1]), "head": context["sha"][:7],
                  "date": iso(head["at"], now.tzinfo) if head.get("at") else "", "subject": head.get("subject", ""),

@@ -53,4 +53,10 @@ assert.match(text('publication-queue'),/publication_queue_pr_open/);
 assert.match(text('publication-queue'),/publication_queue_more/);
 assert.match(text('publication-queue'),/publication_aliases_more/);
 assert.doesNotMatch(text('publication-queue'),/publication_commits/,'published PRs have their own review stage');
+data.publication.coverage={worktrees_discovered:2,worktree_files_total:1,working_files_read:1,
+  working_files_unknown:0,reasons:{link:1},reason_labels:{link:'Link refused'},worktrees:[]};
+draw();
+assert.match(text('publication-cards'),/\\"read\\":1,\\"total\\":1/);
+assert.match(text('publication-cards'),/Link refused/);
+assert.doesNotMatch(text('publication-cards'),/publication_reason_link/);
 console.log('5 publication-page checks passed');

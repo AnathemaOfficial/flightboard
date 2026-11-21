@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import processes
-from .gitreads import ENV_KEYS, FULL_SHA, is_ref
+from .gitreads import ENV_KEYS, FULL_SHA
 from .text import clean
 
 TTL = 300.0
@@ -122,8 +122,20 @@ def _empty(state: str, identity: str = "", error: str = "") -> dict:
 
 
 def _branch(value: object) -> str:
-    if not isinstance(value, str) or len(value) > 1000 or not is_ref("refs/heads/" + value):
+    """Validate remote ref data without borrowing the narrower local-path allowlist.
+
+    These names never become Git arguments or filesystem paths. Preserve their exact
+    identities, including valid punctuation and Unicode, when comparing remote heads.
+    """
+    if (not isinstance(value, str) or not value or len(value) > 1000 or value.startswith("/")
+            or value.endswith(("/", ".")) or any(token in value for token in ("..", "//", "@{"))
+            or any(ord(char) <= 32 or ord(char) == 127 or char in "~^:?*[\\" for char in value)
+            or any(part.startswith(".") or part.endswith(".lock") for part in value.split("/"))):
         raise ObservationError("invalid_branch")
+    try:
+        value.encode("utf-8")
+    except UnicodeError as exc:
+        raise ObservationError("invalid_branch") from exc
     return value
 
 
@@ -182,6 +194,15 @@ class GitHubObserver:
             if self._clock() >= self._next_at:
                 self._wake.set()
             return value
+
+    def expired(self, snapshot: dict) -> bool:
+        """Recheck this exact observation, not the expiry or heads of a newer cached result.
+
+        The private monotonic token is for the collector only and is omitted from the
+        public view. No network scheduling, lock or Git read is needed at emission time.
+        """
+        expires = snapshot.get("_expires_at")
+        return type(expires) not in (int, float) or not math.isfinite(expires) or self._clock() >= expires
 
     def close(self) -> None:
         """Stop scheduling and allow at most one bounded active subprocess to finish."""
@@ -294,7 +315,8 @@ class GitHubObserver:
                 if result is not None:
                     self._success_at = self._clock()
                     self._value = {**_empty(result["state"], identity), **result,
-                                   "checked_at": observed, "last_success_at": observed}
+                                   "checked_at": observed, "last_success_at": observed,
+                                   "_expires_at": self._success_at + self._ttl}
                 else:
                     self._value = {**self._value, "checked_at": observed, "error": failure,
                                    "state": "stale" if self._success_at is not None else "error"}

@@ -46,6 +46,16 @@ class ReleasePackageTest(unittest.TestCase):
                     with self.assertRaisesRegex(module.ReleaseError, "collision"):
                         module._source(self.repo, self.sha)
 
+    def test_optional_notice_absence_does_not_block_existing_repository_distribution(self):
+        self.git("rm", "NOTICE")
+        self.git("commit", "-qm", "no optional notice")
+        revision = self.git("rev-parse", "HEAD")
+        module = builder()
+        module.build(self.repo, revision, self.version, self.root / "without-notice")
+        with zipfile.ZipFile(self.root / "without-notice" / f"flightboard-skill-{self.version}.zip") as archive:
+            self.assertIn("flightboard/LICENSE", archive.namelist())
+            self.assertNotIn("flightboard/NOTICE", archive.namelist())
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -64,6 +74,7 @@ class ReleasePackageTest(unittest.TestCase):
             "skills/flightboard/agents/openai.yaml": "display_name: Flightboard\n",
             "README.md": "Install the skill.\n",
             "docs/install.md": "Installation instructions.\n",
+            "docs/git-github-publication.md": "Publication contract.\n",
             "LICENSE": "Fixture Apache license\n", "NOTICE": "Fixture attribution\n",
             "LICENSES/Apache-2.0.txt": "Fixture license\n",
             "tests/private-fixture.txt": "Test content is not shipped.\n",
@@ -121,7 +132,8 @@ class ReleasePackageTest(unittest.TestCase):
             self.assertIn(self.version.encode(), archive.read("skills/flightboard/scripts/flightboard/__init__.py"))
         with zipfile.ZipFile(output / f"flightboard-skill-{self.version}.zip") as archive:
             for name in ("flightboard/SKILL.md", "flightboard/LICENSE", "flightboard/NOTICE",
-                         "flightboard/LICENSES/Apache-2.0.txt", "flightboard/scripts/flightboard.py"):
+                         "flightboard/LICENSES/Apache-2.0.txt", "flightboard/scripts/flightboard.py",
+                         "flightboard/docs/git-github-publication.md"):
                 self.assertIn(name, archive.namelist())
         sums = (output / "SHA256SUMS").read_text().splitlines()
         self.assertEqual(len(sums), 3)

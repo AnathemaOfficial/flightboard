@@ -90,8 +90,10 @@ For an explicitly requested Git/GitHub comparison, enable `--github` on the live
 shows unique commits, grouped branch stacks, uncommitted work and working-file coverage independently of task status.
 Local tracking references are not current GitHub proof. Missing objects, incomplete worktree access and expired
 observations remain unknown. Never interpret the queue as authorization to commit, push or activate a product.
-`--snapshot` and `--resume` do not wait for a network observation. Publication delay starts at the first actual
-observation during the process lifetime, not at a commit date. See `docs/git-github-publication.md` in the repository.
+`--github` is available only in live mode; combining it with `--snapshot` or `--resume` is a usage error.
+Publication delay starts at the first actual
+observation during the process lifetime, not at a commit date. See `docs/git-github-publication.md`, bundled with
+the standalone skill or located at the repository root for plugin/source installations.
 If the reading reports `too_many_worktrees`, inspect the count of registered admin entries with guarded filesystem
 reads, then choose an explicit `--max-worktrees N` large enough for that count (100 by default, 1 to 1000 allowed).
 For example, a verified larger set can use `--max-worktrees 300 --read-seconds 120`. The count and time bounds are

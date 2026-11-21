@@ -210,8 +210,8 @@ def parse_refs(raw: bytes, remote: str = "origin") -> dict[str, dict]:
             if len(parts) >= 4 and parts[3]:
                 refs[parts[0]]["symref"] = parts[3]
             if len(parts) == 7:
-                refs[parts[0]].update(upstream=clean(parts[4], 250),
-                                      upstream_remote=clean(parts[5], 200), upstream_ref=clean(parts[6], 250))
+                # These fields are identities used as dictionary keys, not display strings.
+                refs[parts[0]].update(upstream=parts[4], upstream_remote=parts[5], upstream_ref=parts[6])
             if len(refs) > MAX_REFS:
                 raise GitFailed("too many branch refs")
     return refs

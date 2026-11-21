@@ -178,6 +178,59 @@ class GitHubTest(unittest.TestCase):
         self.assertEqual(len(branches), github.MAX_PAGES)
         self.assertTrue(all("per_page=100&page=" in endpoint for endpoint in branches))
 
+    def test_remote_branch_names_are_data_not_local_reflog_paths(self):
+        names = ["feature+ci", "équipe/résumé", 'feature-$scope;quote"', "@", "-dash", "a./b"]
+        client = FixtureClient()
+        client.branches = [{"name": name, "commit": {"sha": SHA}} for name in names]
+        client.pulls = [{"number": 7, "title": "Review", "state": "open",
+                         "html_url": "https://github.com/Owner/project/pull/7",
+                         "head": {"ref": names[0], "sha": OTHER},
+                         "base": {"ref": names[1], "repo": {"full_name": IDENTITY}}}]
+        value = self.completed(self.observer(client))
+        self.assertEqual(value["state"], "fresh")
+        self.assertEqual(value["heads"], dict.fromkeys(names, SHA))
+        self.assertEqual(value["pull_requests"][0]["head"], "feature+ci")
+        self.assertEqual(value["pull_requests"][0]["base"], "équipe/résumé")
+
+    def test_remote_branch_names_reject_invalid_git_ref_syntax(self):
+        for name in (None, "", "/first", "last/", ".hidden", "a/.hidden", "a.lock/b", "a/b.lock",
+                     "a..b", "a//b", "a@{b", "a b", "a~b", "a^b", "a:b", "a?b", "a*b",
+                     "a[b", "a\\b", "a\x00b", "a\x7fb", "a/b.", "\ud800"):
+            with self.subTest(name=name):
+                with self.assertRaises(github.ObservationError):
+                    github._branch(name)
+
+    def test_snapshot_expiry_is_rechecked_without_using_newer_heads(self):
+        clock = [10.0]
+        client = FixtureClient()
+        observer = self.observer(client, clock=lambda: clock[0])
+        original = self.completed(observer)
+        self.assertFalse(observer.expired(original))
+        clock[0] = 309.0
+        self.assertFalse(observer.expired(original))
+        clock[0] = 310.0
+        self.assertTrue(observer.expired(original))
+        client.branches = [{"name": "main", "commit": {"sha": OTHER}}]
+        observer.current(IDENTITY)  # Schedule the replacement observation, not a replacement for the held snapshot.
+        until = time.monotonic() + 2
+        while time.monotonic() < until:
+            replacement = observer.current(IDENTITY)
+            if replacement["state"] == "fresh" and replacement["heads"] == {"main": OTHER}:
+                break
+            threading.Event().wait(0.005)
+        else:
+            self.fail("replacement observation did not finish")
+        self.assertFalse(observer.expired(replacement))
+        self.assertTrue(observer.expired(original))
+        self.assertEqual(original["heads"], {"main": SHA})
+        self.assertEqual(len(client.calls), 6)
+
+    def test_missing_or_invalid_expiry_never_proves_freshness(self):
+        observer = self.observer(enabled=False)
+        for value in (None, True, float("inf"), float("nan"), "later"):
+            with self.subTest(value=value):
+                self.assertTrue(observer.expired({"_expires_at": value}))
+
     def test_invalid_data_and_repository_mismatch_are_errors(self):
         for payload in (b"not JSON", encoded({"full_name": "Other/project", "id": 1}),
                         encoded({"full_name": IDENTITY, "id": True})):

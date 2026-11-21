@@ -86,6 +86,8 @@ def read_args(argv: list[str]) -> tuple[dict | None, str]:
         return None, f"{' and '.join(modes)} cannot go together"
     if "--output" in options and "--snapshot" not in options:
         return None, "--output goes with --snapshot"
+    if "--github" in options and any(mode in options for mode in ("--snapshot", "--resume")):
+        return None, "--github is available only in live mode"
     if "--port" in options and (not PORT.fullmatch(options["--port"]) or not 1024 <= int(options["--port"]) <= 65535):
         return None, "--port takes a number from 1024 to 65535"
     return options, ""
@@ -343,17 +345,19 @@ def _resume(root: Path, settings: Settings, now: datetime) -> int:
 
 
 def _serve(root: Path, settings: Settings, port: int) -> int:
-    observer = GITHUB.GitHubObserver(enabled=settings.github)
+    observer = GITHUB.GitHubObserver(enabled=True) if settings.github else None
     try:
         collector = Collector(root, settings, completion_clock=SERVER.now_local, github=observer)
         servers = SERVER.make_servers(SERVER.Snapshots(collector), PAGE.template(), port,
                                       settings.lang)
     except OSError:
-        observer.close()
+        if observer is not None:
+            observer.close()
         print(f"port {port} is busy or unavailable (127.0.0.1 or ::1): start again with --port N", file=sys.stderr)
         return 1
     except BaseException:
-        observer.close()
+        if observer is not None:
+            observer.close()
         raise
     print(json.dumps({"status": "SERVING", "url": f"http://{SERVER.HOST}:{port}/"}, ensure_ascii=True), flush=True)
     for extra in servers[1:]:
@@ -365,7 +369,8 @@ def _serve(root: Path, settings: Settings, port: int) -> int:
     finally:
         for server in servers:
             server.server_close()
-        observer.close()
+        if observer is not None:
+            observer.close()
     return 0
 
 
