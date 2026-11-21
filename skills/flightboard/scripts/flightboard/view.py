@@ -16,6 +16,7 @@ from datetime import datetime
 
 from . import messages as M
 from . import overlay as OVERLAY
+from . import overview as OVERVIEW
 from .ledgers import SATISFIED, STATUSES, Ledger
 from .ledgers.base import countable
 from .text import clean, instant, iso, parse_time, safe_branch
@@ -639,6 +640,7 @@ def build_view(now: datetime, mode: str, context: dict, sessions: list[dict], ve
         "generated_at": now.isoformat(timespec="seconds"), "mode": mode, "refresh_seconds": REFRESH_SECONDS,
         "tool": context["tool"], "repository": context.get("repository", ""),
         "publication": _publication_info(context.get("publication"), lang),
+        "overview": OVERVIEW.build(context, live, sessions, waiting, nexts),
         "main": {"state": "ok", "reason": "", "reason_text": "",
                  "ref": safe_branch(context["ref"].split("/", 2)[-1]), "head": context["sha"][:7],
                  "date": iso(head["at"], now.tzinfo) if head.get("at") else "", "subject": head.get("subject", ""),
@@ -675,6 +677,7 @@ def error_view(now: datetime, mode: str, reason: str, detail: str = "", lang: st
         "generated_at": now.isoformat(timespec="seconds"), "mode": mode, "refresh_seconds": REFRESH_SECONDS,
         "tool": tool or {"name": "flightboard", "version": ""}, "repository": repository,
         "publication": None,
+        "overview": OVERVIEW.unavailable(),
         "main": {"state": "unreadable", "reason": reason, "reason_text": text, "ref": "", "head": "", "date": "",
                  "subject": "", "updated_at": "", "note": "", "note_text": "", "valid": False, "error": ""},
         "ledger": {"kind": "none", "path": "", "releases": False, "missing": ""},
@@ -700,6 +703,7 @@ def loading_view(now: datetime, lang: str = "en", tool: dict | None = None, repo
     """The first live page, with no session verdicts until an actual reading completes."""
     view = error_view(now, "live", "unavailable", lang=lang, tool=tool, repository=clean(repository, 100))
     view["main"].update(state="loading", reason="", reason_text="")
+    view["overview"] = OVERVIEW.unavailable("loading")
     view["resume"] = M.say(lang, "summary.loading")
     view["sources"] = [{"key": "git", "label": M.say(lang, "source.git"), "state": "loading",
                         "detail": M.say(lang, "summary.loading")}]

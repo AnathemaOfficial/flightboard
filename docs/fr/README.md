@@ -28,6 +28,12 @@ GitHub; une observation expirée, un objet manquant ou un worktree non autorisé
 Une alerte de retard se fonde sur la première observation réelle durant le processus, jamais sur la date d'un commit.
 La file ne déclenche ni publication ni activation du produit. Voir [le contrat de cette livraison](../git-github-publication.md).
 
+La synthèse ajoute un bandeau d'attention, l'avancement déclaré dans `main` et dans les sessions, les limites des
+preuves disponibles, ainsi que des actions préparées à lire et copier pour un agent. Elle réutilise la lecture
+existante, sans commande Git ni requête supplémentaire. Voir [le contrat de la synthèse](../progress-and-prepared-actions.md).
+Le mode [Assistant optionnel](../optional-assistant.md) reste une proposition distincte : aucune intégration LLM
+n'est nécessaire ou activée dans le tableau.
+
 Les graphiques montrent les tâches faites dans le temps, les jalons et les mouvements quotidiens : nouveaux lots,
 passages à « En cours », mises en revue et tâches terminées, avec une vue en tableau. Les mouvements couvrent tous
 les périmètres ; un lot peut compter plusieurs mouvements. Les barres des sessions représentent leurs déclarations
