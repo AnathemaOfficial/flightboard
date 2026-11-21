@@ -216,7 +216,7 @@ class GitHubObserver:
                 raise ObservationError("invalid_response") from exc
 
         metadata = get(f"repos/{identity}")
-        if not isinstance(metadata, dict) or not isinstance(metadata.get("full_name"), str) \
+        if not isinstance(metadata, dict) or not _identity(metadata.get("full_name")) \
                 or metadata["full_name"].casefold() != identity.casefold() \
                 or type(metadata.get("id")) is not int or metadata["id"] <= 0:
             raise ObservationError("repository_identity_mismatch")
@@ -252,7 +252,7 @@ class GitHubObserver:
                     or not isinstance(item.get("title"), str):
                 raise ObservationError("invalid_pull_request")
             number, head, base = item["number"], item["head"], item["base"]
-            url = f"https://github.com/{identity}/pull/{number}"
+            url = f"https://github.com/{metadata['full_name']}/pull/{number}"
             base_repo = base.get("repo")
             if item.get("html_url") != url or not isinstance(base_repo, dict) \
                     or not isinstance(base_repo.get("full_name"), str) \

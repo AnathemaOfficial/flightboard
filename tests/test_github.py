@@ -251,6 +251,24 @@ class GitHubTest(unittest.TestCase):
                 with self.assertRaises(github.ObservationError):
                     client.get("repos/Owner/project", timeout=1, limit=100)
 
+    def test_open_pr_accepts_canonical_repository_casing(self):
+        client = FixtureClient()
+        original = client.get
+
+        def canonical(endpoint, **kwargs):
+            if "?" not in endpoint:
+                return encoded({"id": 123, "full_name": "Owner/Project", "default_branch": "main"})
+            return original(endpoint, **kwargs)
+
+        client.get = canonical
+        client.pulls = [{"number": 7, "title": "Review", "state": "open",
+                         "html_url": "https://github.com/Owner/Project/pull/7",
+                         "head": {"ref": "topic", "sha": OTHER},
+                         "base": {"ref": "main", "repo": {"full_name": "Owner/Project"}}}]
+        value = self.completed(self.observer(client), "owner/project")
+        self.assertEqual(value["state"], "fresh")
+        self.assertEqual(value["pull_requests"][0]["url"], "https://github.com/Owner/Project/pull/7")
+
     def test_github_option_is_explicit_boolean_and_startup_round_trips(self):
         self.assertFalse(config.Settings().github)
         self.assertTrue(cli.settings_of(cli.parse(["--github"])).github)

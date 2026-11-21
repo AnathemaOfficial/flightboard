@@ -764,10 +764,11 @@ class Collector:
         except GitFailed:  # git could not tell them in time (a very long history): the folders' sessions still show
             unmerged, unread = {}, True
         others = []
+        represented_remotes = {self._tracking_ref(refs, name) for name in unmerged if name.startswith(HEADS)}
         for name, info in unmerged.items():
             if name in used or info.get("symref") or name in (self._remote_main, self.remote_prefix + "HEAD"):
                 continue
-            if name.startswith(self.remote_prefix) and HEADS + name[len(self.remote_prefix):] in unmerged:
+            if name.startswith(self.remote_prefix) and name in represented_remotes:
                 continue  # one session, one card: the local branch shows it, read at the remote's tip when behind
             kind = "branch" if name.startswith(HEADS) else "remote"
             short = name[len(HEADS):] if kind == "branch" else f"{self.remote}/" + name[len(self.remote_prefix):]

@@ -70,6 +70,21 @@ class PublicationCollectorTest(unittest.TestCase):
             second = self.read(reader)["publication"]
         self.assertEqual(first["queue"], second["queue"])
 
+    def test_renamed_upstream_does_not_hide_unrelated_same_name_remote_branch(self):
+        self.repo.git("config", "remote.origin.url", "https://github.com/example/repo.git")
+        self.repo.git("config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+        self.repo.git("config", "branch.second.remote", "origin")
+        self.repo.git("config", "branch.second.merge", "refs/heads/review-stack")
+        self.repo.git("update-ref", "refs/remotes/origin/review-stack", self.second)
+        cloud = self.repo.worktree("cloud", "cloud")
+        self.repo.commit(cloud, "cloud.py", "cloud\n", "remote only", "11:00")
+        cloud_tip = self.repo.git("rev-parse", "HEAD", where=cloud)
+        self.repo.git("update-ref", "refs/remotes/origin/second", cloud_tip)
+        found = self.read()
+        remote = next((row for row in found["sessions"] if row["name"] == "origin/second"), None)
+        self.assertIsNotNone(remote, "a differently tracked local branch cannot hide this remote session")
+        self.assertEqual(remote["head"], cloud_tip[:7])
+
     def test_fresh_heads_unknown_locally_never_become_exact(self):
         self.repo.git("config", "remote.origin.url", "https://github.com/example/repo.git")
         observer = mock.Mock()
