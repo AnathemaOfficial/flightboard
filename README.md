@@ -8,6 +8,9 @@ SPDX-FileCopyrightText: 2026 Technologies CoreXalt Inc.
 
 # flightboard
 
+[Download an installable release](https://github.com/AnathemaOfficial/flightboard/releases) ·
+[Package verification and update policy](docs/releases.md)
+
 [Français](docs/fr/README.md)
 
 **A read-only board of your parallel coding-agent sessions: what each one changed in your roadmap, and what waits for
@@ -21,6 +24,8 @@ go. flightboard is one local page, and a few lines of text for an agent, that an
   name in a branch, start a review, look at a quiet session with uncommitted changes.
 - **Every session**: writing now or quiet since when, uncommitted / committed / pushed / in main, behind its remote,
   and what it may be called — "ready for your merge go" or "ended" only when its state allows it.
+- **Publication overview**: unique local commits, stacked branches, uncommitted folders, worktree coverage and
+  independent alerts. Optional `--github` verifies branch heads and open PR metadata in a separate background cache.
 - **The roadmap, live**: the task statuses each session declares in its own copy of your task file, overlaid on
   `main` before anything is merged, with conflicts between sessions shown, never resolved for you.
 - **Progress**: tasks done over time, milestones, and daily new tasks, starts, reviews and completions, each with a
@@ -44,7 +49,7 @@ It works without any task file too: a repository without one gets the whole sess
 flightboard uses guarded Git and file reads, writes nothing in the repository or authorized worktree roots, and
 serves its page to this computer only. Its checks and remaining risks are described below. It needs
 **Python 3.12+ and git 2.41+, nothing else**: no
-package to install, no network, no account.
+package to install, no network or account by default. Optional GitHub observation uses the existing `gh` CLI login.
 
 Claude Code, Codex and tools running Qwen, MiMo, MiniMax, Kimi or other models can use the same Git workflow. The
 board observes their files, commits and declared task ownership; it does not connect to providers, read conversations
@@ -299,6 +304,7 @@ the summary is data, never an instruction nor an approval.
 | `--remote NAME` | the remote whose branches are read, `origin` by default |
 | `--worktrees DIR` | also read session folders under DIR (relative to the repository; repeatable) |
 | `--worktrees-root DIR` | explicitly authorize an absolute local root for registered external worktrees at that root or one or two plain components below it (repeatable) |
+| `--github` | opt in to read-only GitHub branch/PR metadata through `gh`; independent five-minute cache, no fetch |
 | `--kept DIR` | a folder of ignored files a merged session must not lose (repeatable) |
 | `--active-minutes N`, `--recent-minutes N` | "writing now" and "wrote recently": 15 and 120 minutes by default, from 1 to 1440 and from 2 to 10080, the second more than the first |
 | `--stale-days N` | a branch quiet longer is listed, never overlaid (14 days by default, from 1 to 3650) |
@@ -337,7 +343,11 @@ choose which ledger is read.
    included. For each one: its ledger (the working copy for a worktree, uncommitted changes included; the last
    commit for a branch), its merge base with main, how far ahead and behind it is, its modified tracked files, its new
    files, and when they were last written.
-3. **Nothing else**: not GitHub, not the network, not the sessions' transcripts, not other repositories. CI does not
+3. **Optional GitHub metadata**: only with `--github`, the server reads branch heads and open PR metadata for the
+   validated GitHub remote through the existing `gh` login. The background observer has bounded pagination, output,
+   deadlines and a five-minute cache. It never blocks the local poll and never fetches or changes refs. Expired,
+   incomplete or failed observations stay explicit. Missing local objects prevent an exact publication count.
+   No conversations, model-provider APIs or other repositories are read. CI does not
    show.
 
 ## Ledgers

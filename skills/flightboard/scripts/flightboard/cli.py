@@ -29,6 +29,7 @@ from pathlib import Path
 from . import __version__
 from . import config as CONFIG
 from . import files as FILES
+from . import github as GITHUB
 from . import messages as M
 from . import page as PAGE
 from . import server as SERVER
@@ -44,8 +45,9 @@ USAGE = ("usage: flightboard.py [--port N] | --resume | --snapshot [--output FIL
          "       [--worktrees-root DIR]... (explicit absolute local roots for external worktrees)\n"
          "       [--active-minutes N] [--recent-minutes N] [--stale-days N] [--max-branches N]\n"
          "       [--max-worktrees N] (1 to 1000 registered worktrees; default 100)\n"
+         "       [--github] (live mode only: bounded GitHub GET observations, cached for 300 seconds)\n"
          "       [--read-seconds N] (12 to 120 seconds; default 12 for one whole snapshot)")
-SWITCHES = ("--resume", "--snapshot", "--help", "-h", "--version")
+SWITCHES = ("--resume", "--snapshot", "--help", "-h", "--version", "--github")
 VALUES = ("--port", "--output", "--repo", "--lang", "--ledger", "--ledger-path", "--main", "--remote",
           "--active-minutes", "--recent-minutes", "--stale-days", "--max-branches", "--read-seconds", "--max-worktrees")
 REPEATED = ("--worktrees", "--kept", "--worktrees-root")
@@ -84,6 +86,8 @@ def read_args(argv: list[str]) -> tuple[dict | None, str]:
         return None, f"{' and '.join(modes)} cannot go together"
     if "--output" in options and "--snapshot" not in options:
         return None, "--output goes with --snapshot"
+    if "--github" in options and any(mode in options for mode in ("--snapshot", "--resume")):
+        return None, "--github is available only in live mode"
     if "--port" in options and (not PORT.fullmatch(options["--port"]) or not 1024 <= int(options["--port"]) <= 65535):
         return None, "--port takes a number from 1024 to 65535"
     return options, ""
@@ -97,6 +101,7 @@ def parse(argv: list[str]) -> dict | None:
 def check_settings(options: dict) -> tuple[Settings | None, str]:
     """(settings, "") or (None, why): the settings the options name, each checked as text."""
     values: dict = {}
+    values["github"] = "--github" in options
     if "--lang" in options:
         if options["--lang"] not in M.LANGS:
             return None, f"--lang takes {' or '.join(M.LANGS)}"
@@ -340,13 +345,20 @@ def _resume(root: Path, settings: Settings, now: datetime) -> int:
 
 
 def _serve(root: Path, settings: Settings, port: int) -> int:
+    observer = GITHUB.GitHubObserver(enabled=True) if settings.github else None
     try:
-        collector = Collector(root, settings, completion_clock=SERVER.now_local)
+        collector = Collector(root, settings, completion_clock=SERVER.now_local, github=observer)
         servers = SERVER.make_servers(SERVER.Snapshots(collector), PAGE.template(), port,
                                       settings.lang)
     except OSError:
+        if observer is not None:
+            observer.close()
         print(f"port {port} is busy or unavailable (127.0.0.1 or ::1): start again with --port N", file=sys.stderr)
         return 1
+    except BaseException:
+        if observer is not None:
+            observer.close()
+        raise
     print(json.dumps({"status": "SERVING", "url": f"http://{SERVER.HOST}:{port}/"}, ensure_ascii=True), flush=True)
     for extra in servers[1:]:
         threading.Thread(target=extra.serve_forever, kwargs={"poll_interval": 0.5}, daemon=True).start()
@@ -357,6 +369,8 @@ def _serve(root: Path, settings: Settings, port: int) -> int:
     finally:
         for server in servers:
             server.server_close()
+        if observer is not None:
+            observer.close()
     return 0
 
 

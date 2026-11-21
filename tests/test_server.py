@@ -159,13 +159,14 @@ class PageTest(unittest.TestCase):
     def test_the_page_talks_only_to_its_own_server(self) -> None:
         template = self.template
         self.assertIsNone(re.search(r"(?i)\b(?:src|href|action|srcset)\s*=\s*[\"']?\s*(?:[a-z]+:)?//", template))
-        self.assertEqual(re.findall(r"https?://[^\s'\"]*", template), [SVG_NAMESPACE])
+        # The optional observation adds user-clicked PR links, while fetch and CSP remain same-origin only.
+        self.assertEqual(re.findall(r"https?://[^\s'\"]*", template), [SVG_NAMESPACE, "https://github.com/"])
         self.assertEqual(template.count("fetch("), 1)
         self.assertRegex(template, r"fetch\('state\.json',")
         self.assertRegex(template, r"const polling = data\.mode === 'live' && \(location\.protocol === 'http:'")
         for forbidden in ("@import", "url(", "<link", "<iframe", "XMLHttpRequest", "eval(", "new Function",
                           "WebSocket", "sendBeacon", "window.open", "import(", "location.href", "location.assign",
-                          "github.com", "sessionStorage", "document.cookie", "DOMParser", "setTimeout('",
+                          "sessionStorage", "document.cookie", "DOMParser", "setTimeout('",
                           'setTimeout("', "setInterval('", 'setInterval("', " style=", "'style'", "<a ", "srcdoc"):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, template)

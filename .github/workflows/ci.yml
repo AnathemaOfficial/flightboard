@@ -2,7 +2,8 @@
 # SPDX-FileCopyrightText: 2026 Technologies CoreXalt Inc.
 #
 # Tests on Windows, Linux and macOS with Python 3.12 and 3.14; the plugin validated in strict mode; licensing checked
-# with REUSE. Third-party actions are pinned by commit; permissions are read-only and no credential is kept.
+# with REUSE. Read-only package validation runs for PRs; only validated main builds publish releases.
+# Third-party actions are pinned by commit; write permission exists only in the main-only publication job.
 name: ci
 
 on:
@@ -14,8 +15,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   tests:
@@ -75,3 +76,103 @@ jobs:
           persist-credentials: false
       - name: REUSE lint
         run: pipx run reuse==6.3.0 lint
+
+  package:
+    name: Release packages (reproducible)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.identity.outputs.version }}
+      source_sha: ${{ steps.identity.outputs.source_sha }}
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Choose immutable distribution identity
+        id: identity
+        env:
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          python -I -B - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          source = os.environ["SOURCE_SHA"]
+          if re.fullmatch(r"[0-9a-f]{40}", source) is None:
+              raise SystemExit("invalid source SHA")
+          base = json.loads(Path("plugin.json").read_text(encoding="utf-8"))["version"]
+          match = re.fullmatch(r"((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))\.0", base)
+          if match is None:
+              raise SystemExit("source base must reserve the patch number for CI builds")
+          if os.environ["EVENT_NAME"] == "push":
+              number = os.environ["GITHUB_RUN_NUMBER"]
+              version = match[1] + "." + number
+          else:
+              number = os.environ["PR_NUMBER"]
+              version = base + "-rc." + number + ".g" + source[:12]
+          if re.fullmatch(r"[1-9][0-9]*", number) is None:
+              raise SystemExit("invalid build number")
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write("version=" + version + "\nsource_sha=" + source + "\n")
+          PY
+      - name: Build packages twice and compare every byte
+        env:
+          SOURCE_SHA: ${{ steps.identity.outputs.source_sha }}
+          RELEASE_VERSION: ${{ steps.identity.outputs.version }}
+        run: |
+          python -I -B tools/build_release.py --ref "$SOURCE_SHA" --version "$RELEASE_VERSION" --output "$RUNNER_TEMP/release-packages"
+          python -I -B tools/build_release.py --ref "$SOURCE_SHA" --version "$RELEASE_VERSION" --output "$RUNNER_TEMP/release-repeat"
+          diff --recursive "$RUNNER_TEMP/release-packages" "$RUNNER_TEMP/release-repeat"
+          cd "$RUNNER_TEMP/release-packages"
+          sha256sum --check SHA256SUMS
+      - name: Preserve verified release packages
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: flightboard-release-${{ steps.identity.outputs.source_sha }}
+          path: ${{ runner.temp }}/release-packages/*
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish validated main release
+    needs: [tests, plugin, licensing, package]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: flightboard-release
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - name: Check out the validated main revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.package.outputs.source_sha }}
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Download packages from this validated run
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: flightboard-release-${{ needs.package.outputs.source_sha }}
+          path: ${{ runner.temp }}/release-packages
+      - name: Publish complete immutable assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.package.outputs.version }}
+          SOURCE_SHA: ${{ needs.package.outputs.source_sha }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: |
+          python -I -B tools/publish_release.py --directory "$RUNNER_TEMP/release-packages" --version "$RELEASE_VERSION" --ref "$SOURCE_SHA" --repo "$RELEASE_REPOSITORY"

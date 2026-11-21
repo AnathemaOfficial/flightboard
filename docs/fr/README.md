@@ -8,6 +8,9 @@ SPDX-FileCopyrightText: 2026 Technologies CoreXalt Inc.
 
 [English](../../README.md)
 
+[Télécharger une release installable](https://github.com/AnathemaOfficial/flightboard/releases) ·
+[Vérification des archives et politique de mise à jour](../releases.md)
+
 **Un tableau local en lecture seule de tes sessions d'agents en parallèle : leurs changements dans Git, leur
 avancement déclaré et ce qui attend ton intervention.**
 
@@ -15,6 +18,15 @@ flightboard réunit le dépôt principal, ses arbres de travail autorisés et le
 `main`. Il montre les fichiers modifiés, les commits, les tâches déclarées et les conflits entre sessions. Avec un
 fichier de tâches, il compare les déclarations de chaque session à la feuille de route de `main` avant toute fusion.
 Sans fichier de tâches, il fournit la vue des sessions à partir de Git seul.
+
+La section **Git / GitHub et publication** montre les commits locaux distincts, les piles de branches,
+les fichiers non commités, les worktrees non lus et les alertes indépendantes du statut des lots.
+L'option `--github` active une observation en lecture seule des branches et PR ouvertes avec la connexion `gh`
+existante. Son cache de cinq minutes fonctionne en arrière-plan, sans bloquer les lectures locales et sans fetch.
+Par défaut, les observations restent locales. Les références distantes locales ne prouvent pas l'état actuel de
+GitHub; une observation expirée, un objet manquant ou un worktree non autorisé reste explicitement incomplet.
+Une alerte de retard se fonde sur la première observation réelle durant le processus, jamais sur la date d'un commit.
+La file ne déclenche ni publication ni activation du produit. Voir [le contrat de cette livraison](../git-github-publication.md).
 
 Les graphiques montrent les tâches faites dans le temps, les jalons et les mouvements quotidiens : nouveaux lots,
 passages à « En cours », mises en revue et tâches terminées, avec une vue en tableau. Les mouvements couvrent tous
@@ -332,8 +344,10 @@ main (jamais ceux d'une branche) choisissent le registre lu.
    une session dans le nuage et déjà récupérée. Pour chacune : son registre (la copie de travail pour un arbre,
    changements non commités compris ; le dernier commit pour une branche), sa base commune avec main, son avance et
    son retard, ses fichiers suivis modifiés, ses nouveaux fichiers, et quand ils ont été écrits.
-3. **Rien d'autre** : ni GitHub, ni le réseau, ni les transcriptions des sessions, ni les autres dépôts. La CI n'y
-   paraît donc pas.
+3. **Accès local par défaut** : ni transcriptions des sessions ni autres dépôts. Avec `--github` en mode live,
+   le serveur peut lire les têtes de branches et les PR ouvertes du dépôt GitHub configuré, au moyen de `gh`.
+   Cette observation facultative reste en lecture seule, dans un cache séparé de cinq minutes, sans fetch.
+   Une observation expirée ou un objet absent demeure explicite. La CI n'est pas observée.
 
 ## Les registres
 

@@ -94,7 +94,7 @@ def live_options(arguments: list[str]) -> dict:
     if not isinstance(arguments, list) or not all(isinstance(word, str) for word in arguments):
         raise ValueError("dashboard arguments must be strings")
     options, error = cli.read_args(arguments)
-    if options is None or any(flag in options for flag in cli.SWITCHES):
+    if options is None or any(flag in options for flag in cli.SWITCHES if flag != "--github"):
         raise ValueError(error or "only live dashboard commands can be remembered")
     if not _absolute(options.get("--repo")):
         raise ValueError("a live dashboard needs --repo with an absolute path")
