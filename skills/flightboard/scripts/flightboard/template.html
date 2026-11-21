@@ -38,6 +38,15 @@ main{max-width:1308px;margin:auto;padding:18px 24px 60px}h2{font-size:19px;margi
 .publication-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:12px}
 .publication-cards .value{font-size:22px}.publication-queue{list-style:none;padding:0;display:grid;gap:7px}
 .publication-queue li{overflow-wrap:anywhere}.publication-queue a{color:var(--link)}
+.overview-status{background:var(--card);border:1px solid var(--line);border-left:5px solid var(--ready);border-radius:10px;padding:13px 16px;margin:0 0 12px;line-height:1.5}
+.overview-status strong{font-size:18px}.overview-status p{font-size:13px;color:var(--muted);margin:4px 0 0}
+.overview-status.partial{border-left-color:var(--blocked)}.overview-status.attention{border-left-color:var(--progress)}.overview-status.clear{border-left-color:var(--done)}
+.overview-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.overview-grid .tile{gap:9px}.overview-grid p{margin:0;overflow-wrap:anywhere}
+.overview-progress-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px 12px;font-size:14px}.overview-progress-row .sub{grid-column:1/-1}
+.prepared{margin:12px 0 18px;padding:12px 15px;background:var(--card);border:1px solid var(--line);border-radius:10px}.prepared>summary{font-weight:650}.prepared .lead{margin:9px 0}
+.prepared-action{padding:9px 0;border-top:1px solid var(--line);font-size:14px}.prepared-action>summary{color:var(--link)}.prepared-action p{overflow-wrap:anywhere}
+.prepared-action textarea{display:block;width:100%;resize:vertical;max-height:22rem;min-height:8rem;margin:8px 0;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:6px;padding:10px;font:13px/1.5 ui-monospace,Consolas,monospace}
+.prepared-action button{font:inherit;background:var(--soft);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:6px 10px;cursor:pointer}.copy-status{font-size:13px;color:var(--muted);margin-left:9px}
 .sessions{display:grid;grid-template-columns:repeat(auto-fill,minmax(370px,1fr));gap:12px}
 .session{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--act,var(--planned));border-radius:10px;padding:13px 15px;display:grid;gap:8px;align-content:start;min-width:0}
 .act-active{--act:var(--done)}.act-recent{--act:var(--ready)}.act-quiet,.act-unknown{--act:var(--planned)}
@@ -97,9 +106,9 @@ dialog h4{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spac
 button:focus-visible,summary:focus-visible,a:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
 footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
 @media(max-width:1100px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.kpis .hero{grid-column:1/-1}}
-@media(max-width:1000px){.charts,.split{grid-template-columns:1fr}}
+@media(max-width:1000px){.charts,.split,.overview-grid{grid-template-columns:1fr}}
 @media(max-width:640px){.live,.badge,.pill{white-space:normal;min-width:0}header{padding:16px;gap:12px}.mark{font-size:16px;padding:8px}h1{font-size:20px}.resume{font-size:15px}main{padding:16px 16px 48px}
-.sessions{grid-template-columns:1fr}.tile.hero .value{font-size:40px}.event{grid-template-columns:1fr;gap:2px}.wait .since{margin-left:0}}
+.sessions{grid-template-columns:1fr}.tile.hero .value{font-size:40px}.event{grid-template-columns:1fr;gap:2px}.wait b{white-space:normal;overflow-wrap:anywhere;min-width:0}.wait .since{margin-left:0}}
 </style>
 </head>
 <body>
@@ -111,6 +120,15 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
 </header>
 <main>
   <div id="banner"></div>
+  <section id="overview" class="fade" aria-labelledby="h-overview" hidden>
+    <h2 id="h-overview" class="sr" data-t="page.overview"></h2>
+    <div id="overview-banner" role="status"></div>
+    <div class="overview-grid"><div class="tile" id="overview-progress"></div><div class="tile" id="overview-evidence"></div></div>
+    <details class="prepared" data-key="prepared-actions" open>
+      <summary data-t="page.overview_actions"></summary><p class="lead" data-t="page.overview_actions_note"></p>
+      <div id="prepared-actions"></div>
+    </details>
+  </section>
   <section id="publication" aria-labelledby="h-publication" class="fade" hidden>
     <h2 id="h-publication" data-t="page.publication"></h2>
     <div class="publication-cards" id="publication-cards"></div>
@@ -391,6 +409,95 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
     const spoken = t(state === 'on' ? 'page.spoken_live' : state === 'loading' ? 'page.spoken_loading' : state === 'failed' ? 'page.spoken_failed' : state === 'lost' ? 'page.spoken_lost' : 'page.spoken_snapshot');
     if ($('live-state').textContent !== spoken) $('live-state').textContent = spoken;
     document.body.classList.toggle('stale', lost || Boolean(failed));
+  }
+
+  // ---- overview: observations remain separate from product validation; actions are copyable proposals only
+  const OVERVIEW_ACTIONS = ['repair_reading','review_publication','inspect_worktree','reconcile_tracking','reconcile_status','prepare_next'];
+  const OVERVIEW_BANNERS = ['reading_partial','status_conflict','local_work','main_drift','review_pending','remote_unverified','no_gap_observed','loading','unavailable','ledger_unavailable'];
+  const OVERVIEW_LIMITS = ['reading_partial','github_unverified','publication_unknown','queue_capped','task_conflicts','evidence_not_evaluated'];
+  function preparedPrompt(action) {
+    if (!action || !OVERVIEW_ACTIONS.includes(action.kind)) return '';
+    const quoted = value => JSON.stringify(String(value));
+    const lines = [t('page.overview_prompt_intro'), t('page.overview_action_' + action.kind),
+      t('page.overview_prompt_observed', {value:quoted(action.observed_at || data.generated_at || '')})];
+    for (const key of ['repository','ledger','main_head','target','branch','head','worktree']) {
+      if (typeof action[key] === 'string' && action[key]) lines.push(t('page.overview_prompt_' + key, {value:quoted(action[key])}));
+    }
+    if (Array.isArray(action.tasks) && action.tasks.length) lines.push(t('page.overview_prompt_tasks', {value:action.tasks.map(quoted).join(', ')}));
+    if (action.tasks_more) lines.push(t('page.overview_prompt_tasks_more', {n:action.tasks_more}));
+    const limits = Array.isArray(action.limits) ? action.limits.filter(code => OVERVIEW_LIMITS.includes(code)) : [];
+    if (limits.length) lines.push(t('page.overview_prompt_limits', {value:limits.map(code => t('page.overview_limit_' + code)).join('; ')}));
+    if (action.more) lines.push(t('page.overview_action_more', {n:action.more}));
+    lines.push(t('page.overview_prompt_safety'));
+    return lines.join('\n');
+  }
+  async function copyPreparedAction(id, event) {
+    if (!event || event.isTrusted !== true || lost || failed || data.main.state !== 'ok') return;
+    const overview = data.overview;
+    const action = overview && Array.isArray(overview.actions) ? overview.actions.find(item => item.id === id) : null;
+    const field = $('prepared-prompt-' + id), status = $('prepared-status-' + id);
+    if (!action || !field || !status) return;
+    const prompt = preparedPrompt(action);
+    if (!prompt) return;
+    field.value = prompt;
+    const current = () => !lost && !failed && data.main.state === 'ok' && $('prepared-prompt-' + id) === field;
+    try {
+      if (typeof navigator === 'undefined' || !navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') throw new Error('clipboard unavailable');
+      await navigator.clipboard.writeText(prompt);
+      if (current()) status.textContent = t('page.overview_copied');
+    } catch (error) {
+      if (!current()) return;
+      field.focus({preventScroll:true}); field.select();
+      status.textContent = t('page.overview_copy_manual');
+    }
+  }
+  function renderOverview() {
+    const overview = data.overview;
+    const available = overview && overview.schema_version === 1 && !lost && !failed && data.main.state === 'ok'
+      && overview.banner && !['loading','unavailable'].includes(overview.banner.state);
+    $('overview').hidden = !available;
+    if (!available) {
+      for (const id of ['overview-banner','overview-progress','overview-evidence','prepared-actions']) put($(id));
+      return;
+    }
+    const banner = overview.banner, code = OVERVIEW_BANNERS.includes(banner.code) ? banner.code : 'unavailable';
+    const state = ['partial','attention','unverified','clear'].includes(banner.state) ? banner.state : 'unverified';
+    put($('overview-banner'), h('div', {className:'overview-status ' + state},
+      h('strong', null, t('page.overview_banner_' + code)), h('p', null, t('page.overview_banner_note'))));
+    const progress = overview.progress || {}, main = progress.main || {}, live = progress.live || {};
+    const progressRow = (key, values) => h('div', {className:'overview-progress-row'}, h('strong', null, t(key)),
+      h('span', null, t('page.overview_done', {done:values.done || 0,total:values.total || 0})),
+      h('span', {className:'sub'}, t('page.overview_statuses', {review:values.review || 0,progress:values.in_progress || 0})));
+    put($('overview-progress'), h('h3', null, t('page.overview_progress')),
+      progress.available ? [progressRow('page.overview_main',main), progressRow('page.overview_live',live),
+        h('p', {className:'sub'}, t('page.overview_local_tasks', {local:progress.local_only_tasks || 0,uncommitted:progress.uncommitted_tasks || 0,conflicts:progress.conflicts || 0}))]
+        : h('p', {className:'sub'}, t('page.overview_progress_unavailable')),
+      h('p', {className:'sub'}, t('page.overview_progress_note')));
+    const evidence = overview.evidence || {}, evidenceState = ['references_only','unsupported','unavailable'].includes(evidence.state) ? evidence.state : 'unavailable';
+    const evidenceKinds = ['doc','tests','demo','receipt','measure','owner_decision','review','release'];
+    const refs = Array.isArray(evidence.references) ? evidence.references : [];
+    const countedReferences = Number.isSafeInteger(evidence.referenced_tasks) && Number.isSafeInteger(evidence.reference_count);
+    put($('overview-evidence'), h('h3', null, t('page.overview_evidence')),
+      h('p', null, t(evidenceState === 'references_only' && !countedReferences
+        ? 'page.overview_evidence_unquantified' : 'page.overview_evidence_' + evidenceState,
+      {tasks:evidence.referenced_tasks,n:evidence.reference_count})),
+      h('p', {className:'sub'}, t('page.overview_evidence_note')),
+      evidence.partial ? h('p', {className:'warn-text'}, t('page.overview_evidence_partial')) : null,
+      refs.length ? h('details', {className:'more', 'data-key':'overview-evidence'}, h('summary', null, t('page.overview_evidence_details')),
+        h('ul', null, refs.map(ref => h('li', null, h('strong', null, ref.task), ' · ', label('status',ref.status), ' · ',
+          evidenceKinds.includes(ref.kind) ? t('page.overview_evidence_kind_' + ref.kind) : '', ref.at ? ' · ' + day(ref.at) : '',
+          h('p', null, h('code', null, ref.ref)))), evidence.references_more ? h('li', null, t('page.overview_evidence_more', {n:evidence.references_more})) : null)) : null);
+    const actions = Array.isArray(overview.actions) ? overview.actions.filter(action => action && typeof action.id === 'string' && OVERVIEW_ACTIONS.includes(action.kind)) : [];
+    put($('prepared-actions'), actions.length ? actions.map(action => {
+      const id=action.id, fieldId='prepared-prompt-' + id;
+      return h('details', {className:'prepared-action', 'data-key':'prepared-action:' + id},
+        h('summary', null, t('page.overview_action_' + action.kind)),
+        h('p', {className:'sub'}, action.branch || action.target || action.worktree || ''),
+        h('label', {className:'sr',for:fieldId}, t('page.overview_prompt_label')),
+        h('textarea', {id:fieldId,readonly:true,rows:8,'data-focus':'prepared-prompt:' + id,spellcheck:'false'}, preparedPrompt(action)),
+        h('button', {id:'prepared-copy-' + id,type:'button','data-focus':'prepared-copy:' + id,onclick:event=>copyPreparedAction(id,event)}, t('page.overview_copy')),
+        h('span', {id:'prepared-status-' + id,className:'copy-status',role:'status'}, ''));
+    }) : h('p', {className:'empty'}, t('page.overview_no_action')));
   }
 
   function renderPublication() {
@@ -848,7 +955,7 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
     if (owner === 'hover' || owner === null) retip(hover);
   }
   const renderCharts = () => { if ($('progress').hidden) return; draw('burnup', renderBurnup); draw('milestones', renderMilestones); draw('daily', renderDaily); };
-  const render = () => redraw(() => { renderStatic(); renderHeader(); renderPublication(); renderWaiting(); renderSessions(); renderNext(); renderEvents(); renderKpis(); renderScope(); renderCharts(); renderFooter(); renderLive(); if (openedTask !== null) renderTask(openedTask); });
+  const render = () => redraw(() => { renderStatic(); renderHeader(); renderOverview(); renderPublication(); renderWaiting(); renderSessions(); renderNext(); renderEvents(); renderKpis(); renderScope(); renderCharts(); renderFooter(); renderLive(); if (openedTask !== null) renderTask(openedTask); });
   const keyOf = text => text.replace(/^\{"generated_at":"[^"]*",/, '{');
 
   // ---- live: read again; an error or timeout cannot leave old session verdicts looking current
@@ -898,7 +1005,8 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
         put($('events'), h('li', {className: 'empty'}, t('page.nothing_readable')));
         put($('pointer'));
         $('progress').hidden = true;
-        data = {...data, publication:null};
+        data = {...data, publication:null, overview:null};
+        renderOverview();
         renderPublication();
         if (openedTask !== null) {
           put($('task-body'), h('h3', {id: 'task-title'}, openedTask), h('p', {className: 'warn-text'}, t('page.task_unavailable')));

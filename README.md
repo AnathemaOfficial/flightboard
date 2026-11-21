@@ -26,6 +26,8 @@ go. flightboard is one local page, and a few lines of text for an agent, that an
   and what it may be called — "ready for your merge go" or "ended" only when its state allows it.
 - **Publication overview**: unique local commits, stacked branches, uncommitted folders, worktree coverage and
   independent alerts. Optional `--github` verifies branch heads and open PR metadata in a separate background cache.
+- **At a glance**: a summary banner, main versus local declared progress, explicit evidence limits, and prepared
+  agent briefs you can inspect and copy. These features reuse the existing snapshot without additional reads.
 - **The roadmap, live**: the task statuses each session declares in its own copy of your task file, overlaid on
   `main` before anything is merged, with conflicts between sessions shown, never resolved for you.
 - **Progress**: tasks done over time, milestones, and daily new tasks, starts, reviews and completions, each with a
@@ -45,6 +47,10 @@ Depth/count limits, unresolved folders and deleted files remain explicit; existi
 bounds remain in force.
 
 It works without any task file too: a repository without one gets the whole sessions view from git alone.
+
+See [overview, progress and prepared actions](docs/progress-and-prepared-actions.md).
+An optional [Assistant mode](docs/optional-assistant.md) is a separate design proposal; provider integration is not
+implemented or required by the dashboard.
 
 flightboard uses guarded Git and file reads, writes nothing in the repository or authorized worktree roots, and
 serves its page to this computer only. Its checks and remaining risks are described below. It needs

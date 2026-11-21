@@ -49,7 +49,7 @@ const checks = new AsyncFunction('assert', `
     sessions:[],waiting:[],tasks:{'T-1':task(title,status)},refresh_seconds:10,settings:{read_seconds:seconds}});
   let data=state(), openedTask='T-1', fetch;
   ${source.split('\n').find(line => line.startsWith('  let lastOk = '))}
-  const redraw = fn => fn();
+  let paints=0; const redraw = fn => { paints++; fn(); };
   const renderStatic=()=>{}, renderNext=()=>{}, renderEvents=()=>{}, renderKpis=()=>{}, renderScope=()=>{}, renderCharts=()=>{};
   const renderSessions=()=>{ put($('sessions'), data.sessions.map(trackingCard)); };
   const renderWaiting=()=>{ $('waiting').textContent=JSON.stringify(data.waiting); };
@@ -172,6 +172,25 @@ const checks = new AsyncFunction('assert', `
   const good=state('recovered','done'); fetch=async()=>response(good); await refresh();
   assert.equal(lost,false); assert.equal(failed,''); assert.equal($('live').className,'live on');
   assert.equal($('banner').textContent,'');
+
+  // Overview facts and prompts disappear on failure and recover; a clock-only snapshot must not redraw them.
+  const summary=state('overview','done');
+  summary.overview={schema_version:1,banner:{state:'attention',code:'local_work'},
+    progress:{available:true,main:{total:1,done:0},live:{total:2,done:1}},
+    evidence:{state:'unsupported'},actions:[{id:'stack',kind:'review_publication',repository:'fixture',
+      ledger:'tasks.json',observed_at:'',head:'a'.repeat(40),tasks:['T-1'],limits:['evidence_not_evaluated']}]};
+  fetch=async()=>response(summary);await refresh();
+  assert.equal($('overview').hidden,false);assert.match($('prepared-actions').textContent,/overview_action_review_publication/);
+  const beforeClockPaints=paints;
+  const clockOnly={...summary,generated_at:'2026-11-17T21:00:10-05:00'};
+  fetch=async()=>response(clockOnly);await refresh();
+  assert.equal(paints,beforeClockPaints,'root clock update with stable nested action context preserves dedup');
+  assert.equal(data.generated_at,clockOnly.generated_at,'copy handlers still see the current completed reading time');
+  fetch=async()=>{throw new Error('overview connection lost');};await refresh();
+  assert.equal(data.overview,null);assert.equal($('overview').hidden,true);
+  assert.equal($('prepared-actions').textContent,'');assert.equal($('overview-evidence').textContent,'');
+  fetch=async()=>response(clockOnly);await refresh();
+  assert.equal($('overview').hidden,false);assert.match($('prepared-actions').textContent,/overview_action_review_publication/);
 
   // Observation dates and notices are replaced by refreshed data and cleared on a failed refresh.
   const dated=state(); dated.generated_at='2026-11-17T21:00:00-05:00'; dated.sessions=[observed()];
