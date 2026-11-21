@@ -9,7 +9,9 @@ license: Apache-2.0
 flightboard reads the current Git repository, authorized worktrees and branches not yet in main, and reports their
 declared tasks, activity and what waits for the user. Claude Code, Codex and tools running Qwen, MiMo, MiniMax, Kimi
 or another model can use it when they provide a Git worktree/branch workflow. It reads no conversations, CI or
-provider APIs, and starts no desktop-chat automation. Its guarded reads write nothing in the repository or authorized
+model-provider APIs, and starts no desktop-chat automation. Optional `--github` reads GitHub branch and open-PR
+metadata through the existing `gh` login, with a separate five-minute background cache and no fetch. Without that
+option, all observations stay local. Its guarded reads write nothing in the repository or authorized
 worktree roots. It needs Python 3.12+ and git 2.41+, nothing else.
 
 Run it from the repository, any folder inside it, or one of the worktrees it reads (under `.claude/worktrees`, or a
@@ -84,6 +86,12 @@ fails, the page reports the failure and removes stale readiness verdicts. Report
 refresh before describing the current repository state.
 
 For an existing repository, read its current Git sessions and commits; no provider-session import or fetch is needed.
+For an explicitly requested Git/GitHub comparison, enable `--github` on the live server. The publication overview
+shows unique commits, grouped branch stacks, uncommitted work and working-file coverage independently of task status.
+Local tracking references are not current GitHub proof. Missing objects, incomplete worktree access and expired
+observations remain unknown. Never interpret the queue as authorization to commit, push or activate a product.
+`--snapshot` and `--resume` do not wait for a network observation. Publication delay starts at the first actual
+observation during the process lifetime, not at a commit date. See `docs/git-github-publication.md` in the repository.
 If the reading reports `too_many_worktrees`, inspect the count of registered admin entries with guarded filesystem
 reads, then choose an explicit `--max-worktrees N` large enough for that count (100 by default, 1 to 1000 allowed).
 For example, a verified larger set can use `--max-worktrees 300 --read-seconds 120`. The count and time bounds are

@@ -35,6 +35,9 @@ main{max-width:1308px;margin:auto;padding:18px 24px 60px}h2{font-size:19px;margi
 .wait b{white-space:nowrap}.wait .since{color:var(--muted);font-size:13px;margin-left:auto}
 .k-merge{--edge:var(--done)}.k-conflict,.k-alert{--edge:var(--blocked)}.k-check,.k-tracking{--edge:var(--review)}.k-review{--edge:var(--progress)}.k-session{--edge:var(--planned)}
 .pointer{color:var(--muted);font-size:13px;margin:8px 0 0}
+.publication-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:12px}
+.publication-cards .value{font-size:22px}.publication-queue{list-style:none;padding:0;display:grid;gap:7px}
+.publication-queue li{overflow-wrap:anywhere}.publication-queue a{color:var(--link)}
 .sessions{display:grid;grid-template-columns:repeat(auto-fill,minmax(370px,1fr));gap:12px}
 .session{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--act,var(--planned));border-radius:10px;padding:13px 15px;display:grid;gap:8px;align-content:start;min-width:0}
 .act-active{--act:var(--done)}.act-recent{--act:var(--ready)}.act-quiet,.act-unknown{--act:var(--planned)}
@@ -108,6 +111,16 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
 </header>
 <main>
   <div id="banner"></div>
+  <section id="publication" aria-labelledby="h-publication" class="fade" hidden>
+    <h2 id="h-publication" data-t="page.publication"></h2>
+    <div class="publication-cards" id="publication-cards"></div>
+    <details data-key="publication-coverage"><summary data-t="page.publication_coverage_details"></summary><ul id="publication-worktrees" class="publication-queue"></ul></details>
+    <ul class="waiting" id="publication-alerts" aria-label="Publication alerts"></ul>
+    <details id="publication-details" open data-key="publication"><summary data-t="page.publication_queue"></summary>
+      <ul class="publication-queue" id="publication-queue"></ul>
+    </details>
+    <p class="pointer" data-t="page.publication_note"></p>
+  </section>
   <section aria-labelledby="h-waiting" class="fade"><h2 id="h-waiting" data-t="page.waiting"></h2><ul class="waiting" id="waiting"></ul><p class="pointer" id="pointer"></p></section>
 
   <section aria-labelledby="h-sessions" class="fade"><h2 id="h-sessions" data-t="page.sessions"></h2>
@@ -378,6 +391,61 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
     const spoken = t(state === 'on' ? 'page.spoken_live' : state === 'loading' ? 'page.spoken_loading' : state === 'failed' ? 'page.spoken_failed' : state === 'lost' ? 'page.spoken_lost' : 'page.spoken_snapshot');
     if ($('live-state').textContent !== spoken) $('live-state').textContent = spoken;
     document.body.classList.toggle('stale', lost || Boolean(failed));
+  }
+
+  function renderPublication() {
+    const p = data.publication;
+    $('publication').hidden = !p;
+    if (!p) return;
+    const remote = p.remote || {}, main = p.main || {}, coverage = p.coverage || {}, pending = p.unpublished || {};
+    const worktreeNames = new Map((coverage.worktrees || []).map(tree => [tree.id, tree.name || tree.id]));
+    const names = ids => ids.map(id => worktreeNames.get(id) || id).join(' · ');
+    const source = value => t('page.publication_source_' + (value || 'unknown'));
+    const card = (title, value, ...detail) => h('div', {className:'tile'},
+      h('span', {className:'label'}, t(title)), h('strong', {className:'value'}, value),
+      detail.filter(Boolean).map(text => h('span', {className:'sub'}, text)));
+    put($('publication-cards'),
+      card('page.publication_local', t('page.publication_main_' + (main.state || 'unknown')),
+        main.ahead !== null && main.ahead !== undefined ? t('page.publication_delta', {ahead:main.ahead,behind:main.behind || 0}) : '',
+        source(main.comparison_source)),
+      card('page.publication_remote', t('page.publication_remote_' + (remote.state || 'disabled')),
+        remote.repository || '', remote.last_success_at ? t('page.publication_checked', {when:stamp(remote.last_success_at)}) : '',
+        remote.error ? t('page.publication_remote_error_detail') : ''),
+      card('page.publication_coverage', t('page.publication_covered', {read:coverage.working_files_read || 0,total:coverage.worktrees_discovered || 0}),
+        t('page.publication_unread', {n:coverage.working_files_unknown || 0}),
+        Object.entries(coverage.reasons || {}).map(([reason,n]) => t('page.publication_reason_' + reason) + ': ' + n).join(' · ')),
+      card('page.publication_pending', pending.state === 'exact'
+        ? t('page.publication_commits', {n:pending.unique_commits}) : t('page.publication_candidates', {n:pending.candidate_commits || 0}),
+        source(pending.comparison_source), pending.state !== 'exact' ? t('page.publication_incomplete') : ''));
+    $('publication-alerts').setAttribute('aria-label', t('page.publication_alerts'));
+    put($('publication-worktrees'), (coverage.worktrees || []).map(tree => h('li', {className:'item'},
+      h('strong', {title:tree.id}, tree.name || tree.id), h('p', null, t('page.publication_files_' + tree.files_state),
+        tree.reason ? ' · ' + t('page.publication_reason_' + tree.reason) : '',
+        ' · ', t('page.publication_ledger_' + tree.ledger_state)))));
+    put($('publication-alerts'), (p.alerts || []).map(alert => h('li', {className:'wait ' + (alert.severity === 'warning' ? 'k-alert' : 'k-check')},
+      h('b', null, t('page.publication_alert_' + alert.code)), alert.detail ? ' ' + alert.detail : '',
+      alert.first_seen_at ? h('span', {className:'since'}, t('page.publication_first_seen'), ' ', live(alert.first_seen_at)) : null)));
+    const safeRepo = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_.-]{1,100}$/.test(remote.repository || '')
+      && !['.', '..'].includes((remote.repository || '').split('/')[1]);
+    put($('publication-queue'), (p.queue || []).length ? p.queue.map(item => h('li', {className:'item'},
+      h('strong', null, (item.branches || []).join(' · ') || names(item.worktrees || []) || (item.head || '').slice(0,12)),
+      item.branches_more || item.worktrees_more ? h('p', null, t('page.publication_aliases_more',
+        {branches:item.branches_more || 0,worktrees:item.worktrees_more || 0})) : null,
+      h('p', null, item.kind === 'review' ? t('page.publication_pr') : item.kind === 'dirty'
+        ? item.files === null || item.files === undefined ? t('page.publication_files_unknown') : t('page.publication_files', {n:item.files})
+        : item.commit_count !== null && item.commit_count !== undefined
+          ? t('page.publication_commits', {n:item.commit_count}) : t('page.publication_candidates', {n:item.candidate_count || 0}),
+        ' · ', t('page.publication_queue_' + (item.state || 'unknown')),
+        item.comparison_source ? ' · ' + source(item.comparison_source) : ''),
+      item.head ? h('code', null, item.head.slice(0,12)) : null,
+      (item.worktrees || []).length && (item.branches || []).length ? h('p', null, names(item.worktrees)) : null,
+      (item.pull_requests || []).map(pr => safeRepo && Number.isSafeInteger(pr.number) && pr.number > 0
+        ? h('p', null, h('a', {href:'https://github.com/' + remote.repository + '/pull/' + pr.number,rel:'noreferrer',target:'_blank'},
+          '#' + pr.number + ' · ' + (pr.title || t('page.publication_pr')))) : null),
+      item.pull_requests_more ? h('p', null, t('page.publication_pr_more', {n:item.pull_requests_more})) : null))
+      : h('li', {className:'empty'}, t(pending.state === 'exact' && !coverage.working_files_unknown
+        ? 'page.publication_empty' : 'page.publication_no_verified_queue')),
+      p.queue_more ? h('li', {className:'pointer'}, t('page.publication_queue_more', {n:p.queue_more})) : null);
   }
 
   // ---- what waits for the owner
@@ -776,7 +844,7 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
     if (owner === 'hover' || owner === null) retip(hover);
   }
   const renderCharts = () => { if ($('progress').hidden) return; draw('burnup', renderBurnup); draw('milestones', renderMilestones); draw('daily', renderDaily); };
-  const render = () => redraw(() => { renderStatic(); renderHeader(); renderWaiting(); renderSessions(); renderNext(); renderEvents(); renderKpis(); renderScope(); renderCharts(); renderFooter(); renderLive(); if (openedTask !== null) renderTask(openedTask); });
+  const render = () => redraw(() => { renderStatic(); renderHeader(); renderPublication(); renderWaiting(); renderSessions(); renderNext(); renderEvents(); renderKpis(); renderScope(); renderCharts(); renderFooter(); renderLive(); if (openedTask !== null) renderTask(openedTask); });
   const keyOf = text => text.replace(/^\{"generated_at":"[^"]*",/, '{');
 
   // ---- live: read again; an error or timeout cannot leave old session verdicts looking current
@@ -826,6 +894,8 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
         put($('events'), h('li', {className: 'empty'}, t('page.nothing_readable')));
         put($('pointer'));
         $('progress').hidden = true;
+        data = {...data, publication:null};
+        renderPublication();
         if (openedTask !== null) {
           put($('task-body'), h('h3', {id: 'task-title'}, openedTask), h('p', {className: 'warn-text'}, t('page.task_unavailable')));
         }

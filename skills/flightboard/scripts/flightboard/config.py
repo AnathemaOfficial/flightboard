@@ -32,6 +32,7 @@ class Settings:
     ledger_path: str | None = None  # relative to the repository; the kind's default when None
     main: str | None = None  # the main branch; main, then master, then the main checkout's branch when None
     remote: str = "origin"
+    github: bool = False  # explicit read-only GitHub observation through existing gh authentication
     worktrees: tuple[tuple[str, ...], ...] = WORKTREES  # .claude/worktrees always, then the folders named
     external_worktrees: tuple[Path, ...] = ()  # explicit local roots only; never discovered from repository content
     kept: tuple[str, ...] = ()  # folders whose ignored files a merged session must not lose (say, notes)
@@ -47,7 +48,8 @@ class Settings:
         return {"worktrees": ["/".join(parts) for parts in self.worktrees], "remote": self.remote,
                 "external_worktree_roots": len(self.external_worktrees),
                 "main": self.main or "", "active_minutes": self.active_minutes, "stale_days": self.stale_days,
-                "kept": list(self.kept), "read_seconds": self.read_seconds, "max_worktrees": self.max_worktrees}
+                "kept": list(self.kept), "read_seconds": self.read_seconds, "max_worktrees": self.max_worktrees,
+                "github": self.github}
 
 
 def folder(text: str) -> tuple[str, ...] | None:
@@ -120,6 +122,7 @@ def valid(settings: Settings) -> bool:
         and (settings.ledger_path is None or ledger_path(settings.ledger_path) == settings.ledger_path) \
         and (settings.main is None or branch(settings.main) == settings.main) \
         and remote(settings.remote) == settings.remote \
+        and type(settings.github) is bool \
         and all(folder("/".join(parts)) == parts for parts in settings.worktrees) \
         and all(isinstance(path, Path) and external_root(path) == path for path in settings.external_worktrees) \
         and all(folder(name) is not None for name in settings.kept) \

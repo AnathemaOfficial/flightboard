@@ -10,6 +10,13 @@ from tests.fixtures import PACKAGE, ROOT
 
 class LivePageTest(unittest.TestCase):
     @unittest.skipUnless(shutil.which("node"), "optional Node runtime for JavaScript regression checks")
+    def test_publication_queue_refresh_preserves_uncertainty_and_safe_links(self):
+        result = subprocess.run([shutil.which("node"), str(ROOT / "tests" / "publication_page_checks.cjs"),
+                                 str(PACKAGE / "template.html")], capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("5 publication-page checks passed", result.stdout)
+
+    @unittest.skipUnless(shutil.which("node"), "optional Node runtime for JavaScript regression checks")
     def test_daily_chart_includes_new_tasks_and_starts(self):
         result = subprocess.run([shutil.which("node"), str(ROOT / "tests" / "daily_chart_checks.cjs"),
                                  str(PACKAGE / "template.html")], capture_output=True, text=True, timeout=15)

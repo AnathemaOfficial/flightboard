@@ -37,6 +37,7 @@ MAX_REFS = 50_000
 MAX_OUTPUT_BYTES = 64_000_000
 MAX_COMMITS = 8
 MAX_SESSION_COMMITS = 1000  # inference needs the whole bounded range, independently of the eight displayed commits
+MAX_PUBLICATION_COMMITS = 2000
 MAX_COMMIT_SUBJECT = 4000  # a longer subject leaves inference incomplete, never silently ready
 MAX_ENTRIES = 2000
 MAX_STAGED = 50_000  # index entries checked before git status; a bigger index is not read at all
@@ -204,10 +205,13 @@ def parse_refs(raw: bytes, remote: str = "origin") -> dict[str, dict]:
     refs = {}
     for line in raw.decode("utf-8", errors="replace").split("\n"):
         parts = line.split("\0")
-        if len(parts) in (3, 4) and parts[0].startswith(prefixes) and FULL_SHA.fullmatch(parts[1]):
+        if len(parts) in (3, 4, 7) and parts[0].startswith(prefixes) and FULL_SHA.fullmatch(parts[1]):
             refs[parts[0]] = {"sha": parts[1], "at": int(parts[2]) if parts[2].isdigit() else 0}
-            if len(parts) == 4 and parts[3]:
+            if len(parts) >= 4 and parts[3]:
                 refs[parts[0]]["symref"] = parts[3]
+            if len(parts) == 7:
+                refs[parts[0]].update(upstream=clean(parts[4], 250),
+                                      upstream_remote=clean(parts[5], 200), upstream_ref=clean(parts[6], 250))
             if len(refs) > MAX_REFS:
                 raise GitFailed("too many branch refs")
     return refs
@@ -391,7 +395,8 @@ class Git:
         only = (f"--no-merged={sha(unmerged_from)}",) if unmerged_from else ()
         return parse_refs(self.run(common, ("for-each-ref", *only,
                                             f"--count={MAX_REFS + 1}",
-                                            "--format=%(refname)%00%(objectname)%00%(committerdate:unix)%00%(symref)",
+                                            "--format=%(refname)%00%(objectname)%00%(committerdate:unix)%00%(symref)"
+                                            "%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref)",
                                             "refs/heads/", f"refs/remotes/{self.remote}/")), self.remote)
 
     def commits_exist(self, common: Path, shas: list[str]) -> list[bool]:
@@ -399,6 +404,30 @@ class Git:
         feed = "".join(f"{sha(value)}\n" for value in shas).encode("ascii")
         sizes = parse_batch_check(self.run(common, ("cat-file", "--batch-check"), stdin=feed), len(shas), "commit")
         return [size is not None for size in sizes]
+
+    def publication_graph(self, common: Path, tips: list[str], published: list[str],
+                          limit: int = MAX_PUBLICATION_COMMITS) -> dict:
+        """One bounded union of local commits absent from every observed published head. Never fetch."""
+        if type(limit) is not int or not 1 <= limit <= MAX_PUBLICATION_COMMITS:
+            raise GitRefused("publication count refused")
+        tips, published = sorted(set(tips)), sorted(set(published))
+        if len(tips) + len(published) > 2 * MAX_REFS:
+            raise GitRefused("too many publication tips")
+        if not tips:
+            return {"parents": {}, "complete": True, "reason": ""}
+        feed = "".join(sha(value) + "\n" for value in tips)
+        feed += "".join("^" + sha(value) + "\n" for value in published)
+        raw = self.run(common, ("rev-list", "--parents", f"-n{limit + 1}", "--stdin", "--"),
+                       stdin=feed.encode("ascii"))
+        found = {}
+        for line in raw.decode("ascii", errors="replace").splitlines():
+            parts = line.split()
+            if not parts or not all(FULL_SHA.fullmatch(part) for part in parts):
+                raise GitFailed("publication graph unreadable")
+            found[parts[0]] = tuple(parts[1:])
+        cut = len(found) > limit
+        return {"parents": dict(list(found.items())[:limit]), "complete": not cut,
+                "reason": "cut" if cut else ""}
 
     def counts(self, common: Path, main: str, tip: str) -> tuple[int, int]:
         """(behind, ahead): the commits of main the tip lacks, and the tip's own commits main lacks."""

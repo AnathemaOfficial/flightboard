@@ -76,6 +76,12 @@ class CatalogTest(unittest.TestCase):
         asked = set(re.findall(r"\btn?\('(page\.[\w.]+)'", template))
         asked |= set(re.findall(r'data-t="(page\.[\w.]+)"', template))
         asked |= set(re.findall(r"'(page\.[\w.]+)'", template))
+        prefixes = set(re.findall(r"'(page\.[\w.]+_)'\s*\+", template))
+        for prefix in prefixes:
+            expanded = {key for key in M.PAGE["en"] if key.startswith(prefix) and key != prefix}
+            self.assertTrue(expanded, prefix)
+            asked.discard(prefix)
+            asked |= expanded
         self.assertTrue(asked)
         self.assertFalse(sorted(asked - set(M.PAGE["en"])))
         groups = set(re.findall(r"\blabel\('(\w+)'", template))

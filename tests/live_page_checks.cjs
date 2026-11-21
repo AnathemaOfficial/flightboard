@@ -17,7 +17,7 @@ const code = [between('  function renderTask(id)', '  function openTask(id)'),
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const checks = new AsyncFunction('assert', `
   const nodes = new Map();
-  const $ = id => { if (!nodes.has(id)) nodes.set(id, {id, textContent:'', className:'', children:[]}); return nodes.get(id); };
+  const $ = id => { if (!nodes.has(id)) nodes.set(id, {id, textContent:'', className:'', children:[], setAttribute(){}}); return nodes.get(id); };
   ${source.split('\n').find(line => line.startsWith('  const own = '))}
   const h = (tag, props, ...children) => ({tag, props, children});
   const put = (node, ...children) => {
@@ -157,6 +157,8 @@ const checks = new AsyncFunction('assert', `
   pending[0](response(state('late old response','planned'))); await first;
   assert.equal(data.tasks['T-1'].title,'latest');
 
+  data.publication={remote:{state:'fresh'},main:{state:'equal'},coverage:{},unpublished:{state:'exact',unique_commits:0},queue:[],alerts:[]};
+  renderPublication(); assert.equal($('publication').hidden,false);
   fetch=async(url, options)=>new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>reject(new Error('aborted'))));
   const stalled=refresh();
   const timeout=Array.from(timers.values()).find(entry=>entry.delay===20000);
@@ -165,6 +167,7 @@ const checks = new AsyncFunction('assert', `
   assert.match($('task-body').textContent,/page.task_unavailable/);
   assert.match($('waiting').textContent,/page.nothing_readable/);
   assert.equal($('progress').hidden,true);
+  assert.equal($('publication').hidden,true,'network failure must remove old publication verdicts');
 
   const good=state('recovered','done'); fetch=async()=>response(good); await refresh();
   assert.equal(lost,false); assert.equal(failed,''); assert.equal($('live').className,'live on');

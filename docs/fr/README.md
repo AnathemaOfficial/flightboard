@@ -16,6 +16,15 @@ flightboard réunit le dépôt principal, ses arbres de travail autorisés et le
 fichier de tâches, il compare les déclarations de chaque session à la feuille de route de `main` avant toute fusion.
 Sans fichier de tâches, il fournit la vue des sessions à partir de Git seul.
 
+La section **Git / GitHub et publication** montre les commits locaux distincts, les piles de branches,
+les fichiers non commités, les worktrees non lus et les alertes indépendantes du statut des lots.
+L'option `--github` active une observation en lecture seule des branches et PR ouvertes avec la connexion `gh`
+existante. Son cache de cinq minutes fonctionne en arrière-plan, sans bloquer les lectures locales et sans fetch.
+Par défaut, les observations restent locales. Les références distantes locales ne prouvent pas l'état actuel de
+GitHub; une observation expirée, un objet manquant ou un worktree non autorisé reste explicitement incomplet.
+Une alerte de retard se fonde sur la première observation réelle durant le processus, jamais sur la date d'un commit.
+La file ne déclenche ni publication ni activation du produit. Voir [le contrat de cette livraison](../git-github-publication.md).
+
 Les graphiques montrent les tâches faites dans le temps, les jalons et les mouvements quotidiens : nouveaux lots,
 passages à « En cours », mises en revue et tâches terminées, avec une vue en tableau. Les mouvements couvrent tous
 les périmètres ; un lot peut compter plusieurs mouvements. Les barres des sessions représentent leurs déclarations
