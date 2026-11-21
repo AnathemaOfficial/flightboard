@@ -8,6 +8,9 @@ SPDX-FileCopyrightText: 2026 Technologies CoreXalt Inc.
 
 [English](../../README.md)
 
+[Télécharger une release installable](https://github.com/AnathemaOfficial/flightboard/releases) ·
+[Vérification des archives et politique de mise à jour](../releases.md)
+
 **Un tableau local en lecture seule de tes sessions d'agents en parallèle : leurs changements dans Git, leur
 avancement déclaré et ce qui attend ton intervention.**
 
@@ -341,8 +344,10 @@ main (jamais ceux d'une branche) choisissent le registre lu.
    une session dans le nuage et déjà récupérée. Pour chacune : son registre (la copie de travail pour un arbre,
    changements non commités compris ; le dernier commit pour une branche), sa base commune avec main, son avance et
    son retard, ses fichiers suivis modifiés, ses nouveaux fichiers, et quand ils ont été écrits.
-3. **Rien d'autre** : ni GitHub, ni le réseau, ni les transcriptions des sessions, ni les autres dépôts. La CI n'y
-   paraît donc pas.
+3. **Accès local par défaut** : ni transcriptions des sessions ni autres dépôts. Avec `--github` en mode live,
+   le serveur peut lire les têtes de branches et les PR ouvertes du dépôt GitHub configuré, au moyen de `gh`.
+   Cette observation facultative reste en lecture seule, dans un cache séparé de cinq minutes, sans fetch.
+   Une observation expirée ou un objet absent demeure explicite. La CI n'est pas observée.
 
 ## Les registres
 

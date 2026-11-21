@@ -8,6 +8,9 @@ SPDX-FileCopyrightText: 2026 Technologies CoreXalt Inc.
 
 # flightboard
 
+[Download an installable release](https://github.com/AnathemaOfficial/flightboard/releases) ·
+[Package verification and update policy](docs/releases.md)
+
 [Français](docs/fr/README.md)
 
 **A read-only board of your parallel coding-agent sessions: what each one changed in your roadmap, and what waits for
