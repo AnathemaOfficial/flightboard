@@ -103,6 +103,96 @@ class OverviewTest(unittest.TestCase):
                 self.assertEqual(result["banner"]["state"], "clear")
                 self.assertIn("prepare_next", [item["kind"] for item in result["actions"]])
 
+    def test_a_real_git_only_worktree_does_not_require_an_unconfigured_ledger(self):
+        head = "a" * 40
+        session = {"id": "checkout", "name": "demo", "kind": "checkout", "ahead": 0, "ledger": "none",
+                   "files_read": True, "file_activity_complete": True}
+        publication = load("publication").build(
+            NOW, {"refs/heads/main": {"sha": head}},
+            [{"id": "checkout", "tip": head, "ref": "refs/heads/main", "working_directory_readable": True}],
+            [session], {"state": "fresh", "complete": True, "heads": {"main": head}},
+            {"parents": {}, "complete": True, "comparison_source": "github"}, {"state": "equal"}, {})
+        self.assertEqual(publication["coverage"]["working_ledgers_unknown"], 1)
+        result = self.build(context(ledger=None, ledger_adapter=None, publication=publication), sessions=[session])
+        self.assertEqual(result["banner"], {"state": "unverified", "code": "ledger_unavailable"})
+        self.assertNotIn("repair_reading", [item["kind"] for item in result["actions"]])
+
+    def test_git_only_ignores_ledger_coverage_fields_but_configured_adapters_require_them(self):
+        for fields in ({}, {"working_ledgers_read": 5, "working_ledgers_unknown": 0},
+                       {"working_ledgers_read": False, "working_ledgers_unknown": "unknown"},
+                       {"working_ledgers_read": 0, "working_ledgers_unknown": 1}):
+            with self.subTest(fields=fields):
+                found = context(ledger=None, ledger_adapter=None)
+                found["publication"]["coverage"] = {"worktree_files_total": 1, "working_files_read": 1,
+                                                     "working_files_unknown": 0, **fields}
+                session = {"id": "checkout", "kind": "checkout", "ledger": "none", "files_read": True,
+                           "file_activity_complete": True}
+                self.assertEqual(self.build(found, sessions=[session])["banner"]["code"], "ledger_unavailable")
+                found["ledger_adapter"] = load("ledgers.tasks").TasksLedger("tasks.json")
+                result = self.build(found, sessions=[session])
+                self.assertEqual(result["banner"]["state"], "partial")
+                self.assertEqual(result["actions"][0]["kind"], "repair_reading")
+
+    def test_git_only_still_reports_file_and_generic_reading_problems(self):
+        for problem in ({"files_read": False}, {"file_activity_complete": False},
+                        {"reason": "commit_history_unreadable"}, {"error": "read error"}, {"operation": "merge"}):
+            with self.subTest(problem=problem):
+                session = {"id": "checkout", "kind": "checkout", "ledger": "none", "files_read": True,
+                           "file_activity_complete": True, **problem}
+                result = self.build(context(ledger=None, ledger_adapter=None), sessions=[session])
+                self.assertEqual(result["banner"]["state"], "partial")
+                self.assertEqual(result["actions"][0]["kind"], "repair_reading")
+
+    def test_known_stashed_work_prevents_a_clear_banner_without_dirty_files_or_pending_commits(self):
+        item = {"kind": "branch", "ref": "refs/heads/topic"}
+        held = load("held")
+        state = held.stash_states([item], held.stashed([{"via": "WIP on topic: aaaaaaa saved work"}]),
+                                  "refs/remotes/origin/")[0]
+        self.assertEqual(state, "stashed")
+        session = {"id": "topic", "kind": "branch", "ahead": 0, "stash": state}
+        self.assertEqual(self.build(sessions=[session])["banner"], {"state": "attention", "code": "local_work"})
+        session["stash"] = held.stash_states([item], held.stashed([]), "refs/remotes/origin/")[0]
+        self.assertEqual(session["stash"], "")
+        self.assertEqual(self.build(sessions=[session])["banner"]["state"], "clear")
+
+    def test_unreadable_stash_is_partial_only_for_present_sessions(self):
+        held = load("held")
+        for kind in ("checkout", "worktree", "branch", "remote"):
+            with self.subTest(kind=kind):
+                state = held.stash_states([{"kind": kind}], held.stashed(None), "refs/remotes/origin/")[0]
+                self.assertEqual(state, "unknown")
+                session = {"id": "topic", "kind": kind, "ahead": 0, "stash": state,
+                           "files_read": True, "file_activity_complete": True}
+                result = self.build(sessions=[session], nexts=[{"id": "NEXT-1"}])
+                self.assertEqual(result["banner"], {"state": "partial", "code": "reading_partial"})
+                self.assertEqual(result["actions"][0]["kind"], "repair_reading")
+                self.assertNotIn("prepare_next", [item["kind"] for item in result["actions"]])
+                session["gone"] = True
+                result = self.build(sessions=[session])
+                self.assertEqual(result["banner"]["state"], "clear")
+                self.assertEqual(result["actions"], [])
+
+    def test_unmatched_stash_is_global_work_without_an_invented_session_target(self):
+        held = load("held")
+        state = held.stash_states([{"kind": "branch", "ref": "refs/heads/topic"}],
+                                  held.stashed([{"via": "opaque stash"}]), "refs/remotes/origin/")[0]
+        self.assertEqual(state, "unmatched")
+        result = self.build(sessions=[{"id": "topic", "kind": "branch", "ahead": 0, "stash": state}])
+        self.assertEqual(result["banner"], {"state": "attention", "code": "local_work"})
+        self.assertEqual(result["actions"], [])
+
+    def test_retained_detached_work_prevents_clear_even_without_pending_refs_or_dirty_files(self):
+        held = load("held")
+        item = {"moves": {"dropped": ("b" * 40,)}}
+        retained = held.left_behind(item, lambda values: set(values), lambda commit: False)
+        self.assertEqual(retained, 1)
+        session = {"id": "worker", "kind": "worktree", "ahead": 0, "left_behind": retained,
+                   "files_read": True, "file_activity_complete": True}
+        self.assertEqual(self.build(sessions=[session])["banner"], {"state": "attention", "code": "local_work"})
+        session["left_behind"] = held.left_behind(item, lambda values: set(values), lambda commit: True)
+        self.assertEqual(session["left_behind"], 0)
+        self.assertEqual(self.build(sessions=[session])["banner"]["state"], "clear")
+
     def test_gone_sessions_do_not_turn_an_unreadable_old_folder_into_a_current_read_failure(self):
         for kind in ("checkout", "worktree", "branch", "remote"):
             with self.subTest(kind=kind):
@@ -222,6 +312,32 @@ class OverviewTest(unittest.TestCase):
         self.assertTrue(all(item["repository"] == "demo" and item["main_head"] == "a" * 40 for item in first))
         self.assertTrue(all(item["observed_at"] == "" for item in first))
         self.assertTrue(all("command" not in item and "prompt" not in item for item in first))
+
+    def test_stacked_publication_targets_the_tip_not_an_ancestor_alias(self):
+        ancestor, tip, main = "a" * 40, "b" * 40, "c" * 40
+        trees = [{"id": "a-base-worktree", "tip": ancestor, "working_directory_readable": True},
+                 {"id": "z-top-worktree", "tip": tip, "working_directory_readable": True}]
+        mapped = [{"id": tree["id"], "name": tree["id"], "kind": "worktree", "head": tree["tip"][:7],
+                   "branch": "a-base" if tree["tip"] == ancestor else "z-top", "files_read": True,
+                   "file_activity_complete": True, "ledger": "ok"} for tree in trees]
+        for sessions in ([], mapped):
+            with self.subTest(session_mapping=bool(sessions)):
+                publication = load("publication").build(
+                    NOW, {"refs/heads/main": {"sha": main}, "refs/heads/a-base": {"sha": ancestor},
+                          "refs/heads/z-top": {"sha": tip}}, trees, sessions,
+                    {"state": "fresh", "complete": True, "heads": {"main": main}},
+                    {"parents": {ancestor: (main,), tip: (ancestor,)}, "complete": True,
+                     "comparison_source": "github"}, {"state": "equal"}, {})
+                row = publication["queue"][0]
+                self.assertEqual(row["branches"], ["a-base", "z-top"])
+                self.assertEqual(row["worktrees"], ["a-base-worktree", "z-top-worktree"])
+                found = context(publication=publication)
+                action = next(item for item in self.build(found, sessions=sessions)["actions"]
+                              if item["kind"] == "review_publication")
+                self.assertEqual(action["head"], tip)
+                self.assertEqual(action["target"], tip)
+                self.assertEqual(action["branch"], "")
+                self.assertEqual(action["worktree"], "")
 
     def test_overview_does_no_io_and_does_not_mutate_the_snapshot(self):
         found = context()

@@ -98,21 +98,25 @@ def _evidence(ledger: dict | None, adapter: object) -> dict:
 
 def _reading_partial(context: dict, sessions: list[dict], publication: dict) -> bool:
     ledger, limits = context.get("ledger"), context.get("limits", {})
+    has_adapter = context.get("ledger_adapter") is not None
     coverage = publication.get("coverage", {})
     if context.get("planted") or context.get("ledger_missing") or (ledger is not None and not ledger.get("valid")):
         return True
     if any(limits.get(key) for key in ("branches_cut", "branches_unread", "history_cut", "history_unread")):
         return True
     if publication:
-        required = ("worktree_files_total", "working_files_read", "working_files_unknown",
-                    "working_ledgers_read", "working_ledgers_unknown")
+        required = ("worktree_files_total", "working_files_read", "working_files_unknown")
+        if has_adapter:
+            required += ("working_ledgers_read", "working_ledgers_unknown")
         if any(type(coverage.get(key)) is not int or coverage[key] < 0 for key in required):
             return True
-        if coverage["working_files_read"] + coverage["working_files_unknown"] != coverage["worktree_files_total"] \
-                or coverage["working_ledgers_read"] + coverage["working_ledgers_unknown"] \
+        if coverage["working_files_read"] + coverage["working_files_unknown"] != coverage["worktree_files_total"]:
+            return True
+        if has_adapter and coverage["working_ledgers_read"] + coverage["working_ledgers_unknown"] \
                 != coverage["worktree_files_total"]:
             return True
-    if _number(coverage.get("working_files_unknown")) or _number(coverage.get("working_ledgers_unknown")):
+    if _number(coverage.get("working_files_unknown")) \
+            or (has_adapter and _number(coverage.get("working_ledgers_unknown"))):
         return True
     if publication.get("unpublished", {}).get("state") == "partial" \
             and publication.get("remote", {}).get("state") == "fresh" \
@@ -121,7 +125,8 @@ def _reading_partial(context: dict, sessions: list[dict], publication: dict) -> 
     for session in sessions:
         if session.get("gone"):
             continue
-        if session.get("reason") or session.get("error") or session.get("operation"):
+        if session.get("reason") or session.get("error") or session.get("operation") \
+                or session.get("stash") == "unknown":
             return True
         if session.get("kind") in ("checkout", "worktree") \
                 and (not session.get("files_read") or not session.get("file_activity_complete")):
@@ -135,7 +140,8 @@ def _banner(context: dict, progress: dict, sessions: list[dict], publication: di
     elif progress["conflicts"]:
         state, code = "attention", "status_conflict"
     elif any(_number(publication.get("unpublished", {}).get(key)) for key in ("unique_commits", "candidate_commits")) \
-            or any(_dirty(session) for session in sessions):
+            or any(_dirty(session) or session.get("stash") in ("stashed", "unmatched")
+                   or _number(session.get("left_behind")) for session in sessions):
         state, code = "attention", "local_work"
     elif publication.get("main", {}).get("state") in ("ahead", "behind", "diverged"):
         state, code = "attention", "main_drift"
@@ -199,11 +205,10 @@ def _actions(context: dict, live: dict, sessions: list[dict], waiting: list[dict
     queue.sort(key=lambda row: (row.get("kind") != "commits", row.get("id", "")))
 
     def publication_action(row):
-        branches, worktrees = row.get("branches", []), row.get("worktrees", [])
+        # Stack aliases include ancestor tips; their first branch/worktree need not hold this head.
+        head = row.get("head", "")
         return action("review_publication", row.get("id", row.get("head", "")),
-                      target=branches[0] if branches else row.get("id", ""),
-                      branch=branches[0] if branches else "", head=row.get("head", ""),
-                      worktree=worktrees[0] if worktrees else "", more=publication.get("queue_more", 0))
+                      target=head, head=head, more=publication.get("queue_more", 0))
 
     if queue:
         prepared.append(publication_action(queue[0]))
