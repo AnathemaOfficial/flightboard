@@ -168,6 +168,34 @@ def _remote_assets(release: object, expected: dict[str, dict], *, complete: bool
     return seen
 
 
+def _resumable_assets(release: dict, expected: dict[str, dict], tag: str, revision: str) -> tuple[set[str], list[int]]:
+    """Validate a matching draft completely before identifying empty failed uploads."""
+    if release.get("tag_name") != tag or release.get("target_commitish") != revision:
+        raise PublishError("Existing draft targets another tag or revision")
+    assets = release.get("assets")
+    if not isinstance(assets, list):
+        raise PublishError("Invalid release metadata")
+    names, retained, failed = set(), [], []
+    for asset in assets:
+        if not isinstance(asset, dict) or not isinstance(asset.get("name"), str):
+            raise PublishError("Invalid release asset")
+        name = asset["name"]
+        if name in names or name not in expected:
+            raise PublishError("Unexpected or duplicate release asset; nothing will be overwritten")
+        names.add(name)
+        if asset.get("state") != "starter":
+            retained.append(asset)
+            continue
+        identity = asset.get("id")
+        if type(asset.get("size")) is not int or asset["size"] != 0 \
+                or type(identity) is not int or identity <= 0 \
+                or sum(isinstance(other, dict) and other.get("id") == identity for other in assets) != 1:
+            raise PublishError("Failed upload is not confirmed empty and unambiguous")
+        failed.append(identity)
+    present = _remote_assets({**release, "assets": retained}, expected, complete=False)
+    return present, failed
+
+
 def _release(gh, endpoint: str, repository: str, tag: str, *, optional=False):
     found = gh.get(endpoint + "/releases/tags/" + tag, optional=True)
     if found is not None:
@@ -192,13 +220,16 @@ def publish(directory: Path, version: str, revision: str, repository: str, *, gh
         raise PublishError("Existing release tag points to another commit")
     release = _release(gh, endpoint, repository, tag, optional=True)
     if release is not None:
-        present = _remote_assets(release, expected, complete=release.get("draft") is False)
-        if not release["draft"]:
+        if isinstance(release, dict) and release.get("draft") is True:
+            present, failed = _resumable_assets(release, expected, tag, revision)
+            for identity in failed:
+                gh.run("api", "--hostname", "github.com", "--method", "DELETE",
+                       endpoint + "/releases/assets/" + str(identity))
+        else:
+            present = _remote_assets(release, expected, complete=True)
             if tag_ref is None:
                 raise PublishError("Published release has no matching tag")
             return {"status": "already_published", "tag": tag, "source_sha": revision, "assets": len(present)}
-        if release.get("target_commitish") != revision:
-            raise PublishError("Existing draft targets another revision")
     else:
         present = set()
         with tempfile.TemporaryDirectory(prefix="flightboard-release-notes-") as temporary:

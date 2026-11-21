@@ -49,9 +49,14 @@ class FakeGh:
 
     def run(self, *arguments):
         self.calls.append(tuple(arguments))
+        if arguments[:5] == ("api", "--hostname", "github.com", "--method", "DELETE"):
+            identity = int(arguments[5].rsplit("/", 1)[1])
+            self.release["assets"] = [asset for asset in self.release["assets"] if asset.get("id") != identity]
+            return
         operation = arguments[1]
         if operation == "create":
-            self.release = {"draft": True, "prerelease": False, "target_commitish": SHA, "assets": []}
+            self.release = {"draft": True, "prerelease": False, "target_commitish": SHA,
+                            "tag_name": "v" + VERSION, "assets": []}
         elif operation == "upload":
             paths = arguments[3:arguments.index("--repo")]
             for value in paths:
@@ -66,7 +71,7 @@ class FakeGh:
     def asset(self, name):
         raw = self.files[name]
         return {"name": name, "size": len(raw), "digest": "sha256:" + hashlib.sha256(raw).hexdigest(),
-                "state": "uploaded"}
+                "state": "uploaded", "id": list(self.files).index(name) + 1}
 
 
 class PublishReleaseTest(unittest.TestCase):
@@ -112,11 +117,91 @@ class PublishReleaseTest(unittest.TestCase):
     def test_partial_draft_rerun_uploads_only_missing_assets(self):
         gh = FakeGh(self.files)
         gh.release = {"draft": True, "prerelease": False, "target_commitish": SHA,
-                      "assets": [gh.asset("SHA256SUMS")]}
+                      "tag_name": "v" + VERSION, "assets": [gh.asset("SHA256SUMS")]}
         self.publish(gh)
         upload = next(call for call in gh.calls if call[:2] == ("release", "upload"))
         self.assertNotIn(str(self.folder / "SHA256SUMS"), upload)
         self.assertEqual(len(gh.release["assets"]), 4)
+
+    def test_empty_failed_upload_is_removed_before_resuming_matching_draft(self):
+        gh = FakeGh(self.files)
+        completed = gh.asset("SHA256SUMS")
+        failed_name = f"flightboard-skill-{VERSION}.zip"
+        failed = {"name": failed_name, "size": 0, "digest": None, "state": "starter", "id": 42}
+        gh.release = {"draft": True, "prerelease": False, "target_commitish": SHA,
+                      "tag_name": "v" + VERSION, "assets": [completed, failed]}
+        result = self.publish(gh)
+        deletes = [call for call in gh.calls if call[0] == "api"]
+        self.assertEqual(deletes, [("api", "--hostname", "github.com", "--method", "DELETE",
+                                    "repos/" + REPOSITORY + "/releases/assets/42")])
+        upload = next(call for call in gh.calls if call[:2] == ("release", "upload"))
+        self.assertIn(str(self.folder / failed_name), upload)
+        self.assertNotIn(str(self.folder / "SHA256SUMS"), upload)
+        self.assertEqual(next(asset for asset in gh.release["assets"] if asset["name"] == "SHA256SUMS"), completed)
+        self.assertEqual(result["status"], "published")
+        self.assertEqual(len(gh.release["assets"]), 4)
+
+    def test_failed_upload_recovery_refuses_ambiguous_or_mismatched_metadata_before_any_write(self):
+        for invalid in ("target", "tag", "published", "nonempty", "unknown_name", "duplicate_name",
+                        "duplicate_id", "corrupt_completed", "boolean_size", "boolean_id", "missing_id",
+                        "zero_id", "string_id"):
+            with self.subTest(invalid=invalid):
+                gh = FakeGh(self.files, tag=SHA)
+                failed = {"name": f"flightboard-skill-{VERSION}.zip", "size": 0,
+                          "digest": None, "state": "starter", "id": 42}
+                completed = gh.asset("SHA256SUMS")
+                gh.release = {"draft": True, "prerelease": False, "target_commitish": SHA,
+                              "tag_name": "v" + VERSION, "assets": [failed, completed]}
+                if invalid == "target":
+                    gh.release["target_commitish"] = "b" * 40
+                elif invalid == "tag":
+                    gh.release["tag_name"] = "v9.9.9"
+                elif invalid == "published":
+                    gh.release["draft"] = False
+                elif invalid == "nonempty":
+                    failed["size"] = 1
+                elif invalid == "unknown_name":
+                    failed["name"] = "unrelated.zip"
+                elif invalid == "duplicate_name":
+                    gh.release["assets"].append({**failed, "id": 43})
+                elif invalid == "duplicate_id":
+                    completed["id"] = failed["id"]
+                elif invalid == "corrupt_completed":
+                    completed["digest"] = "sha256:" + "0" * 64
+                elif invalid == "boolean_size":
+                    failed["size"] = False
+                elif invalid == "boolean_id":
+                    failed["id"] = True
+                elif invalid == "missing_id":
+                    del failed["id"]
+                elif invalid == "zero_id":
+                    failed["id"] = 0
+                elif invalid == "string_id":
+                    failed["id"] = "42"
+                with self.assertRaises(publisher.PublishError):
+                    self.publish(gh)
+                self.assertFalse([call for call in gh.calls if call[0] in ("api", "release")])
+
+    def test_resumed_draft_requires_every_final_asset_to_be_uploaded(self):
+        gh = FakeGh(self.files)
+        gh.release = {"draft": True, "prerelease": False, "target_commitish": SHA,
+                      "tag_name": "v" + VERSION, "assets": [
+                          {"name": f"flightboard-skill-{VERSION}.zip", "size": 0,
+                           "digest": None, "state": "starter", "id": 42}]}
+        actual = gh.run
+
+        def run(*arguments):
+            actual(*arguments)
+            if arguments[:2] == ("release", "upload"):
+                gh.release["assets"][0].update(state="starter", size=0, digest=None)
+
+        gh.run = run
+        with self.assertRaises(publisher.PublishError):
+            self.publish(gh)
+        self.assertTrue(gh.release["draft"])
+        self.assertTrue([call for call in gh.calls if call[0] == "api"])
+        self.assertTrue([call for call in gh.calls if call[:2] == ("release", "upload")])
+        self.assertFalse([call for call in gh.calls if call[:2] == ("release", "edit")])
 
     def test_wrong_existing_tag_or_asset_is_never_clobbered(self):
         for bad_tag in (True, False):
