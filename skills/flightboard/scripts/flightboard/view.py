@@ -548,9 +548,11 @@ def _sources(lang: str, context: dict, ledger: dict | None, sessions: list[dict]
                                         note=note, dated=M.say(lang, "source.dated", date=ledger["updated_at"])
                                         if ledger["updated_at"] else "")})
         unreadable = sum(1 for c in sessions if c["ledger"] not in ("ok", "absent"))
+        working_unknown = (context.get("publication") or {}).get("coverage", {}).get("working_ledgers_unknown", 0)
         sources.append({"key": "sessions", "label": M.say(lang, "source.sessions"),
-                        "state": "partial" if unreadable else "ok",
+                        "state": "partial" if unreadable or working_unknown else "ok",
                         "detail": M.count(lang, "source.unreadable", unreadable) if unreadable
+                        else M.say(lang, "source.working_unknown", n=working_unknown) if working_unknown
                         else M.say(lang, "source.all_read")})
     else:
         missing = context.get("ledger_missing")
@@ -567,6 +569,16 @@ def _sources(lang: str, context: dict, ledger: dict | None, sessions: list[dict]
         sources.append({"key": "files", "label": M.say(lang, "source.files"), "state": "partial",
                         "detail": M.count(lang, "source.unread", unread)})
     return sources
+
+
+def _publication_info(found: dict | None, lang: str) -> dict | None:
+    if found is None:
+        return None
+    coverage = found.get("coverage", {})
+    codes = set(coverage.get("reasons", {}))
+    codes.update(tree["reason"] for tree in coverage.get("worktrees", []) if tree.get("reason"))
+    return {**found, "coverage": {**coverage,
+                                 "reason_labels": {code: M.publication_reason(lang, code) for code in codes}}}
 
 
 def _ledger_info(adapter: Ledger | None, context: dict, ledger: dict | None) -> dict:
@@ -626,6 +638,7 @@ def build_view(now: datetime, mode: str, context: dict, sessions: list[dict], ve
     return {
         "generated_at": now.isoformat(timespec="seconds"), "mode": mode, "refresh_seconds": REFRESH_SECONDS,
         "tool": context["tool"], "repository": context.get("repository", ""),
+        "publication": _publication_info(context.get("publication"), lang),
         "main": {"state": "ok", "reason": "", "reason_text": "",
                  "ref": safe_branch(context["ref"].split("/", 2)[-1]), "head": context["sha"][:7],
                  "date": iso(head["at"], now.tzinfo) if head.get("at") else "", "subject": head.get("subject", ""),
@@ -661,6 +674,7 @@ def error_view(now: datetime, mode: str, reason: str, detail: str = "", lang: st
     return {
         "generated_at": now.isoformat(timespec="seconds"), "mode": mode, "refresh_seconds": REFRESH_SECONDS,
         "tool": tool or {"name": "flightboard", "version": ""}, "repository": repository,
+        "publication": None,
         "main": {"state": "unreadable", "reason": reason, "reason_text": text, "ref": "", "head": "", "date": "",
                  "subject": "", "updated_at": "", "note": "", "note_text": "", "valid": False, "error": ""},
         "ledger": {"kind": "none", "path": "", "releases": False, "missing": ""},

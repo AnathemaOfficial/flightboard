@@ -27,10 +27,12 @@ from pathlib import Path
 from . import TOOL
 from . import files as FILES
 from . import gitreads as GIT
+from . import gitconfig as GITCONFIG
 from . import held as HELD
 from . import ledgers as LEDGERS
 from . import messages as M
 from . import overlay as OVERLAY
+from . import publication as PUBLICATION
 from . import view as VIEW
 from . import config as CONFIG
 from .config import Settings
@@ -44,6 +46,9 @@ CHECKOUT_ID = "@checkout"  # no admin folder can take it: their names start with
 MAX_INFERRED = 3
 MAX_REFS = 5000
 MAX_WALK = 200_000
+PUBLICATION_SECONDS = 2.0  # optional follow-up cannot spend the whole local reading budget
+PUBLICATION_RETURN_MARGIN = 1.0
+MAX_PUBLICATION_AGES = 2 * GIT.MAX_PUBLICATION_COMMITS
 READ_WORKERS = 4
 PARALLEL_MIN = 8  # small repositories and custom readers retain the simple sequential path
 UNREADABLE = "unreadable"  # a ledger that exists at a commit but cannot be read, unlike an absent one (None)
@@ -64,7 +69,7 @@ class Collector:
     that worktree belongs to."""
 
     def __init__(self, root: Path, settings: Settings | None = None, git: GIT.Git | None = None, *,
-                 completion_clock: Callable[[], datetime] | None = None) -> None:
+                 completion_clock: Callable[[], datetime] | None = None, github=None) -> None:
         self.settings = settings or Settings()
         if not CONFIG.valid(self.settings):  # settings built by hand pass the same text checks as the command line
             raise ValueError("settings refused")
@@ -79,6 +84,12 @@ class Collector:
         self.remote_prefix = f"refs/remotes/{self.remote}/"
         self._lock = threading.Lock()
         self._completion_clock = completion_clock
+        self.github = github
+        self._github_identity: tuple[bytes, str | None] | None = None
+        self._publication_graph: tuple[tuple, dict] | None = None
+        self._publication_seen: dict[str, str] = {}
+        self._publication_signature: tuple | None = None
+        self._publication_commit_seen: dict[str, str] = {}
         self._version_ok = False
         self._no_lazy_fetch = False  # whether this git honours GIT_NO_LAZY_FETCH (a partial clone is then read)
         self._adapter_key: tuple | None = None
@@ -503,7 +514,9 @@ class Collector:
             and not any(self.remote_prefix + name[len(HEADS):] in refs for name in mains) else None
         if HELD.split_names(refs) or HELD.hidden_main(refs, mains, guess):
             return self._error(now, mode, "ambiguous_refs", git_ok=True)
-        self._refs_key = hashlib.sha256(repr(sorted((name, info["sha"], info.get("symref"))
+        self._refs_key = hashlib.sha256(repr(sorted((name, info["sha"], info.get("symref"),
+                                                    info.get("upstream"), info.get("upstream_remote"),
+                                                    info.get("upstream_ref"))
                                                    for name, info in refs.items())).encode("utf-8")).hexdigest()
         main_ref, main, note = self._main(refs, trees[0])
         if main is None:
@@ -553,8 +566,158 @@ class Collector:
                    "head": self._heads.get(main, {}),
                    "limits": {**limits, "history_cut": cut, "history_unread": unread},
                    "planted": planted, "entries": entries, "lang": self.lang, "tool": TOOL,
-                   "repository": self.name}
+                    "repository": self.name,
+                    "publication": self._publication(now, refs, trees, sessions, main_ref, main)}
         return VIEW.build_view(now, mode, context, sessions, versions, self.settings.public())
+
+    def _github_current(self) -> dict:
+        if self.github is None:
+            return {"state": "disabled", "repository": "", "checked_at": "", "last_success_at": "",
+                    "complete": False, "heads": {}, "pull_requests": [], "error": ""}
+        # Read only the guarded local config. Global configuration cannot redirect the GitHub observer.
+        data, state = FILES._read_file(self.common / "config", self.root, FILES.MAX_CONFIG_BYTES)
+        if state != "ok" or data is None:
+            return {"state": "error", "complete": False, "heads": {}, "pull_requests": [],
+                    "error": "repository_identity_unreadable"}
+        digest = hashlib.sha256(data).digest()
+        if self._github_identity is None or self._github_identity[0] != digest:
+            from .github import repository_identity
+            entries = GITCONFIG.entries(data, self.git.deadline)
+            key = ("remote." + self.remote + ".url").encode("utf-8")
+            url = b""
+            for name, value in entries:
+                if name == key:
+                    if not value:
+                        url = b""  # an empty URL resets earlier entries, as Git's fetch URL list does
+                    elif not url:
+                        url = value  # Git fetches from the first URL, not the last mirror in its list
+            identity = repository_identity(url.decode("utf-8", errors="replace"))
+            self._github_identity = digest, identity
+        return self.github.current(self._github_identity[1])
+
+    def _publication(self, now: datetime, refs: dict, trees: list[dict], sessions: list[dict],
+                     main_ref: str, main: str) -> dict:
+        """Optional reads have an earlier cutoff; completed sessions retain time to reach the view."""
+        deadline = self.git.deadline
+        cutoff = time.monotonic() + PUBLICATION_SECONDS
+        self.git.deadline = min(cutoff, deadline - PUBLICATION_RETURN_MARGIN) if deadline is not None else cutoff
+        try:
+            return self._publication_with_budget(now, refs, trees, sessions, main_ref, main)
+        finally:
+            self.git.deadline = deadline
+
+    def _publication_with_budget(self, now: datetime, refs: dict, trees: list[dict], sessions: list[dict],
+                                 main_ref: str, main: str) -> dict:
+        """Bounded local evidence only; the observer's current() never waits for network IO."""
+        worktrees = [{"id": tree["id"] or CHECKOUT_ID, "kind": "checkout" if tree["main"] else "worktree",
+                      "name": clean(tree["path"].parent.name if tree["path"] is not None and not tree["main"]
+                                    and tree["path"].name == self.root.name else tree["name"], 160),
+                      "tip": HELD.tip(tree, refs) or "", "ref": tree["head"].get("ref")
+                      or tree["operation"]["branch"], "reason": tree["reason"],
+                      "gone": tree["reason"] == FILES.GONE,
+                      "working_directory_readable": tree["path"] is not None} for tree in trees]
+        try:
+            remote = self._github_current()
+        except Exception:
+            remote = {"state": "error", "complete": False, "heads": {}, "pull_requests": [],
+                      "error": "repository_identity_unreadable"}
+
+        def expired():
+            return self.github is not None and "_expires_at" in remote and self.github.expired(remote)
+
+        cached = {name[len(self.remote_prefix):]: info["sha"] for name, info in refs.items()
+                  if name.startswith(self.remote_prefix) and not info.get("symref")}
+        fresh = remote.get("state") == "fresh" and remote.get("complete") is True
+        heads = remote.get("heads", {}) if fresh else cached
+        source = "github" if fresh else "local_tracking_refs" if heads else "local_main"
+        tips = sorted({info["sha"] for name, info in refs.items() if name.startswith(HEADS)}
+                      | {tree["tip"] for tree in worktrees if tree["tip"]})
+        published = sorted(set(heads.values())) if heads or fresh else [main]
+        graph = {"parents": {}, "complete": False, "reason": "read_failed", "comparison_source": source}
+        short = main_ref[len(HEADS):] if main_ref.startswith(HEADS) else main_ref[len(self.remote_prefix):]
+        remote_main = heads.get(short)
+        comparison = {"state": "unknown", "ahead": None, "behind": None, "comparison_source": source,
+                      "local_head": main if main_ref.startswith(HEADS) else "", "remote_head": remote_main or ""}
+        try:
+            self.git.time_left()
+            shallow, shallow_state = FILES._read_file(self.common / "shallow", self.root, 1_000_000)
+            shallow_key = hashlib.sha256(shallow).digest() if shallow is not None else shallow_state
+            incomplete = bool(shallow) or shallow_state not in ("ok", "absent")
+            if fresh:
+                # Positive immutable-object caches do not prove that an object still exists after local GC/removal.
+                # One batch verifies every endpoint without walking the cached graph again.
+                checked = list(dict.fromkeys(tips + published))
+                existing = {tip for tip, present in zip(checked, self.git.commits_exist(self.common, checked)) if present}
+                self._commits.difference_update(set(checked) - existing)
+                self._commits.update(existing)
+                self._use(*checked)
+            else:
+                existing = self._existing(tips + published)
+            missing_local = [tip for tip in tips if tip not in existing]
+            missing = [tip for tip in published if tip not in existing]
+            key = (tuple(tip for tip in tips if tip in existing),
+                   tuple(tip for tip in published if tip in existing), shallow_key)
+            if self._publication_graph is not None and self._publication_graph[0] == key:
+                evidence = self._publication_graph[1]
+            else:
+                evidence = self.git.publication_graph(self.common, list(key[0]), list(key[1]))
+                self._publication_graph = key, evidence
+            graph = {**evidence, "comparison_source": source, "missing_local_tips": missing_local}
+            if missing or missing_local or incomplete:
+                graph.update(complete=False, reason="missing_objects" if missing or missing_local else "shallow")
+            if any(not tree["gone"] and not tree["tip"] for tree in worktrees):
+                graph.update(complete=False, reason="unknown_tip")
+            if main_ref.startswith(HEADS) and remote_main in existing and main in existing and not incomplete:
+                behind, ahead, _ = self._pair(remote_main, main)
+                comparison.update(state="diverged" if ahead and behind else "ahead" if ahead else
+                                  "behind" if behind else "equal", ahead=ahead, behind=behind)
+        except (GitFailed, GitRefused):
+            pass  # New follow-up evidence can be unknown without hiding sessions already read successfully.
+        if remote.get("state") == "fresh" and expired():
+            remote = {**remote, "state": "stale"}
+            fresh = False
+        signature = (self._github_identity[1] if self._github_identity is not None else self.remote,)
+        if signature != self._publication_signature:
+            self._publication_commit_seen = {}
+            for code in ("publication_pending", "publication_overdue"):
+                self._publication_seen.pop(code, None)
+            self._publication_signature = signature
+        observed = now.isoformat(timespec="seconds")
+        current_commits = graph.get("parents", {})
+        if graph.get("complete") and (fresh or self.github is None):
+            self._publication_commit_seen = {
+                commit: self._publication_commit_seen.get(commit, observed) for commit in current_commits}
+        else:
+            # An inconclusive walk cannot establish that an older pending commit disappeared or was published.
+            self._publication_commit_seen.update({
+                commit: self._publication_commit_seen.get(commit, observed) for commit in current_commits})
+            current_ages = {commit: self._publication_commit_seen[commit] for commit in current_commits}
+            older = sorted(((commit, age) for commit, age in self._publication_commit_seen.items()
+                            if commit not in current_commits), key=lambda item: item[1])
+            self._publication_commit_seen = {
+                **current_ages, **dict(older[:max(0, MAX_PUBLICATION_AGES - len(current_ages))])}
+        if current_commits:
+            self._publication_seen["publication_pending"] = min(
+                self._publication_commit_seen.get(commit, observed) for commit in current_commits)
+
+        def build_publication():
+            public_remote = {key: value for key, value in remote.items() if not key.startswith("_")}
+            return PUBLICATION.build(now, refs, worktrees, sessions, public_remote, graph, comparison,
+                                     self._publication_seen)
+
+        if remote.get("state") == "fresh" and expired():
+            remote = {**remote, "state": "stale"}
+        found = build_publication()
+        if remote.get("state") == "fresh" and expired():
+            # Retain this graph's exact observed heads; a newer background response is a different observation.
+            remote = {**remote, "state": "stale"}
+            found = build_publication()
+        active = {row["code"] for row in found["alerts"]}
+        self._publication_seen = {code: self._publication_seen.get(code, now.isoformat(timespec="seconds"))
+                                  for code in active}
+        for alert in found["alerts"]:
+            alert["first_seen_at"] = self._publication_seen[alert["code"]]
+        return found
 
     def _stash(self) -> dict:
         return HELD.stashed(FILES.read_reflog(self.root, "refs/stash", HELD.MAX_STASH, whole=True))
@@ -637,11 +800,11 @@ class Collector:
         existing = self._existing([tip for tip in tips if tip])
         self._prefetch_pairs(main, [tip for tip in tips if tip in existing])
         self._prefetch_remote_relations([
-            (refs[self.remote_prefix + branch[len(HEADS):]]["sha"], tip)
+            (refs[tracking]["sha"], tip)
             for tree, tip in zip(trees, tips)
             if (branch := tree["head"].get("ref") or tree["operation"]["branch"])
             and branch.startswith(HEADS) and tip in existing
-            and self.remote_prefix + branch[len(HEADS):] in refs])
+            and (tracking := self._tracking_ref(refs, branch)) in refs])
         items, used, unknown = [], {main_ref}, False
         for tree, tip in zip(trees, tips):
             held = HELD.held(tree, refs)
@@ -664,26 +827,27 @@ class Collector:
         except GitFailed:  # git could not tell them in time (a very long history): the folders' sessions still show
             unmerged, unread = {}, True
         others = []
+        represented_remotes = {self._tracking_ref(refs, name) for name in unmerged if name.startswith(HEADS)}
         for name, info in unmerged.items():
             if name in used or info.get("symref") or name in (self._remote_main, self.remote_prefix + "HEAD"):
                 continue
-            if name.startswith(self.remote_prefix) and HEADS + name[len(self.remote_prefix):] in unmerged:
+            if name.startswith(self.remote_prefix) and name in represented_remotes:
                 continue  # one session, one card: the local branch shows it, read at the remote's tip when behind
             kind = "branch" if name.startswith(HEADS) else "remote"
             short = name[len(HEADS):] if kind == "branch" else f"{self.remote}/" + name[len(self.remote_prefix):]
-            remote_info = refs.get(self.remote_prefix + short) if kind == "branch" else None
+            remote_info = refs.get(self._tracking_ref(refs, name)) if kind == "branch" else None
             others.append((max(info["at"], remote_info["at"]) if remote_info else info["at"],
                            name, kind, short, info))
         others.sort(key=lambda entry: (entry[0], entry[1]), reverse=True)
         cap = self.settings.max_branches
         self._prefetch_remote_relations([
-            (refs[self.remote_prefix + short]["sha"], info["sha"])
-            for _, _, kind, short, info in others[:cap]
-            if kind == "branch" and self.remote_prefix + short in refs])
+            (refs[tracking]["sha"], info["sha"])
+            for _, name, kind, _, info in others[:cap]
+            if kind == "branch" and (tracking := self._tracking_ref(refs, name)) in refs])
         selected = []
         for _, name, kind, short, info in others[:cap]:
             remote = "pushed" if kind == "remote" else self._guarded_remote(refs, name, info["sha"])
-            front = refs[self.remote_prefix + short] if remote == "behind" else info
+            front = refs[self._tracking_ref(refs, name)] if remote == "behind" else info
             selected.append((name, kind, short, front, remote))
         self._prefetch_pairs(main, [front["sha"] for _, _, _, front, _ in selected])
         for name, kind, short, front, remote in selected:
@@ -712,7 +876,7 @@ class Collector:
         without a remote copy. The remote's copy is a session of its own only once the local branch is all in main."""
         if not branch or not branch.startswith(HEADS) or not tip:
             return ""
-        remote = refs.get(self.remote_prefix + branch[len(HEADS):])
+        remote = refs.get(self._tracking_ref(refs, branch))
         if remote is None:
             return ""
         if remote["sha"] == tip:
@@ -720,6 +884,13 @@ class Collector:
         if self._ancestor(remote["sha"], tip):
             return "ahead"
         return "behind" if self._ancestor(tip, remote["sha"]) else "diverged"
+
+    def _tracking_ref(self, refs: dict, branch: str) -> str:
+        """Honor an explicit upstream of the selected remote; no-upstream keeps the historical same-name view."""
+        info = refs.get(branch, {})
+        if info.get("upstream"):
+            return info["upstream"] if info.get("upstream_remote") == self.remote else ""
+        return self.remote_prefix + branch[len(HEADS):]
 
     def _guarded(self, item: dict, adapter: Ledger | None, main_ledger: dict | None, main: str,
                  commits: list[dict], planted: bool, now: datetime) -> dict:

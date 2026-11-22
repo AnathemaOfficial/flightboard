@@ -46,6 +46,29 @@ def fields(template: object) -> set[str]:
 
 
 class CatalogTest(unittest.TestCase):
+    def test_publication_dynamic_states_have_words_independent_of_catalog_contents(self):
+        contracts = {
+            "main": ("equal", "ahead", "behind", "diverged", "unknown"),
+            "remote": ("disabled", "pending", "fresh", "partial", "stale", "error"),
+            "source": ("github", "local_tracking_refs", "local_main", "unknown", "working_files"),
+            "files": ("read", "partial", "unknown", "gone"), "ledger": ("read", "unknown"),
+            "queue": ("unpublished", "candidate", "dirty", "uncommitted", "unknown", "pr_open"),
+            "alert": ("publication_pending", "uncommitted_work", "worktree_coverage", "github_unavailable",
+                      "main_ahead", "main_behind", "main_diverged", "publication_unknown",
+                      "publication_overdue", "publication_review"),
+        }
+        for lang in M.LANGS:
+            for group, suffixes in contracts.items():
+                for suffix in suffixes:
+                    self.assertIn("page.publication_" + group + "_" + suffix, M.PAGE[lang])
+
+    def test_publication_coverage_reasons_reuse_localized_reason_and_issue_contracts(self):
+        extra = ("duplicate_admin", "unknown_admin", "head_unreadable", "head_elsewhere", "head_symbolic")
+        for lang in M.LANGS:
+            for code in (*CODES["reason"], *CODES["issue"], *extra):
+                text = M.publication_reason(lang, code)
+                self.assertNotEqual(text, code)
+                self.assertNotIn("page.publication_reason_", text)
     def test_both_languages_say_the_same_things(self) -> None:
         for table in (M.TEXT, M.PAGE):
             with self.subTest(table=next(iter(table["en"]))):
@@ -76,6 +99,12 @@ class CatalogTest(unittest.TestCase):
         asked = set(re.findall(r"\btn?\('(page\.[\w.]+)'", template))
         asked |= set(re.findall(r'data-t="(page\.[\w.]+)"', template))
         asked |= set(re.findall(r"'(page\.[\w.]+)'", template))
+        prefixes = set(re.findall(r"'(page\.[\w.]+_)'\s*\+", template))
+        for prefix in prefixes:
+            expanded = {key for key in M.PAGE["en"] if key.startswith(prefix) and key != prefix}
+            self.assertTrue(expanded, prefix)
+            asked.discard(prefix)
+            asked |= expanded
         self.assertTrue(asked)
         self.assertFalse(sorted(asked - set(M.PAGE["en"])))
         groups = set(re.findall(r"\blabel\('(\w+)'", template))
