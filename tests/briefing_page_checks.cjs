@@ -26,8 +26,10 @@ class Element {
 }
 const $=id=>{ if (!nodes.has(id)) nodes.set(id,new Element(id)); return nodes.get(id); };
 const makeState=(text='Alerts\nA source is missing.\nInspect the named worktree.',at='2026-11-22T09:00:00-05:00')=>({
-  generated_at:at, main:{state:'ok'}, sessions:[], waiting:[], mode:'live', refresh_seconds:10,
-  settings:{read_seconds:12}, agent_brief:{schema_version:1,state:'ready',generated_at:at,text}
+  generated_at:at, repository:'fixture', main:{state:'ok',ref:'main',head:'a'.repeat(7)},
+  sessions:[], waiting:[], mode:'live', refresh_seconds:10,
+  settings:{read_seconds:12}, agent_brief:{schema_version:1,state:'ready',generated_at:at,text,repo:'fixture',
+    main:{branch:'main',sha:'a'.repeat(40),remote_sha:null,comparison_source:null}}
 });
 const timers=new Map();let serial=0;
 const context={$,document,data:makeState(),lost:false,failed:'',polling:true,writes:[],
@@ -132,6 +134,57 @@ async function checks() {
   assert.equal($('agent-brief-copy').disabled,true,'a failed refresh cannot leave old agent instructions available');
   const recovered=makeState('Recovered snapshot');respond(recovered);await context.refresh();
   assert.equal($('agent-brief-text').value,recovered.agent_brief.text);assert.equal(context.lost,false);
-  console.log('10 briefing-page checks passed');
+
+  // The regular poll replaces parsed objects even when the exact brief and its source snapshot did not change.
+  for (const denied of [false,true]) {
+    context.data=makeState('Identical canonical brief');context.lost=false;context.failed='';draw();
+    context.lastKey=context.keyOf('',context.data);
+    document.activeElement=null;field.setSelectionRange(field.value.length,field.value.length);
+    const original=context.data.agent_brief, beforePaints=paints;
+    let settle;
+    context.navigator.clipboard.writeText=()=>new Promise((resolve,reject)=>{
+      settle=()=>denied?reject(new Error('clipboard denied')):resolve();
+    });
+    const copying=copy({isTrusted:true});
+    const same=JSON.parse(JSON.stringify(context.data));
+    same.generated_at=same.agent_brief.generated_at='2026-11-22T09:01:00-05:00';
+    respond(same);await context.refresh();
+    assert.notEqual(context.data.agent_brief,original,'normal refresh constructs a different parsed object');
+    assert.equal(paints,beforePaints,'an identical reading does not redraw the rest of the board');
+    settle();await copying;
+    assert.equal($('agent-brief-status').textContent,denied?'page.briefing_copy_manual':'page.briefing_copied',
+      'unchanged content and source identity retain clipboard success and manual fallback after a normal poll');
+    if (denied) {assert.equal(document.activeElement,field);assert.equal(field.selected,true);}
+  }
+
+  // Similar-looking text from a different repository/main, or a failed reading, is still a stale copy completion.
+  const changedSnapshots=[
+    state=>{state.agent_brief.text='Changed canonical text';},
+    state=>{state.repository='other repository';},
+    state=>{state.agent_brief.repo='other briefing repository';},
+    state=>{state.main.ref='other-main';},
+    state=>{state.main.head='b'.repeat(7);},
+    state=>{state.agent_brief.main.branch='other-main';},
+    state=>{state.agent_brief.main.sha='b'.repeat(40);},
+    state=>{state.agent_brief.main.remote_sha='b'.repeat(40);},
+    state=>{state.main.state='unreadable';state.main.reason_text='reading unavailable';},
+    null,  // transport failure
+  ];
+  for (const change of changedSnapshots) for (const denied of [false,true]) {
+    context.data=makeState('Canonical text before a changed snapshot');context.lost=false;context.failed='';draw();
+    context.lastKey=context.keyOf('',context.data);document.activeElement=null;
+    field.setSelectionRange(field.value.length,field.value.length);
+    let settle;
+    context.navigator.clipboard.writeText=()=>new Promise((resolve,reject)=>{
+      settle=()=>denied?reject(new Error('clipboard denied')):resolve();
+    });
+    const copying=copy({isTrusted:true});
+    if (change) {const different=JSON.parse(JSON.stringify(context.data));change(different);respond(different);}
+    else context.fetch=async()=>{throw new Error('reading transport failed');};
+    await context.refresh();settle();await copying;
+    assert.equal($('agent-brief-status').textContent,'','changed or failed source snapshots reject old clipboard completions');
+    assert.equal(document.activeElement,null,'an old failure cannot select a different or unavailable brief');
+  }
+  console.log('12 briefing-page checks passed');
 }
 checks().catch(error=>{console.error(error);process.exitCode=1;});

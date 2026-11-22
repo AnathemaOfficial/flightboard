@@ -342,6 +342,94 @@ class BriefingTest(unittest.TestCase):
         result = briefing.build(model, found)
         self.assertIn("Additional declared references omitted: 3", result["text"])
 
+    def test_evidence_identifiers_keep_exact_spaces_unicode_and_controls(self):
+        identifiers = ["receipts/run  1.json", "preuves/café/épreuve.md", "receipts/\u202eproof\nrun\t1.json"]
+        for identifier in identifiers:
+            with self.subTest(identifier=repr(identifier)):
+                model, found = reading(roadmap_context([{"id": "A-1", "status": "done", "evidence": [
+                    {"kind": "tests", "at": "2026-11-06", "ref": identifier}]}]))
+                result = briefing.build(model, found)
+                reference = result["evidence_gaps"][0]["references"][0]
+                self.assertEqual(reference["ref"], identifier)
+                self.assertTrue(reference["ref_complete"])
+                self.assertEqual(reference["ref_omitted"], 0)
+                self.assertIn(json.dumps(identifier, ensure_ascii=True), result["text"])
+                self.assertNotIn("\u202e", result["text"])
+
+    def test_long_evidence_is_an_explicit_bounded_preview_not_a_lookup_identifier(self):
+        prefix = "receipts/" + "x" * 300
+        identifiers = [prefix + suffix for suffix in ("-first.json", "-second.json")]
+        model, found = reading(roadmap_context([{"id": "A-1", "status": "done", "evidence": [
+            {"kind": "tests", "at": "2026-11-06", "ref": identifier} for identifier in identifiers]}]))
+        result = briefing.build(model, found)
+        references = result["evidence_gaps"][0]["references"]
+        self.assertEqual(len(references), 2)
+        for reference, identifier in zip(references, identifiers):
+            self.assertIsNone(reference["ref"])
+            self.assertFalse(reference["ref_complete"])
+            self.assertEqual(reference["ref_preview"], identifier[:briefing.MAX_REFERENCE_CHARS])
+            self.assertEqual(reference["ref_omitted"], len(identifier) - briefing.MAX_REFERENCE_CHARS)
+        self.assertIn("Incomplete reference preview", result["text"])
+        self.assertIn("read the observed ledger", result["text"])
+        huge = {"id": "A-1", "status": "done", "evidence": [
+            {"kind": "tests", "at": "2026-11-06", "ref": "x" * 100000}]}
+        model, found = reading(roadmap_context([huge]))
+        self.assertLess(len(json.dumps(briefing.build(model, found))), 10000)
+
+    def test_unpaired_surrogate_reference_is_rejected_without_poisoning_utf8_output(self):
+        for identifier in ("receipts/\ud800.json", "receipts/\udfff.json"):
+            with self.subTest(identifier=repr(identifier)):
+                model, found = reading(roadmap_context([{"id": "A-1", "status": "done", "evidence": [
+                    {"kind": "tests", "at": "2026-11-06", "ref": identifier}]}]))
+                result = briefing.build(model, found)
+                self.assertEqual(result["evidence_gaps"], [])
+                self.assertTrue(any(item["code"] == "evidence_partial" for item in result["limitations"]))
+                self.assertTrue(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+
+    def test_worktree_actions_do_not_borrow_github_provenance_from_a_shared_commit(self):
+        head, observed = "b" * 40, "2026-11-01T03:04:05+00:00"
+        found = context()
+        found["publication"]["remote"]["last_success_at"] = observed
+        found["publication"]["queue"] = [
+            {"id": "commits:" + head, "kind": "commits", "head": head, "comparison_source": "github",
+             "branches": ["base", "stack-tip"], "worktrees": ["stack-tip-worktree"]},
+            {"id": "dirty:other-worktree", "kind": "dirty", "head": head, "comparison_source": "working_files",
+             "branches": ["other-branch"], "worktrees": ["other-worktree"]}]
+        session = {"id": "other-worktree", "name": "other", "kind": "worktree", "modified": 1,
+                   "files_read": True, "file_activity_complete": True, "head": head, "branch": "other-branch",
+                   "tracking": {"state": "check"}}
+        model, found = reading(found, sessions=[session])
+        actions = briefing.build(model, found)["actions"]
+        for action in actions:
+            if action["kind"] in ("inspect_worktree", "reconcile_tracking"):
+                self.assertEqual(action["source"]["observed_at"], model["generated_at"])
+                self.assertNotIn("/publication/remote", action["source"]["pointers"])
+                self.assertFalse(any(pointer.startswith("/publication/queue/") for pointer in action["source"]["pointers"]))
+        publication = next(action for action in actions if action["kind"] == "review_publication")
+        self.assertEqual(publication["source"]["observed_at"], observed)
+        self.assertIn("/publication/queue/0", publication["source"]["pointers"])
+
+    def test_publication_binding_requires_an_unambiguous_matching_kind_and_target(self):
+        head = "b" * 40
+        model, found = reading()
+        model["publication"]["remote"]["last_success_at"] = "2026-11-01T03:04:05+00:00"
+        model["overview"]["actions"] = [{"id": "review:test", "kind": "review_publication", "head": head,
+                                           "target": head, "branch": "topic", "worktree": "target-tree"}]
+        row = {"id": "commits:" + head, "kind": "commits", "head": head, "comparison_source": "github",
+               "branches": ["topic"], "worktrees": ["target-tree"]}
+        cases = ([{**row, "kind": "dirty"}], [row, {**row, "id": "review:" + head, "kind": "review"}],
+                 [{**row, "branches": ["different-topic"]}], [{**row, "worktrees": ["different-tree"]}])
+        for rows in cases:
+            with self.subTest(rows=rows):
+                model["publication"]["queue"] = rows
+                action = briefing.build(model, found)["actions"][0]
+                self.assertEqual(action["source"]["observed_at"], model["generated_at"])
+                self.assertFalse(any(pointer.startswith("/publication/queue/") for pointer in action["source"]["pointers"]))
+        model["publication"]["queue"] = [row]
+        model["overview"]["actions"][0]["target"] = "different-target"
+        action = briefing.build(model, found)["actions"][0]
+        self.assertNotIn("/publication/remote", action["source"]["pointers"])
+
     def test_partial_reading_only_offers_observed_safe_inspection_actions(self):
         found = context()
         found["publication"]["coverage"]["working_files_unknown"] = 1

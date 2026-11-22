@@ -455,7 +455,14 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
     const brief = currentBriefing();
     if (!event.isTrusted || !brief || $('agent-brief-copy').disabled) return;
     const field = $('agent-brief-text'), status = $('agent-brief-status'), text = brief.text;
-    const current = () => currentBriefing() === brief && field.value === text;
+    // A poll reparses the same reading; clipboard completion depends on its content and source, not object identity.
+    const identity = value => JSON.stringify([data.repository,data.main.ref,data.main.head,value.repo,
+      value.main?.branch,value.main?.sha,value.main?.remote_sha,value.main?.comparison_source,value.state]);
+    const snapshot = identity(brief);
+    const current = () => {
+      const latest = currentBriefing();
+      return latest && latest.text === text && identity(latest) === snapshot && field.value === text;
+    };
     if (field.value !== text) field.value = text;
     status.textContent = '';
     try {

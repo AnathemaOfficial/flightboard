@@ -13,7 +13,10 @@ plan and carry out its own authorized verification. Flightboard does not call a 
 Open **Agent briefing** on the dashboard and copy its text, or read `GET /briefing.json` on the same known board
 URL. The endpoint returns the `agent_brief` block also present in `/state.json`, without the rest of the dashboard
 payload. Both use the same cached observation. They can legitimately show different observation times if a normal
-refresh completes between requests; compare `generated_at` and exact available heads before combining them.
+refresh completes between requests. Before following an indexed source pointer from a separate briefing, require
+matching `generated_at`, repository identity and available baseline heads. On a mismatch, discard the earlier
+pointers and use the `agent_brief` embedded in that `/state.json` response together with its source data. Do not
+apply an earlier snapshot's array indices to a newer snapshot.
 An agent can start with `text`, identity and coverage, then expand the structured sources for the chosen action.
 
 An example request to an agent is:
@@ -56,6 +59,11 @@ not in an unbounded briefing.
 - `declared_unverified`: a matching reference is recorded, but Flightboard has not opened or validated the artifact.
 - `not_checked` limitations: generic task ledgers without an evidence contract, local/session evidence outside the
   supported scope, code correctness, test/CI execution and owner approvals remain unevaluated.
+
+Evidence references preserve their exact identifier in `ref` when `ref_complete` is true. Longer identifiers have
+`ref: null`, an explicitly incomplete `ref_preview` and an omitted-character count; a preview is not a lookup
+identifier. Display escaping does not normalize the stored reference. Invalid Unicode references leave the
+evidence reading partial instead of silently substituting another identifier.
 
 An incomplete reading cannot establish absence. A task marked done or in review does not establish implementation
 or successful tests. A commit on main establishes integration of that commit, not acceptance of the work. The

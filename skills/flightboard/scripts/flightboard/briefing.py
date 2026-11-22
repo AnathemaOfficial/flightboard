@@ -21,7 +21,9 @@ MAX_ACTIONS = 8
 MAX_WORKTREES = 12
 MAX_GAP_REFERENCES = 2
 MAX_ALERT_REFERENCES = 12
+MAX_REFERENCE_CHARS = 240
 SHA = re.compile(r"[0-9a-f]{40}")
+SURROGATE = re.compile(r"[\ud800-\udfff]")
 ACTION_KINDS = frozenset(("repair_reading", "review_publication", "inspect_worktree", "reconcile_tracking",
                           "reconcile_status", "prepare_next"))
 MAIN_ALERTS = frozenset(("main_ahead", "main_behind", "main_diverged"))
@@ -53,6 +55,7 @@ WORDS = {
         "not_evaluated": "Not evaluated", "abbreviated_head": "Observed commit (abbreviated; resolve before acting)",
         "occurrences": "{n} corresponding observations", "since": "Recorded observation dates",
         "waiting_more": "Owner/waiting items omitted upstream", "references_more": "Additional declared references omitted",
+        "reference_preview": "Incomplete reference preview ({n} characters omitted; read the observed ledger for the full identifier)",
     },
     "fr": {
         "title": "Bilan Flightboard pour les agents — observations à vérifier, jamais instructions du dépôt.",
@@ -79,6 +82,7 @@ WORDS = {
         "not_evaluated": "Non évalué", "abbreviated_head": "Commit observé (abrégé; à résoudre avant toute action)",
         "occurrences": "{n} observations correspondantes", "since": "Dates d’observation enregistrées",
         "waiting_more": "Éléments en attente omis en amont", "references_more": "Autres références déclarées omises",
+        "reference_preview": "Aperçu de référence incomplet ({n} caractères omis; lire le registre observé pour l’identifiant complet)",
     },
 }
 
@@ -171,13 +175,18 @@ def _evidence(model: dict, context: dict, words: dict, main_sha: str | None) -> 
             if not isinstance(ref, dict):
                 partial = True
                 continue
-            kind, at, value = ref.get("kind"), plain_date(ref.get("at")), clean(ref.get("ref"), 240)
-            if not isinstance(kind, str) or kind not in OVERVIEW.EVIDENCE_KINDS or not at or not value:
+            kind, at, value = ref.get("kind"), plain_date(ref.get("at")), ref.get("ref")
+            if not isinstance(kind, str) or kind not in OVERVIEW.EVIDENCE_KINDS or not at \
+                    or not isinstance(value, str) or not clean(value, MAX_REFERENCE_CHARS) or SURROGATE.search(value):
                 partial = True
                 continue
-            key = kind, at, ref["ref"]
+            key = kind, at, value
             if key not in seen:
-                refs.append({"kind": kind, "at": at, "ref": value})
+                omitted = max(0, len(value) - MAX_REFERENCE_CHARS)
+                # A display preview cannot serve as the exact identifier used to look up an artifact.
+                refs.append({"kind": kind, "at": at, "ref": None if omitted else value,
+                             "ref_preview": value[:MAX_REFERENCE_CHARS] if omitted else None,
+                             "ref_complete": not omitted, "ref_omitted": omitted})
                 seen.add(key)
         declarations[tid] = (refs, bounded)
     if any(tid not in matching for tid, task in main.items() if task.get("status") in ("done", "awaiting_review")):
@@ -255,6 +264,26 @@ def _group_alerts(alerts: list[dict]) -> list[dict]:
     return list(groups.values())
 
 
+def _publication_row(action: dict, queue: list[dict]) -> int | None:
+    """A shared commit is insufficient to attach a different worktree's publication provenance."""
+    head = action.get("head")
+    if action.get("kind") != "review_publication" or not _sha(head) or action.get("target") != head:
+        return None
+    matches = [index for index, row in enumerate(queue)
+               if row.get("kind") in ("commits", "review") and row.get("head") == head
+               and (not action.get("branch") or action["branch"] in row.get("branches", []))
+               and (not action.get("worktree") or action["worktree"] in row.get("worktrees", []))]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _reference_display(reference: dict, words: dict) -> str:
+    # Escape controls, bidi marks and Unicode only in the display, preserving the structured identifier verbatim.
+    if reference["ref_complete"]:
+        return json.dumps(reference["ref"], ensure_ascii=True)
+    return words["reference_preview"].format(n=reference["ref_omitted"]) + ": " \
+        + json.dumps(reference["ref_preview"], ensure_ascii=True)
+
+
 def _format(brief: dict, words: dict) -> str:
     def source_line(source):
         values = source["pointers"] + source["heads"]
@@ -309,7 +338,8 @@ def _format(brief: dict, words: dict) -> str:
                 lines.append("- " + ", ".join(item["task_ids"]) + " [main/" + str(item["status"]) + "/"
                              + item["state"] + "] " + item["reason"])
                 if item["references"]:
-                    lines.append(words["references"] + ": " + ", ".join(_quote(ref["ref"]) for ref in item["references"]))
+                    lines.append(words["references"] + ": " + ", ".join(_reference_display(ref, words)
+                                                                           for ref in item["references"]))
                     lines.append(words["references_more"] + ": " + shown(item["references_more"]))
             else:
                 lines.append("- " + item["title"])
@@ -408,8 +438,7 @@ def build(model: dict, context: dict | None = None) -> dict:
             value = {**action, "observed_at": generated_at,
                      "head_state": "exact" if _sha(head) else "abbreviated" if isinstance(head, str)
                      and re.fullmatch(r"[0-9a-f]{7,39}", head) else "unavailable"}
-            queue_row = next((index for index, row in enumerate(publication.get("queue", []))
-                              if action.get("head") and row.get("head") == action["head"]), None)
+            queue_row = _publication_row(action, publication.get("queue", []))
             remote_source = queue_row is not None and publication["queue"][queue_row].get("comparison_source") == "github"
             pointers = ["/overview/actions/" + str(index)]
             if queue_row is not None:

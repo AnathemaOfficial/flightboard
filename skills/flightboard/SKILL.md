@@ -94,8 +94,11 @@ before interpreting its alerts, evidence checks and prepared actions. The endpoi
 of the same cached `/state.json`; the page uses its existing refresh without another polling loop.
 Start with `text` and the identity/coverage fields; expand only the sources needed for the action being examined.
 
-Use `source.pointers` to locate the supporting observations in `/state.json` when more detail is needed. Check
-actual repository/worktree identity and current Git before relying on a proposed action. A reference is not a
+When more detail is needed, read `/state.json` and use its embedded `agent_brief` together with its source data.
+Before applying `source.pointers` from a separately fetched briefing, require matching `generated_at`, repository
+identity and available baseline heads. If they differ, discard the earlier pointers and use the briefing embedded
+in that state response; indexed pointers must not be followed across snapshots. Check actual repository/worktree
+identity and current Git before relying on a proposed action. A reference is not a
 verified artifact; a missing recorded reference does not prove that evidence does not exist. Generic task ledgers
 without an evidence contract remain unevaluated. Do not invent CI, review, implementation or approval results.
 
