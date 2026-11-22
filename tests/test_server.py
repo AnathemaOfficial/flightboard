@@ -159,9 +159,11 @@ class PageTest(unittest.TestCase):
     def test_the_page_talks_only_to_its_own_server(self) -> None:
         template = self.template
         self.assertIsNone(re.search(r"(?i)\b(?:src|href|action|srcset)\s*=\s*[\"']?\s*(?:[a-z]+:)?//", template))
-        # The optional observation adds user-clicked PR links, while fetch and CSP remain same-origin only.
-        self.assertEqual(re.findall(r"https?://[^\s'\"]*", template), [SVG_NAMESPACE, "https://github.com/"])
-        self.assertEqual(template.count("fetch("), 1)
+        # Provider presets are plain form values. Both fetch callsites still use only this board's origin.
+        self.assertEqual(re.findall(r"https?://[^\s'\"]*", template), [SVG_NAMESPACE, "https://github.com/",
+            "https://api.openai.com/v1", "https://api.anthropic.com/v1", "https://generativelanguage.googleapis.com/v1beta"])
+        self.assertEqual(template.count("fetch("), 2)
+        self.assertIn("X-Flightboard-Advisor", template)
         self.assertRegex(template, r"fetch\('state\.json',")
         self.assertRegex(template, r"const polling = data\.mode === 'live' && \(location\.protocol === 'http:'")
         for forbidden in ("@import", "url(", "<link", "<iframe", "XMLHttpRequest", "eval(", "new Function",

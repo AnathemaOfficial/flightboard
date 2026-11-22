@@ -15,6 +15,7 @@ from pathlib import Path
 TEMPLATE = Path(__file__).resolve().with_name("template.html")
 PLACEHOLDER = "__FLIGHTBOARD_JSON__"
 SCRIPT_HASH = "__SCRIPT_HASH__"
+ADVISOR_TOKEN = "__FLIGHTBOARD_ADVISOR_TOKEN__"
 CODE_SCRIPT = re.compile(r"<script>(.*?)</script>", re.S)
 PAGE_POLICY = ("default-src 'none'; script-src 'sha256-{digest}'; style-src 'unsafe-inline'; connect-src 'self'; "
                "base-uri 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'; "
@@ -40,8 +41,12 @@ def embed(view: dict, template: str, placeholder: str = PLACEHOLDER) -> str:
     return template.replace(SCRIPT_HASH, f"sha256-{digest}").replace(placeholder, data)
 
 
-def render(view: dict, template: str) -> str:
+def render(view: dict, template: str, advisor_token: str = "") -> str:
     """The page with the view as JSON: no source text can leave its block."""
+    if advisor_token and re.fullmatch(r"[A-Za-z0-9_-]{32,128}", advisor_token) is None:
+        raise ValueError("invalid advisor token")
+    # Replace the template only, before embedding repository text that might itself contain this marker.
+    template = template.replace(ADVISOR_TOKEN, advisor_token)
     return embed(view, template)
 
 
