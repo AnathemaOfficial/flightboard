@@ -113,6 +113,81 @@ class BriefingTest(unittest.TestCase):
         self.assertNotEqual(alert["source"]["observed_at"], result["generated_at"])
         self.assertEqual(result["main"]["remote_sha"], "b" * 40)
 
+    def test_disabled_github_local_fallback_alerts_use_the_current_reading(self):
+        codes = ("main_ahead", "main_behind", "main_diverged", "publication_pending", "publication_overdue",
+                 "publication_unknown")
+        model, found = reading()
+        model["publication"]["remote"].update(state="disabled", last_success_at=None)
+        model["publication"]["main"]["comparison_source"] = "local_tracking_refs"
+        model["publication"]["unpublished"]["comparison_source"] = "local_tracking_refs"
+        model["publication"]["alerts"] = [{"code": code, "severity": "warning", "detail": "1"} for code in codes]
+        result = briefing.build(model, found)
+        for code in codes:
+            with self.subTest(code=code):
+                source = next(item["source"] for item in result["alerts"] if item["code"] == code)
+                self.assertEqual(source["observed_at"], model["generated_at"])
+                pointer = "/publication/main" if code.startswith("main_") else "/publication/unpublished"
+                self.assertIn(pointer, source["pointers"])
+                self.assertNotIn("/publication/remote", source["pointers"])
+
+    def test_stale_github_timestamp_is_not_attached_to_local_fallback_facts(self):
+        observed = "2026-11-01T03:04:05+00:00"
+        for comparison in ("local_tracking_refs", "local_main"):
+            with self.subTest(comparison=comparison):
+                model, found = reading()
+                model["publication"]["remote"].update(state="stale", last_success_at=observed)
+                model["publication"]["main"]["comparison_source"] = comparison
+                model["publication"]["unpublished"]["comparison_source"] = comparison
+                model["publication"]["alerts"] = [{"code": code, "severity": "warning", "detail": "1"}
+                                                     for code in ("main_behind", "publication_pending")]
+                result = briefing.build(model, found)
+                self.assertEqual(result["coverage"]["github"]["last_success_at"], observed)
+                for alert in result["alerts"]:
+                    self.assertEqual(alert["source"]["observed_at"], model["generated_at"])
+                    self.assertNotIn("/publication/remote", alert["source"]["pointers"])
+
+    def test_main_and_unpublished_alert_provenance_are_selected_independently(self):
+        observed = "2026-11-01T03:04:05+00:00"
+        for main_source, unpublished_source in (("github", "local_main"), ("local_tracking_refs", "github")):
+            with self.subTest(main=main_source, unpublished=unpublished_source):
+                model, found = reading()
+                model["publication"]["remote"].update(state="stale", last_success_at=observed)
+                model["publication"]["main"]["comparison_source"] = main_source
+                model["publication"]["unpublished"]["comparison_source"] = unpublished_source
+                model["publication"]["alerts"] = [{"code": code, "severity": "warning", "detail": "1"}
+                                                     for code in ("main_ahead", "publication_unknown", "github_unavailable")]
+                result = briefing.build(model, found)
+                expected = {"main_ahead": main_source == "github",
+                            "publication_unknown": unpublished_source == "github", "github_unavailable": True}
+                for code, uses_github in expected.items():
+                    source = next(item["source"] for item in result["alerts"] if item["code"] == code)
+                    self.assertEqual(source["observed_at"], observed if uses_github else model["generated_at"])
+                    self.assertEqual("/publication/remote" in source["pointers"], uses_github)
+                    if code == "main_ahead":
+                        self.assertIn("/publication/main", source["pointers"])
+                    elif code == "publication_unknown":
+                        self.assertIn("/publication/unpublished", source["pointers"])
+
+    def test_github_backed_alerts_keep_actual_success_time_and_fact_pointers(self):
+        observed = "2026-11-07T11:59:00-05:00"
+        model, found = reading()
+        model["publication"]["remote"].update(state="fresh", last_success_at=observed)
+        model["publication"]["main"].update(comparison_source="github", remote_head="b" * 40)
+        model["publication"]["unpublished"]["comparison_source"] = "github"
+        codes = ("main_ahead", "main_behind", "main_diverged", "publication_pending", "publication_overdue",
+                 "publication_unknown", "publication_review")
+        model["publication"]["alerts"] = [{"code": code, "severity": "warning", "detail": "1"} for code in codes]
+        result = briefing.build(model, found)
+        for code in codes:
+            with self.subTest(code=code):
+                source = next(item["source"] for item in result["alerts"] if item["code"] == code)
+                self.assertEqual(source["observed_at"], observed)
+                self.assertIn("/publication/remote", source["pointers"])
+                if code.startswith("main_"):
+                    self.assertIn("/publication/main", source["pointers"])
+                elif code != "publication_review":
+                    self.assertIn("/publication/unpublished", source["pointers"])
+
     def test_sources_resolve_to_the_same_state_and_never_promote_short_heads(self):
         found = context()
         found["publication"]["unpublished"].update(unique_commits=1, candidate_commits=1)
