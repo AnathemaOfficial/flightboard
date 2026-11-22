@@ -89,9 +89,13 @@ unknown. There is no invented price estimate; the call and output-token limits d
 The dossier accepts at most **12 selected files**, each at most **32 KiB**, and at most **128 KiB of compact context**.
 Board fields are filtered and bounded; a partial observation and omitted files remain explicit. Files are exact,
 ordinary UTF-8 text. No recursive directory scan, whole-repository upload, binary upload, symlink/junction/reparse
-point, hardlink, device, pipe, network share or `.git` file is read. Obvious credential filenames and secret patterns
+point, hardlink, device, pipe or `.git` file is read. Obvious credential filenames and secret patterns
 are refused. These checks cannot guarantee that an accepted document contains no sensitive information; the preview
 and sharing consent are still necessary.
+
+UNC paths are refused, and Windows mapped network drives are rejected before file lookup. On Linux and macOS,
+mounted network filesystems (for example NFS or SMB) are not detected or rejected: an explicitly selected file on
+such a mount may be read. Select repository and local files on trusted local filesystems.
 
 The model receives a frozen dossier, not filesystem tools. It cannot enlarge the selected scope, open another file,
 execute a command, edit a task, run tests, commit, push or merge. Code, evidence and architecture text can support
