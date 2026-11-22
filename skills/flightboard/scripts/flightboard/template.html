@@ -1010,7 +1010,7 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
   const keyOf = text => text.replace(/^\{"generated_at":"[^"]*",/, '{');
 
   // ---- optional advisor: consented requests only; independent of board collection and redraws
-  const advisor = {preview:null, revision:0, busy:false, running:false, automatic:null, timer:0, job:'', revoking:false, checking:false, uncertain:false};
+  const advisor = {preview:null, revision:0, busy:false, running:false, automatic:null, timer:0, job:'', revoking:false, checking:false, uncertain:false, reloadRequired:false};
   const advisorFields = ['advisor-protocol','advisor-endpoint','advisor-model','advisor-max-output','advisor-question',
     'advisor-repo-files','advisor-local-files','advisor-consent-board','advisor-consent-repo','advisor-consent-local'];
   const advisorToken = () => document.querySelector('meta[name="flightboard-advisor-token"]')?.content || '';
@@ -1020,7 +1020,7 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
     && $('advisor-question').value.trim() && Number.isInteger(Number($('advisor-max-output').value))
     && Number($('advisor-max-output').value) >= 128 && Number($('advisor-max-output').value) <= 4096);
   function advisorControls() {
-    const locked = advisor.busy || advisor.running || advisor.revoking || advisor.checking || advisor.uncertain || Boolean(advisor.automatic?.enabled);
+    const locked = advisor.reloadRequired || advisor.busy || advisor.running || advisor.revoking || advisor.checking || advisor.uncertain || Boolean(advisor.automatic?.enabled);
     $('advisor-config').disabled = locked;
     $('advisor-key').disabled = locked;
     $('advisor-consent-send').disabled = locked;
@@ -1034,7 +1034,7 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
     $('advisor-automate').disabled = $('advisor-send').disabled || !$('advisor-consent-automatic').checked
       || !Number.isInteger(interval) || interval < 15 || interval > 1440
       || !Number.isInteger(calls) || calls < 1 || calls > 20;
-    $('advisor-revoke').disabled = advisor.revoking;
+    $('advisor-revoke').disabled = advisor.reloadRequired || advisor.revoking;
   }
   function advisorInvalidate() {
     ++advisor.revision;
@@ -1046,11 +1046,23 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
     $('advisor-preview-section').hidden = true;
     $('advisor-result-section').hidden = true;
     $('advisor-result').textContent = '';
-    $('advisor-status').textContent = t('page.advisor_prepare_again');
+    $('advisor-status').textContent = t(advisor.reloadRequired ? 'page.advisor_reload_required' : 'page.advisor_prepare_again');
     advisorControls();
   }
+  function advisorReloadRequired() {
+    advisor.reloadRequired = true;
+    clearTimeout(advisor.timer);
+    advisor.running = false;
+    advisor.uncertain = false;
+    advisor.automatic = null;
+    advisor.job = '';
+    for (const id of ['advisor-consent-board','advisor-consent-repo','advisor-consent-local']) $(id).checked = false;
+    $('advisor-authorized-scope').textContent = '';
+    $('advisor-authorized-scope').hidden = true;
+    advisorInvalidate();  // also invalidate late responses from the previous server session
+  }
   async function advisorRequest(path, body) {
-    if (!advisorPaths.includes(path)) throw new Error('advisor route');
+    if (advisor.reloadRequired || !advisorPaths.includes(path)) throw new Error('advisor route');
     const controller = new AbortController();
     const deadline = setTimeout(() => controller.abort(), 20000);
     try {
@@ -1059,6 +1071,10 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
       const response = await fetch(path, {method:body === undefined ? 'GET' : 'POST', headers,
         ...(body === undefined ? {} : {body:JSON.stringify(body)}), cache:'no-store', credentials:'same-origin',
         redirect:'error', signal:controller.signal});
+      if (response.status === 403) {
+        advisorReloadRequired();
+        throw new Error('advisor authorization expired');
+      }
       const value = await response.json();
       if (!response.ok || !value || typeof value !== 'object') throw new Error('advisor request');
       return value;
@@ -1086,7 +1102,7 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
       $('advisor-preview').value = JSON.stringify({question:preview.question,context:preview.context}, null, 2);
       $('advisor-preview-meta').textContent = t('page.advisor_preview_meta', {
         model:preview.config.model,endpoint:preview.config.endpoint,bytes:preview.bytes,
-        at:preview.created_at,expires:preview.expires_at,hash:preview.sha256});
+        at:stamp(preview.created_at),expires:stamp(preview.expires_at),hash:preview.sha256});
       $('advisor-share-label').textContent = t('page.advisor_consent_send', {
         protocol:preview.config.protocol,model:preview.config.model,endpoint:preview.config.endpoint});
       $('advisor-preview-section').hidden = false;
@@ -1100,7 +1116,7 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
   }
   function advisorSchedule(delay) {
     clearTimeout(advisor.timer);
-    if (!document.hidden && (advisor.running || advisor.uncertain || advisor.automatic?.enabled)) advisor.timer = setTimeout(advisorPoll, delay);
+    if (!advisor.reloadRequired && !document.hidden && (advisor.running || advisor.uncertain || advisor.automatic?.enabled)) advisor.timer = setTimeout(advisorPoll, delay);
   }
   function advisorResult(value) {
     if (!value.result || typeof value.result.text !== 'string') return;
@@ -1153,7 +1169,7 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
     advisorResult(value);
     $('advisor-status').textContent = advisor.automatic?.enabled
       ? t('page.advisor_automatic_status', {used:advisor.automatic.used,max:advisor.automatic.max_calls,
-        remaining:advisor.automatic.remaining,next:advisor.automatic.next_check_at || '—',expires:advisor.automatic.expires_at})
+        remaining:advisor.automatic.remaining,next:stamp(advisor.automatic.next_check_at),expires:stamp(advisor.automatic.expires_at)})
         + (value.state === 'error' && value.error !== 'automatic_context_unavailable' ? ' ' + t('page.advisor_state_error') : '')
       : value.error === 'automatic_context_unavailable' ? '' : t('page.advisor_state_' + value.state);
     if (advisor.automatic && !advisor.automatic.enabled && Number.isInteger(advisor.automatic.max_calls)) {
@@ -1166,7 +1182,7 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
     advisorControls();
   }
   async function advisorPoll(force = false) {
-    if (advisor.checking || document.hidden || (!force && !advisor.running && !advisor.uncertain && !advisor.automatic?.enabled)) return;
+    if (advisor.reloadRequired || advisor.checking || document.hidden || (!force && !advisor.running && !advisor.uncertain && !advisor.automatic?.enabled)) return;
     const revision = advisor.revision;
     if (force) advisor.uncertain = true;
     advisor.checking = true;
@@ -1216,7 +1232,7 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
     }
   }
   async function advisorRevoke(event) {
-    if (!event.isTrusted || advisor.revoking) return;
+    if (!event.isTrusted || advisor.reloadRequired || advisor.revoking) return;
     clearTimeout(advisor.timer);
     advisor.running = false;
     advisor.uncertain = false;

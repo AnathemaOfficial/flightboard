@@ -7,6 +7,8 @@ SPDX-FileCopyrightText: 2026 Technologies CoreXalt Inc.
 The live dashboard includes an optional advisor. It is disabled until the owner explicitly prepares a dossier and
 consents to sharing it. Ordinary Flightboard reading, snapshots and `--resume` need no API key and make no LLM calls.
 This implementation supersedes the board-only scope proposed in [optional-assistant.md](optional-assistant.md).
+The panel is included on live pages, without a separate CLI enable/disable flag. File access and provider calls
+remain inactive until the required consents are given; opening the panel does not authorize either. No key is saved.
 
 ## Choose the provider and information
 

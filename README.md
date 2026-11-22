@@ -53,6 +53,8 @@ It works without any task file too: a repository without one gets the whole sess
 See [overview, progress and prepared actions](docs/progress-and-prepared-actions.md).
 See the [optional LLM advisor](docs/llm-advisor.md) for provider setup, separate reading/sharing consents, file
 selection, capped monitoring and limits. Ordinary dashboard operation does not require it.
+The advisor panel is present on live pages; "optional" means that its file access and provider calls remain
+inactive until the required consents are given. No key is saved, and there is no separate CLI enable/disable flag.
 
 flightboard uses guarded Git and file reads, writes nothing in the repository or authorized worktree roots, and
 serves its page to this computer only. Its checks and remaining risks are described below. It needs

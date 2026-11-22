@@ -38,6 +38,9 @@ ajoute un consentement pour les versions futures des mêmes fichiers, un interva
 total de 1 à 20 appels, valable au maximum 24 heures. Il peut continuer même si l'onglet est fermé; la révocation
 arrête les appels futurs. Le collecteur, ses lectures parallèles et ses caches restent indépendants. Cette option
 reste désactivée par défaut et n'est pas nécessaire au fonctionnement du tableau.
+Le panneau est présent sur les pages en direct : « optionnel » signifie que ses lectures de fichiers et ses appels
+au fournisseur restent inactifs sans les consentements requis. Aucune clé n'est enregistrée et il n'y a pas
+d'interrupteur d'activation distinct dans la ligne de commande.
 
 Les graphiques montrent les tâches faites dans le temps, les jalons et les mouvements quotidiens : nouveaux lots,
 passages à « En cours », mises en revue et tâches terminées, avec une vue en tableau. Les mouvements couvrent tous

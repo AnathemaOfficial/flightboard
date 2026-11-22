@@ -105,6 +105,38 @@ class ContextTest(unittest.TestCase):
             self.assertEqual(found["files"], [])
             self.assertEqual(found["omitted"][0]["reason"], "secret_detected" if index < 4 else "not_utf8_text")
 
+    def test_provider_key_aliases_are_omitted_from_files_and_board(self):
+        value = "synthetic-private-value"
+        aliases = ("OPENAI_KEY", "ANTHROPIC_KEY", "GOOGLE_KEY", "GEMINI_KEY", "DEEPSEEK_KEY", "MINIMAX_KEY",
+                   "DB_PASSWORD", "DB_PASSWD", "PRIVATE_KEY", "SERVICE_PRIVATE_KEY")
+        for alias in aliases:
+            for raw in (alias + "=" + value, json.dumps({alias.lower(): value})):
+                with self.subTest(alias=alias, raw=raw):
+                    self.write("proof.txt", raw.encode())
+                    found = self.build(["proof.txt"], board={**self.board, "waiting": [raw]})
+                    self.assertEqual(found["files"], [])
+                    self.assertNotIn("waiting", found["board"])
+                    self.assertNotIn(value, context._json(found).decode())
+                    self.assertIn({"source": "repo:proof.txt", "reason": "secret_detected"}, found["omitted"])
+                    self.assertIn({"source": "board:waiting", "reason": "secret_detected"}, found["omitted"])
+
+    def test_board_credential_key_aliases_are_removed_before_copying_values(self):
+        aliases = ("openai_key", "Db_Password", "db-passwd", "service_private_key", "private-key")
+        for alias in aliases:
+            with self.subTest(alias=alias):
+                found = self.build(board={**self.board, "main": {"state": "ok", alias: "short"}})
+                self.assertEqual(found["board"]["main"], {"state": "ok"})
+                self.assertNotIn("short", context._json(found).decode())
+                self.assertTrue(found["limits"]["board_partial"])
+
+    def test_ordinary_key_assignments_remain_readable(self):
+        raw = 'PRIMARY_KEY="customer_identifier"\nFOREIGN_KEY="account_identifier"\nSORT_KEY="created_timestamp"'
+        self.write("schema.txt", raw.encode())
+        found = self.build(["schema.txt"], board={**self.board, "waiting": [raw]})
+        self.assertEqual(found["files"][0]["text"], raw)
+        self.assertEqual(found["board"]["waiting"], [raw])
+        self.assertEqual(found["omitted"], [])
+
     def test_missing_directory_and_oversized_files_are_explicit(self):
         self.write("large.txt", b"a" * (context.MAX_FILE_BYTES + 1))
         (self.repo / "folder").mkdir()

@@ -162,7 +162,15 @@ class PageTest(unittest.TestCase):
         # Provider presets are plain form values. Both fetch callsites still use only this board's origin.
         self.assertEqual(re.findall(r"https?://[^\s'\"]*", template), [SVG_NAMESPACE, "https://github.com/",
             "https://api.openai.com/v1", "https://api.anthropic.com/v1", "https://generativelanguage.googleapis.com/v1beta"])
-        self.assertEqual(template.count("fetch("), 2)
+        # Inspect every callsite: an allowed provider preset must never become a browser fetch target.
+        self.assertEqual(re.findall(r"\bfetch\s*\(\s*([^,\r\n]+)", template), ["path", "'state.json'"])
+        advisor_request = template.split("async function advisorRequest(path, body) {", 1)[1].split(
+            "async function advisorPrepare(event) {", 1)[0]
+        guard = "if (advisor.reloadRequired || !advisorPaths.includes(path)) throw new Error('advisor route');"
+        self.assertLess(advisor_request.index(guard), advisor_request.index("fetch(path,"))
+        routes = re.search(r"const advisorPaths = (\[[^\]]+\]);", template).group(1)
+        self.assertEqual(json.loads(routes.replace("'", '"')), [
+            "advisor/preview", "advisor/analyze", "advisor/automate", "advisor/status", "advisor/revoke"])
         self.assertIn("X-Flightboard-Advisor", template)
         self.assertRegex(template, r"fetch\('state\.json',")
         self.assertRegex(template, r"const polling = data\.mode === 'live' && \(location\.protocol === 'http:'")

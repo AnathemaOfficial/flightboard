@@ -12,7 +12,7 @@ class Element {
   addEventListener(name, fn) { if(!this.listeners.has(name)) this.listeners.set(name,[]); this.listeners.get(name).push(fn); }
   fire(name, event={isTrusted:true}) { return Promise.all((this.listeners.get(name)||[]).map(fn=>fn(event))); }
 }
-function fixture({live=true, token='local-test-token'}={}) {
+function fixture({live=true, token='local-test-token', locale='en'}={}) {
   const nodes=new Map();
   for(const id of source.matchAll(/\bid="(advisor[^" ]*)"/g)) nodes.set(id[1],new Element(id[1]));
   const $=id=>{assert.ok(nodes.has(id),'known adviser node '+id);return nodes.get(id);};
@@ -24,11 +24,14 @@ function fixture({live=true, token='local-test-token'}={}) {
   const document={hidden:false,querySelector:selector=>{assert.equal(selector,'meta[name="flightboard-advisor-token"]');return {content:token};},
     addEventListener:(name,fn)=>{if(!events.has(name))events.set(name,[]);events.get(name).push(fn);}};
   const context={$,polling:live,document,window:{addEventListener:(name,fn)=>windowEvents.set(name,fn)},
-    t:(key,args={})=>key+(Object.keys(args).length?' '+JSON.stringify(args):''),AbortController,
+    t:(key,args={})=>key+(Object.keys(args).length?' '+JSON.stringify(args):''),i18n:()=>({locale}),AbortController,
     setTimeout:(fn,delay)=>{timers.set(++timerId,{fn,delay});return timerId;},clearTimeout:id=>timers.delete(id),
     fetch:async(path,options)=>{calls.push({path,options,body:options.body?JSON.parse(options.body):undefined});
       assert.ok(replies.length,'a deliberate fake response is required');return await replies.shift()(path,options);}};
-  vm.runInNewContext(source.slice(start,end)+'\nthis.api={advisor,advisorInit,advisorControls,advisorInvalidate,advisorPrepare,advisorSend,advisorPoll,advisorRevoke};',context);
+  const dateStart=source.indexOf('  let formats = null, formatsLocale ='), dateEnd=source.indexOf('  const clock =',dateStart);
+  assert.ok(dateStart >= 0 && dateEnd > dateStart,'execute the actual page date formatters');
+  vm.runInNewContext(source.slice(dateStart,dateEnd)+source.slice(start,end)
+    +'\nthis.api={advisor,advisorInit,advisorControls,advisorInvalidate,advisorPrepare,advisorSend,advisorPoll,advisorRevoke};',context);
   const reply=value=>replies.push(async()=>({ok:true,json:async()=>value}));
   const input=async(id,value)=>{if(typeof value==='boolean')$(id).checked=value;else $(id).value=value;await $(id).fire('input');};
   const ready=async()=>{await input('advisor-model','test-model');await input('advisor-consent-board',true);};
@@ -186,7 +189,63 @@ async function checks() {
       'reconciling an ambiguous accepted send never retries the provider request');
     uncertain.reply({state:'revoked'});await uncertain.$('advisor-revoke').fire('click');
   }
+  for(const stage of ['prepare','analyze','automate','revoke','uncertain-status','automatic-status']) {
+    const stale=fixture();await stale.ready();
+    if(stage!=='prepare') {
+      await stale.prepare();await stale.input('advisor-consent-send',true);
+      if(['automate','automatic-status'].includes(stage))await stale.input('advisor-consent-automatic',true);
+    }
+    if(stage==='uncertain-status') {
+      stale.replies.push(async()=>{throw new Error('accepted response lost');});
+      await stale.$('advisor-send').fire('click');
+      assert.equal(stale.context.api.advisor.uncertain,true);
+    } else if(stage==='automatic-status') {
+      stale.reply({state:'running',automatic:{enabled:true,used:1,max_calls:4,remaining:3}});
+      await stale.$('advisor-automate').fire('click');
+      assert.equal(stale.context.api.advisor.automatic.enabled,true);
+    }
+    stale.$('advisor-key').value='FAKE-STALE-KEY';
+    stale.$('advisor-result').textContent='Old sensitive result';
+    stale.$('advisor-authorized-scope').textContent='Old authorized files';
+    stale.replies.push(async()=>({ok:false,status:403,json:async()=>{throw new Error('403 may be an HTML error page');}}));
+    if(stage.endsWith('-status'))await stale.context.api.advisorPoll();
+    else await stale.$('advisor-'+(stage==='analyze'?'send':stage)).fire('click');
+    assert.equal(stale.context.api.advisor.reloadRequired,true,stage);
+    assert.match(stale.$('advisor-status').textContent,/advisor_reload_required/,stage);
+    assert.equal(stale.context.api.advisor.running,false);assert.equal(stale.context.api.advisor.uncertain,false);
+    assert.equal(stale.context.api.advisor.automatic,null);assert.equal(stale.context.api.advisor.preview,null);
+    assert.equal(stale.$('advisor-key').value,'');assert.equal(stale.$('advisor-preview').value,'');
+    assert.equal(stale.$('advisor-result').textContent,'');assert.equal(stale.$('advisor-authorized-scope').textContent,'');
+    for(const consent of ['board','repo','local','send','automatic'])assert.equal(stale.$('advisor-consent-'+consent).checked,false);
+    for(const action of ['prepare','send','automate','revoke'])assert.equal(stale.$('advisor-'+action).disabled,true);
+    assert.equal(stale.timers.size,0,'403 permanently stops assistant polling');
+    const stoppedCalls=stale.calls.length;
+    await stale.context.api.advisorPoll(true);
+    stale.$('advisor').open=true;await stale.$('advisor').fire('toggle');
+    for(const fn of stale.events.get('visibilitychange'))fn();
+    await stale.$('advisor-revoke').fire('click');
+    assert.equal(stale.calls.length,stoppedCalls,'returning to a stale page cannot restart assistant requests');
+    assert.equal(stale.timers.size,0);
+  }
+  for(const locale of ['en-US','fr-CA']) {
+    const localized=fixture({locale});await localized.ready();await localized.prepare();
+    const format=new Intl.DateTimeFormat(locale,{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
+    const expected=value=>format.format(Date.parse(value));
+    const meta=localized.$('advisor-preview-meta').textContent;
+    assert.ok(meta.includes(expected(localized.preview().preview.created_at)));
+    assert.ok(meta.includes(expected(localized.preview().preview.expires_at)));
+    const next='2026-11-22T02:30:00+00:00',expiresAt='2026-11-23T01:00:00+00:00';
+    localized.reply({state:'complete',automatic:{enabled:true,used:1,max_calls:4,remaining:3,next_check_at:next,expires_at:expiresAt}});
+    await localized.context.api.advisorPoll(true);
+    const status=localized.$('advisor-status').textContent;
+    assert.ok(status.includes(expected(next)));assert.ok(status.includes(expected(expiresAt)));
+    assert.ok(!status.includes(next)&&!status.includes(expiresAt),'display locale-aware browser local time instead of raw UTC');
+    localized.reply({state:'complete',automatic:{enabled:true,next_check_at:null,expires_at:'invalid timestamp'}});
+    await localized.context.api.advisorPoll();
+    const fallback=JSON.parse(localized.$('advisor-status').textContent.slice('page.advisor_automatic_status '.length));
+    assert.equal(fallback.next,'—');assert.equal(fallback.expires,'—','missing and invalid dates use the page fallback');
+  }
   assert.ok(calls.every(call=>call.path.startsWith('advisor/')),'the panel never refreshes or reloads the board');
-  console.log('19 adviser-page checks passed');
+  console.log('27 adviser-page checks passed');
 }
 checks().catch(error=>{console.error(error);process.exitCode=1;});

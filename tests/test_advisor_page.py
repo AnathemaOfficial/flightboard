@@ -14,4 +14,4 @@ class AdvisorPageTest(unittest.TestCase):
         result = subprocess.run([shutil.which("node"), str(ROOT / "tests/advisor_page_checks.cjs"),
                                  str(PACKAGE / "template.html")], capture_output=True, text=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        self.assertIn("19 adviser-page checks passed", result.stdout)
+        self.assertIn("27 adviser-page checks passed", result.stdout)

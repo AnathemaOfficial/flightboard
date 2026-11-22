@@ -38,12 +38,17 @@ SENSITIVE_PAIRS = frozenset({(".codex", "auth.json"), (".claude", ".credentials.
                              ("github cli", "hosts.yml")})
 SECRET_KEYS = frozenset({"api_key", "apikey", "password", "passwd", "authorization", "credential",
                          "credentials", "secret", "secrets", "access_token", "refresh_token", "private_key"})
+SECRET_KEY_PATTERN = (
+    r"(?:[A-Z0-9_]*API[_-]?KEY|[A-Z0-9_]*SECRET|[A-Z0-9_]*TOKEN"
+    r"|(?:[A-Z0-9]+[_-])*(?:PASSWORD|PASSWD|AUTHORIZATION|PRIVATE[_-]?KEY)"
+    r"|(?:OPENAI|ANTHROPIC|GOOGLE|GEMINI|DEEPSEEK|MINIMAX)[_-]KEY)"
+)
+SECRET_KEY_NAME = re.compile(SECRET_KEY_PATTERN, re.IGNORECASE)
 SECRET_CONTENT = re.compile(
     r"-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----"
     r"|\b(?:sk-(?:proj-|ant-)?[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}"
     r"|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16})\b"
-    r"|(?i:(?:^|[\s{;,])[\"']?(?:[A-Z0-9_]*API[_-]?KEY|[A-Z0-9_]*SECRET|[A-Z0-9_]*TOKEN"
-    r"|PASSWORD|PASSWD|AUTHORIZATION)[\"']?\s*[:=]\s*[\"']?[^\s\"'#]{8,})"
+    r"|(?i:(?:^|[\s{;,])[\"']?" + SECRET_KEY_PATTERN + r"[\"']?\s*[:=]\s*[\"']?[^\s\"'#]{8,})"
 )
 
 
@@ -182,7 +187,7 @@ def _board(board: dict, omitted: list[dict]) -> tuple[dict, bool]:
                     continue
                 if key.startswith("_"):
                     continue  # implementation caches/expiry counters are neither evidence nor provider context
-                if key.casefold() in SECRET_KEYS:
+                if key.casefold() in SECRET_KEYS or SECRET_KEY_NAME.fullmatch(key):
                     partial = True
                     continue
                 result[key] = copy(item, depth + 1)
