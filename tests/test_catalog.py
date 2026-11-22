@@ -46,6 +46,22 @@ def fields(template: object) -> set[str]:
 
 
 class CatalogTest(unittest.TestCase):
+    def test_overview_contract_codes_have_both_languages(self):
+        contracts = {
+            "banner": ("reading_partial", "status_conflict", "local_work", "main_drift", "review_pending",
+                       "remote_unverified", "no_gap_observed", "loading", "unavailable", "ledger_unavailable"),
+            "action": ("repair_reading", "review_publication", "inspect_worktree", "reconcile_tracking",
+                       "reconcile_status", "prepare_next"),
+            "limit": ("reading_partial", "github_unverified", "publication_unknown", "queue_capped",
+                      "task_conflicts", "evidence_not_evaluated"),
+            "evidence_kind": ("doc", "tests", "demo", "receipt", "measure", "owner_decision", "review", "release"),
+            "evidence": ("references_only", "unsupported", "unavailable"),
+        }
+        for lang in M.LANGS:
+            for group, codes in contracts.items():
+                for code in codes:
+                    self.assertIn("page.overview_" + group + "_" + code, M.PAGE[lang])
+
     def test_publication_dynamic_states_have_words_independent_of_catalog_contents(self):
         contracts = {
             "main": ("equal", "ahead", "behind", "diverged", "unknown"),
