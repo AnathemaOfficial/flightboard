@@ -142,6 +142,89 @@ class AdvisorTest(unittest.TestCase):
         preview = self.preview()
         self.assertNotIn("_expires_at", str(preview["context"]))
 
+    def test_oversized_provider_encoding_is_rejected_before_preview_or_attempt(self):
+        names = ["proof" + str(i) + ".txt" for i in range(3)]
+        for name in names:
+            (self.root / name).write_text('"' * 21_500, encoding="utf-8")
+        with self.assertRaises(advisor.AdvisorError) as raised:
+            self.preview(repo_files=names, consent_repo=True)
+        self.assertEqual(raised.exception.code, "context_too_large")
+        self.assertEqual(self.calls, [])
+        self.assertNotIn("preview", self.service.status())
+
+    def test_automatic_wire_preflight_does_not_spend_an_attempt(self):
+        names = ["proof" + str(i) + ".txt" for i in range(3)]
+        for name in names:
+            (self.root / name).write_text("initial evidence", encoding="utf-8")
+        preview = self.preview(repo_files=names, consent_repo=True)
+        self.service.automate(self.analyze_args(preview, consent_automatic=True, interval_minutes=15, max_calls=4))
+        self.finish()
+        for name in names:
+            (self.root / name).write_text('"' * 21_500, encoding="utf-8")
+        self.clock += 901
+        self.service.check_automatic()
+        self.service.wait_idle(3)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.service.status()["automatic"]["used"], 1)
+        self.assertEqual(self.service.status()["error"], "automatic_context_unavailable")
+
+    def test_automatic_expiry_before_worker_entry_prevents_provider_call(self):
+        original = self.service._run
+        for maximum in (1, 3):
+            with self.subTest(max_calls=maximum):
+                entered, release = threading.Event(), threading.Event()
+
+                def gated(*args):
+                    entered.set()
+                    release.wait(3)
+                    original(*args)
+
+                self.service._run = gated
+                preview = self.preview()
+                self.service.automate(self.analyze_args(preview, consent_automatic=True,
+                                                       interval_minutes=15, max_calls=maximum))
+                self.assertTrue(entered.wait(2))
+                self.clock += advisor.AUTH_SECONDS + 1
+                release.set()
+                self.assertTrue(self.service.wait_idle(3))
+                self.assertEqual(self.calls, [])
+                self.assertEqual(self.service.status()["state"], "expired")
+                self.assertFalse(self.service.status()["automatic"]["enabled"])
+                self.assertIsNone(self.service._auto_key)
+
+    def test_last_automatic_attempt_still_runs_before_expiry(self):
+        preview = self.preview()
+        self.service.automate(self.analyze_args(preview, consent_automatic=True, interval_minutes=15, max_calls=1))
+        self.assertEqual(self.finish()["state"], "complete")
+        self.assertEqual(len(self.calls), 1)
+        self.assertFalse(self.service.status()["automatic"]["enabled"])
+
+    def test_revoke_wakes_running_scheduler_with_quota_remaining(self):
+        self.service._schedule = True
+        preview = self.preview()
+        self.service.automate(self.analyze_args(preview, consent_automatic=True, interval_minutes=15, max_calls=4))
+        self.finish()
+        self.assertTrue(self.service._scheduler.is_alive())
+        self.assertEqual(self.service.status()["automatic"]["remaining"], 3)
+        idle_after_revoke = threading.Event()
+        original_wait = self.service._condition.wait
+
+        def observed_wait(*args, **kwargs):
+            if self.clock > 1000 and not self.service._auto["enabled"]:
+                idle_after_revoke.set()
+            return original_wait(*args, **kwargs)
+
+        with mock.patch.object(self.service._condition, "wait", side_effect=observed_wait):
+            with self.service._condition:
+                self.clock += 901  # the next check becomes eligible while the scheduler cannot acquire its lock
+                self.service.revoke()
+            self.assertTrue(idle_after_revoke.wait(2), "the real scheduler must process the wakeup after revocation")
+            self.assertEqual(self.service.status()["automatic"]["used"], 1)
+            self.assertEqual(len(self.calls), 1)
+        self.service.close()
+        self.service._scheduler.join(2)
+        self.assertFalse(self.service._scheduler.is_alive())
+
     def test_revoking_before_worker_entry_suppresses_the_provider_call(self):
         entered, release = threading.Event(), threading.Event()
         run = self.service._run

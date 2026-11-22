@@ -5,10 +5,16 @@ from __future__ import annotations
 
 import json
 import http.server
+import os
+from pathlib import Path
 import socket
+import ssl
+import sys
+import tempfile
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 from tests.fixtures import load
@@ -296,7 +302,7 @@ class ProviderTest(unittest.TestCase):
     def test_tls_connects_to_vetted_ip_with_original_hostname_verification(self):
         sock, wrapped, context = mock.Mock(), mock.Mock(), mock.Mock()
         context.wrap_socket.return_value = wrapped
-        with mock.patch.object(providers.ssl, "create_default_context", return_value=context), \
+        with mock.patch.object(providers, "_tls_context", return_value=context), \
                 mock.patch.object(socket, "create_connection", return_value=sock) as connect, \
                 mock.patch.object(socket, "getaddrinfo", side_effect=AssertionError("second DNS lookup")):
             connection = providers._PinnedHTTPSConnection("provider.example", 443, "8.8.8.8", 1)
@@ -307,6 +313,31 @@ class ProviderTest(unittest.TestCase):
         context.wrap_socket.assert_called_once_with(sock, server_hostname="provider.example")
         self.assertIs(connection.sock, wrapped)
         connection._deadline_socket.close()
+
+    def test_tls_does_not_create_inherited_keylog_file_or_weaken_verification(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            keylog = Path(temporary).resolve() / "tls-keylog.txt"
+            previous = os.environ.get("SSLKEYLOGFILE")
+            os.environ["SSLKEYLOGFILE"] = str(keylog)
+            try:
+                # -I already protects the CLI. The reusable transport must also be safe in a non-isolated host.
+                ssl_sys = SimpleNamespace(platform=sys.platform, flags=SimpleNamespace(ignore_environment=0))
+                with mock.patch.object(providers.ssl, "sys", ssl_sys):
+                    connection = providers._PinnedHTTPSConnection("provider.example", 443, "8.8.8.8", 1)
+            finally:
+                if previous is None:
+                    os.environ.pop("SSLKEYLOGFILE", None)
+                else:
+                    os.environ["SSLKEYLOGFILE"] = previous
+            try:
+                self.assertIsNone(connection._context.keylog_filename)
+                self.assertTrue(connection._context.check_hostname)
+                self.assertEqual(connection._context.verify_mode, ssl.CERT_REQUIRED)
+                self.assertEqual(connection._context.verify_flags, ssl.create_default_context().verify_flags)
+                self.assertFalse(keylog.exists(), "even constructing a provider context must not create a key log")
+            finally:
+                connection._context.keylog_filename = None
+                connection.close()
 
     def test_tcp_and_tls_share_one_deadline_instead_of_resetting_timeouts(self):
         clock = [0.0]
@@ -322,7 +353,7 @@ class ProviderTest(unittest.TestCase):
             raise socket.timeout("TLS fixture")
 
         context.wrap_socket.side_effect = handshake
-        with mock.patch.object(providers.ssl, "create_default_context", return_value=context), \
+        with mock.patch.object(providers, "_tls_context", return_value=context), \
                 mock.patch.object(socket, "create_connection", side_effect=connected), \
                 mock.patch.object(providers.time, "monotonic", side_effect=lambda: clock[0]):
             connection = providers._PinnedHTTPSConnection("provider.example", 443, "8.8.8.8", 1, deadline=1)

@@ -13,6 +13,7 @@ import json
 import re
 import socket
 import ssl
+import sys
 import threading
 import time
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -201,9 +202,19 @@ def _resolve_public_address(host: str, port: int, deadline: float) -> str:
     return addresses[0]
 
 
+def _tls_context() -> ssl.SSLContext:
+    """Default client verification without create_default_context's optional environment key-log file."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    # Match create_default_context's stricter chain policy added in Python 3.13, without opening SSLKEYLOGFILE.
+    if sys.version_info >= (3, 13):
+        context.verify_flags |= ssl.VERIFY_X509_PARTIAL_CHAIN | ssl.VERIFY_X509_STRICT
+    context.load_default_certs(ssl.Purpose.SERVER_AUTH)
+    return context
+
+
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
     def __init__(self, host: str, port: int, address: str, timeout: float, *, deadline: float | None = None) -> None:
-        super().__init__(host, port, timeout=timeout, context=ssl.create_default_context())
+        super().__init__(host, port, timeout=timeout, context=_tls_context())
         self._address = address
         self._deadline = deadline if deadline is not None else time.monotonic() + timeout
 

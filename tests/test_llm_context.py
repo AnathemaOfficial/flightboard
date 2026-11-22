@@ -189,6 +189,33 @@ class ContextTest(unittest.TestCase):
         self.assertNotIn("sk-proj-", context._json(found).decode())
         self.assertTrue(found["limits"]["board_partial"])
 
+    def test_raw_board_assignments_are_checked_before_json_escaping(self):
+        value = "synthetic-private-value"
+        for raw in ("PASSWORD=" + value, 'PASSWORD="' + value + '"', "CUSTOM_TOKEN='" + value + "'"):
+            with self.subTest(raw=raw):
+                found = self.build(board={**self.board, "waiting": [raw]})
+                self.assertNotIn("waiting", found["board"])
+                self.assertNotIn(value, context._json(found).decode())
+                self.assertIn({"source": "board:waiting", "reason": "secret_detected"}, found["omitted"])
+                self.assertTrue(found["limits"]["board_partial"])
+        normal = ["Review the implementation against the architecture."]
+        self.assertEqual(self.build(board={**self.board, "waiting": normal})["board"]["waiting"], normal)
+
+    def test_oversized_board_string_is_not_scanned_or_partially_shared(self):
+        cutoff = 4096
+        partial = " PASSWORD=abc"
+        raw = "a" * (cutoff - len(partial)) + partial + "defghijklmnop" * 1000
+        scanner = context.SECRET_CONTENT
+        with mock.patch.object(context, "SECRET_CONTENT", wraps=scanner) as inspected:
+            found = self.build(board={**self.board, "waiting": [raw]})
+        self.assertNotIn("waiting", found["board"])
+        self.assertNotIn(partial, context._json(found).decode())
+        self.assertIn({"source": "board:waiting", "reason": "board_limit"}, found["omitted"])
+        self.assertTrue(found["limits"]["board_partial"])
+        self.assertTrue(all(len(call.args[0]) <= cutoff for call in inspected.search.call_args_list))
+        accepted = "a" * cutoff
+        self.assertEqual(self.build(board={**self.board, "waiting": [accepted]})["board"]["waiting"], [accepted])
+
 
 if __name__ == "__main__":
     unittest.main()

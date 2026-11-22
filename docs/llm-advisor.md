@@ -25,10 +25,16 @@ The adapters follow the [OpenAI Chat API](https://developers.openai.com/api/refe
 [Anthropic Messages API](https://platform.claude.com/docs/en/api/messages/create) and
 [Gemini GenerateContent API](https://aistudio.google.com/api-reference/generate-content).
 
+For Anthropic API version `2026-10-21`, use a key scoped to a single Workspace. This configuration does not send
+`anthropic-workspace-id`; credentials that can act across Workspaces require that additional header and are not
+supported here. A Workspace-specific key may omit it, as documented in the Messages API header reference above.
+
 For a local compatible model, explicitly enter an HTTP base URL on literal `127.0.0.1` or `[::1]`; a key is optional
 there. Remote endpoints require HTTPS and an API key. URLs cannot contain credentials, a query or a fragment.
 Redirects and environment proxies are not followed. Remote DNS must resolve to public addresses; the connection
 pins a checked address while still verifying the TLS hostname. Provider calls happen in Python, not the browser.
+The TLS context ignores inherited `SSLKEYLOGFILE` even in a non-isolated host: it creates no TLS key log and keeps
+the standard client certificate, hostname and chain verification settings.
 
 Enter a question, then optionally select exact files, one per line:
 

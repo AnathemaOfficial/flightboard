@@ -101,6 +101,14 @@ class Advisor:
         except (ValueError, OSError):
             raise AdvisorError("context_invalid") from None
 
+    @staticmethod
+    def _preflight(envelope):
+        """Check the final provider encoding locally, before accepting consent or spending an attempt."""
+        try:
+            llm_providers.prepare_request(envelope["config"], envelope["question"], envelope["context"])
+        except llm_providers.ProviderError as exc:
+            raise AdvisorError("context_too_large" if exc.code == "context_too_large" else "context_invalid") from None
+
     def preview(self, request: dict) -> dict:
         if request.get("consent_board") is not True:
             raise AdvisorError("reading_consent_required")
@@ -128,6 +136,7 @@ class Advisor:
             envelope = _json({"config": config, "question": question, "context": context})
             if len(envelope) > MAX_ENVELOPE_BYTES:
                 raise AdvisorError("context_too_large")
+            self._preflight({"config": config, "question": question, "context": context})
             at = datetime.now(timezone.utc)
             preview = {"id": secrets.token_urlsafe(24), "sha256": hashlib.sha256(envelope).hexdigest(),
                        "config": config, "question": question, "context": context, "bytes": len(envelope),
@@ -210,13 +219,15 @@ class Advisor:
 
     def _dispatch(self, key, envelope):
         # Caller owns the condition; marking active precedes thread creation, so concurrent requests cannot queue work.
+        automatic_deadline = None
         if self._auto and self._auto["enabled"]:
+            automatic_deadline = self._auto["deadline"]
             self._auto["used"] += 1  # attempts, including provider errors, consume the agreed total cap
             if self._auto["used"] >= self._auto["max_calls"]:
                 self._auto["enabled"], self._auto_key = False, None
         self._active, self._state, self._error, self._result = True, "running", "", None
         self._job_id = secrets.token_urlsafe(18)
-        self._thread = threading.Thread(target=self._run, args=(self._generation, key, envelope),
+        self._thread = threading.Thread(target=self._run, args=(self._generation, key, envelope, automatic_deadline),
                                         name="flightboard-advisor", daemon=True)
         try:
             self._thread.start()
@@ -228,11 +239,16 @@ class Advisor:
             self._active, self._state, self._error = False, "error", "provider_failed"
             self._condition.notify_all()
 
-    def _run(self, generation, key, envelope):
+    def _run(self, generation, key, envelope, automatic_deadline=None):
         with self._condition:
-            if generation != self._generation or self._closed:
+            expired = automatic_deadline is not None and self._clock() >= automatic_deadline
+            if generation != self._generation or self._closed or expired:
                 key = None
                 self._active = False
+                if expired and generation == self._generation and not self._closed:
+                    self._expire()
+                    self._auto_key = None
+                    self._state, self._error = "expired", ""
                 self._condition.notify_all()
                 return  # revocation before worker entry is not an already-started provider call
         started, result, error = time.monotonic(), None, ""
@@ -287,6 +303,7 @@ class Advisor:
                     envelope = {"config": config, "question": question, "context": context}
                     if len(_json(envelope)) > MAX_ENVELOPE_BYTES:
                         raise AdvisorError("context_too_large")
+                    self._preflight(envelope)
                     self._last_fingerprint = fingerprint
                     self._dispatch(key, envelope)
         except (AdvisorError, OSError, ValueError):

@@ -24,6 +24,7 @@ MAX_FILES = 12
 MAX_FILE_BYTES = 32_768
 MAX_CONTEXT_BYTES = 131_072
 MAX_BOARD_BYTES = 65_536
+MAX_BOARD_STRING_CHARS = 4096
 MAX_PATH_CHARS = 1024
 BOARD_FIELDS = ("generated_at", "tool", "repository", "main", "overview", "publication", "sessions",
                 "waiting", "limits")
@@ -131,9 +132,12 @@ def _board(board: dict, omitted: list[dict]) -> tuple[dict, bool]:
     """Copy only observation fields, bounding every container and string before serialization."""
     partial = False
     nodes = 0
+    secret = oversized = False
 
     def copy(value, depth=0):
-        nonlocal partial, nodes
+        nonlocal partial, nodes, secret, oversized
+        if secret or oversized:
+            return None
         nodes += 1
         if depth > 10 or nodes > 3000:
             partial = True
@@ -151,12 +155,16 @@ def _board(board: dict, omitted: list[dict]) -> tuple[dict, bool]:
             partial = True
             return None
         if type(value) is str:
+            # Never scan an unbounded string or share a prefix that could end midway through a credential.
+            if len(value) > MAX_BOARD_STRING_CHARS:
+                partial = oversized = True
+                return None
             if any(0xD800 <= ord(char) <= 0xDFFF for char in value):
                 partial = True
                 return None
-            if len(value) > 4096:
-                partial = True
-                return value[:4096] + " [omitted]"
+            if SECRET_CONTENT.search(value):
+                partial = secret = True
+                return None
             return value
         if type(value) is list:
             if len(value) > 100:
@@ -186,12 +194,13 @@ def _board(board: dict, omitted: list[dict]) -> tuple[dict, bool]:
     for field in BOARD_FIELDS:
         if field not in board:
             continue
+        secret = oversized = False
         candidate = copy(board[field])
-        if SECRET_CONTENT.search(_json(candidate).decode("utf-8")):
+        if secret or SECRET_CONTENT.search(_json(candidate).decode("utf-8")):
             partial = True
             omitted.append({"source": "board:" + field, "reason": "secret_detected"})
             continue
-        if len(_json({**result, field: candidate})) > MAX_BOARD_BYTES:
+        if oversized or len(_json({**result, field: candidate})) > MAX_BOARD_BYTES:
             partial = True
             omitted.append({"source": "board:" + field, "reason": "board_limit"})
             continue
