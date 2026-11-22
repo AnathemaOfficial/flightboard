@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src '__SCRIPT_HASH__'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'">
 <meta name="referrer" content="no-referrer">
-<meta name="flightboard-advisor-token" content="__FLIGHTBOARD_ADVISOR_TOKEN__">
 <title>flightboard</title>
 <style>
 :root{--ink:#15171c;--muted:#596070;--line:#dde2ea;--paper:#f5f6f8;--card:#fff;--soft:#eef1f5;--accent:#7fe3ff;--link:#075e78;
@@ -39,6 +38,9 @@ main{max-width:1308px;margin:auto;padding:18px 24px 60px}h2{font-size:19px;margi
 .publication-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:12px}
 .publication-cards .value{font-size:22px}.publication-queue{list-style:none;padding:0;display:grid;gap:7px}
 .publication-queue li{overflow-wrap:anywhere}.publication-queue a{color:var(--link)}
+.agent-brief{margin:20px 0;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}.agent-brief h2{margin:0 0 8px}
+.agent-brief textarea{display:block;width:100%;min-height:16rem;max-height:36rem;resize:vertical;font:13px/1.6 ui-monospace,Consolas,monospace;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:6px;padding:10px;white-space:pre-wrap;overflow-wrap:anywhere}
+.agent-brief-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:10px 0}.agent-brief button{font:inherit;background:var(--soft);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:7px 12px;cursor:pointer}.agent-brief button:disabled{opacity:.55;cursor:default}
 .overview-status{background:var(--card);border:1px solid var(--line);border-left:5px solid var(--ready);border-radius:10px;padding:13px 16px;margin:0 0 12px;line-height:1.5}
 .overview-status strong{font-size:18px}.overview-status p{font-size:13px;color:var(--muted);margin:4px 0 0}
 .overview-status.partial{border-left-color:var(--blocked)}.overview-status.attention{border-left-color:var(--progress)}.overview-status.clear{border-left-color:var(--done)}
@@ -48,11 +50,6 @@ main{max-width:1308px;margin:auto;padding:18px 24px 60px}h2{font-size:19px;margi
 .prepared-action{padding:9px 0;border-top:1px solid var(--line);font-size:14px}.prepared-action>summary{color:var(--link)}.prepared-action p{overflow-wrap:anywhere}
 .prepared-action textarea{display:block;width:100%;resize:vertical;max-height:22rem;min-height:8rem;margin:8px 0;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:6px;padding:10px;font:13px/1.5 ui-monospace,Consolas,monospace}
 .prepared-action button{font:inherit;background:var(--soft);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:6px 10px;cursor:pointer}.copy-status{font-size:13px;color:var(--muted);margin-left:9px}
-.advisor{margin:20px 0;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}.advisor>summary{font-size:18px;font-weight:650}
-.advisor fieldset{border:0;padding:0;margin:12px 0;min-width:0}.advisor-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.advisor label{display:block;font-size:14px;line-height:1.5}
-.advisor input:not([type=checkbox]),.advisor select,.advisor textarea{display:block;width:100%;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:6px;padding:8px;font:inherit;margin:4px 0 0}
-.advisor textarea{resize:vertical;min-height:5rem;font:13px/1.5 ui-monospace,Consolas,monospace}.advisor textarea[readonly]{min-height:14rem;max-height:32rem}.advisor .advisor-check{display:flex;align-items:flex-start;gap:8px;margin:10px 0}.advisor input[type=checkbox]{flex:none;margin-top:4px}
-.advisor button{font:inherit;background:var(--soft);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:7px 12px;cursor:pointer}.advisor button:disabled{opacity:.55;cursor:default}.advisor .advisor-buttons{display:flex;gap:10px;flex-wrap:wrap}.advisor pre{white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.6 ui-monospace,Consolas,monospace}.advisor .advisor-status{margin:12px 0;font-size:14px;line-height:1.5}.advisor .lead{margin-top:12px}
 .sessions{display:grid;grid-template-columns:repeat(auto-fill,minmax(370px,1fr));gap:12px}
 .session{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--act,var(--planned));border-radius:10px;padding:13px 15px;display:grid;gap:8px;align-content:start;min-width:0}
 .act-active{--act:var(--done)}.act-recent{--act:var(--ready)}.act-quiet,.act-unknown{--act:var(--planned)}
@@ -112,7 +109,7 @@ dialog h4{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spac
 button:focus-visible,summary:focus-visible,a:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
 footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
 @media(max-width:1100px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.kpis .hero{grid-column:1/-1}}
-@media(max-width:1000px){.charts,.split,.overview-grid,.advisor-grid{grid-template-columns:1fr}}
+@media(max-width:1000px){.charts,.split,.overview-grid{grid-template-columns:1fr}}
 @media(max-width:640px){.live,.badge,.pill{white-space:normal;min-width:0}header{padding:16px;gap:12px}.mark{font-size:16px;padding:8px}h1{font-size:20px}.resume{font-size:15px}main{padding:16px 16px 48px}
 .sessions{grid-template-columns:1fr}.tile.hero .value{font-size:40px}.event{grid-template-columns:1fr;gap:2px}.wait b{white-space:normal;overflow-wrap:anywhere;min-width:0}.wait .since{margin-left:0}}
 </style>
@@ -135,51 +132,16 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
       <div id="prepared-actions"></div>
     </details>
   </section>
-  <details id="advisor" class="advisor" hidden>
-    <summary data-t="page.advisor_title"></summary>
-    <p class="lead" data-t="page.advisor_intro"></p>
-    <fieldset id="advisor-config">
-      <legend class="sr" data-t="page.advisor_config"></legend>
-      <div class="advisor-grid">
-        <label><span data-t="page.advisor_protocol"></span><select id="advisor-protocol"><option value="openai">OpenAI compatible</option><option value="anthropic">Anthropic Messages</option><option value="gemini">Gemini</option></select></label>
-        <label><span data-t="page.advisor_endpoint"></span><input id="advisor-endpoint" type="url" maxlength="300" autocomplete="off" spellcheck="false"></label>
-        <label><span data-t="page.advisor_model"></span><input id="advisor-model" type="text" maxlength="120" autocomplete="off" spellcheck="false"></label>
-        <label><span data-t="page.advisor_output_limit"></span><input id="advisor-max-output" type="number" min="128" max="4096" value="1024" step="1"></label>
-      </div>
-      <p class="pointer" data-t="page.advisor_provider_note"></p>
-      <label><span data-t="page.advisor_question"></span><textarea id="advisor-question" maxlength="4000" rows="3"></textarea></label>
-      <div class="advisor-grid">
-        <label><span data-t="page.advisor_repo_files"></span><textarea id="advisor-repo-files" maxlength="12000" rows="3" spellcheck="false"></textarea></label>
-        <label><span data-t="page.advisor_local_files"></span><textarea id="advisor-local-files" maxlength="12000" rows="3" spellcheck="false"></textarea></label>
-      </div>
-      <p class="pointer" data-t="page.advisor_files_note"></p>
-      <label class="advisor-check"><input id="advisor-consent-board" type="checkbox"><span data-t="page.advisor_consent_board"></span></label>
-      <label class="advisor-check"><input id="advisor-consent-repo" type="checkbox"><span data-t="page.advisor_consent_repo"></span></label>
-      <label class="advisor-check"><input id="advisor-consent-local" type="checkbox"><span data-t="page.advisor_consent_local"></span></label>
-    </fieldset>
-    <div class="advisor-buttons"><button id="advisor-prepare" type="button" disabled data-t="page.advisor_prepare"></button><button id="advisor-revoke" type="button" data-t="page.advisor_revoke"></button></div>
-    <p id="advisor-status" class="advisor-status" role="status" aria-live="polite"></p>
-    <p id="advisor-authorized-scope" class="lead" hidden></p>
-    <div id="advisor-preview-section" hidden>
-      <h3 data-t="page.advisor_preview_title"></h3><p id="advisor-preview-meta" class="lead"></p>
-      <label><span data-t="page.advisor_preview_label"></span><textarea id="advisor-preview" readonly rows="14" spellcheck="false"></textarea></label>
-      <p class="pointer" data-t="page.advisor_preview_note"></p>
-      <label class="advisor-check"><input id="advisor-consent-send" type="checkbox"><span id="advisor-share-label"></span></label>
-      <label><span data-t="page.advisor_key"></span><input id="advisor-key" type="password" maxlength="4096" autocomplete="off" spellcheck="false"></label>
-      <p class="pointer" data-t="page.advisor_key_note"></p>
-      <button id="advisor-send" type="button" disabled data-t="page.advisor_send"></button>
-      <fieldset id="advisor-automatic-options"><legend data-t="page.advisor_automatic_title"></legend>
-        <div class="advisor-grid">
-          <label><span data-t="page.advisor_interval"></span><input id="advisor-interval" type="number" min="15" max="1440" value="60" step="1"></label>
-          <label><span data-t="page.advisor_max_calls"></span><input id="advisor-max-calls" type="number" min="1" max="20" value="4" step="1"></label>
-        </div>
-        <label class="advisor-check"><input id="advisor-consent-automatic" type="checkbox"><span data-t="page.advisor_consent_automatic"></span></label>
-        <p class="pointer" data-t="page.advisor_automatic_note"></p>
-        <button id="advisor-automate" type="button" disabled data-t="page.advisor_automate"></button>
-      </fieldset>
-    </div>
-    <div id="advisor-result-section" hidden><h3 data-t="page.advisor_result_title"></h3><p id="advisor-result-meta" class="lead"></p><p class="pointer" data-t="page.advisor_result_note"></p><pre id="advisor-result"></pre></div>
-  </details>
+  <section id="agent-brief" class="agent-brief fade" aria-labelledby="h-agent-brief">
+    <h2 id="h-agent-brief" data-t="page.briefing_title"></h2>
+    <p class="lead" data-t="page.briefing_intro"></p>
+    <p id="agent-brief-state" class="pointer"></p>
+    <label class="sr" for="agent-brief-text" data-t="page.briefing_text_label"></label>
+    <textarea id="agent-brief-text" readonly rows="15" spellcheck="false" data-focus="agent-brief:text"></textarea>
+    <div class="agent-brief-controls"><button id="agent-brief-copy" type="button" disabled data-focus="agent-brief:copy" data-t="page.briefing_copy"></button><a id="agent-brief-json" href="briefing.json" data-t="page.briefing_json"></a></div>
+    <p id="agent-brief-status" class="pointer" role="status" aria-live="polite"></p>
+    <p class="pointer" data-t="page.briefing_note"></p>
+  </section>
   <section id="publication" aria-labelledby="h-publication" class="fade" hidden>
     <h2 id="h-publication" data-t="page.publication"></h2>
     <div class="publication-cards" id="publication-cards"></div>
@@ -461,6 +423,52 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
     if ($('live-state').textContent !== spoken) $('live-state').textContent = spoken;
     document.body.classList.toggle('stale', lost || Boolean(failed));
   }
+
+  // ---- agent briefing: render the canonical server text; the regular state poll is the only data request
+  function currentBriefing() {
+    const brief = data.agent_brief;
+    return !lost && !failed && data.main.state === 'ok' && brief && brief.schema_version === 1
+      && ['ready','partial'].includes(brief.state) && typeof brief.text === 'string' && brief.text.trim() ? brief : null;
+  }
+  function renderBriefing() {
+    const brief = currentBriefing(), field = $('agent-brief-text');
+    const text = brief ? brief.text : '';
+    if (field.value !== text) {
+      const selection = brief && document.activeElement === field ? {
+        start:field.selectionStart,end:field.selectionEnd,direction:field.selectionDirection,
+        all:field.value.length > 0 && field.selectionStart === 0 && field.selectionEnd === field.value.length,
+        top:field.scrollTop,left:field.scrollLeft,
+      } : null;
+      field.value = text;
+      if (selection) {
+        field.setSelectionRange(Math.min(selection.start,text.length),
+          selection.all ? text.length : Math.min(selection.end,text.length),selection.direction);
+        field.scrollTop = selection.top; field.scrollLeft = selection.left;
+      }
+    }
+    $('agent-brief-copy').disabled = !brief;
+    $('agent-brief-state').textContent = t(brief ? 'page.briefing_state_' + brief.state : 'page.briefing_unavailable');
+    $('agent-brief-status').textContent = '';
+    $('agent-brief-json').hidden = !polling;
+  }
+  async function copyBriefing(event) {
+    const brief = currentBriefing();
+    if (!event.isTrusted || !brief || $('agent-brief-copy').disabled) return;
+    const field = $('agent-brief-text'), status = $('agent-brief-status'), text = brief.text;
+    const current = () => currentBriefing() === brief && field.value === text;
+    if (field.value !== text) field.value = text;
+    status.textContent = '';
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('clipboard unavailable');
+      await navigator.clipboard.writeText(text);
+      if (current()) status.textContent = t('page.briefing_copied');
+    } catch (error) {
+      if (!current()) return;
+      field.focus({preventScroll:true}); field.select();
+      status.textContent = t('page.briefing_copy_manual');
+    }
+  }
+  // ---- end agent briefing
 
   // ---- overview: observations remain separate from product validation; actions are copyable proposals only
   const OVERVIEW_ACTIONS = ['repair_reading','review_publication','inspect_worktree','reconcile_tracking','reconcile_status','prepare_next'];
@@ -1006,283 +1014,10 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
     if (owner === 'hover' || owner === null) retip(hover);
   }
   const renderCharts = () => { if ($('progress').hidden) return; draw('burnup', renderBurnup); draw('milestones', renderMilestones); draw('daily', renderDaily); };
-  const render = () => redraw(() => { renderStatic(); renderHeader(); renderOverview(); renderPublication(); renderWaiting(); renderSessions(); renderNext(); renderEvents(); renderKpis(); renderScope(); renderCharts(); renderFooter(); renderLive(); if (openedTask !== null) renderTask(openedTask); });
-  const keyOf = text => text.replace(/^\{"generated_at":"[^"]*",/, '{');
+  const render = () => redraw(() => { renderStatic(); renderHeader(); renderOverview(); renderBriefing(); renderPublication(); renderWaiting(); renderSessions(); renderNext(); renderEvents(); renderKpis(); renderScope(); renderCharts(); renderFooter(); renderLive(); if (openedTask !== null) renderTask(openedTask); });
+  const keyOf = (_text, snapshot = data) => JSON.stringify({...snapshot, generated_at:undefined, agent_brief:undefined});
 
-  // ---- optional advisor: consented requests only; independent of board collection and redraws
-  const advisor = {preview:null, revision:0, busy:false, running:false, automatic:null, timer:0, job:'', revoking:false, checking:false, uncertain:false, reloadRequired:false};
-  const advisorFields = ['advisor-protocol','advisor-endpoint','advisor-model','advisor-max-output','advisor-question',
-    'advisor-repo-files','advisor-local-files','advisor-consent-board','advisor-consent-repo','advisor-consent-local'];
-  const advisorToken = () => document.querySelector('meta[name="flightboard-advisor-token"]')?.content || '';
-  const advisorPaths = ['advisor/preview','advisor/analyze','advisor/automate','advisor/status','advisor/revoke'];
-  const advisorLines = id => $(id).value.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-  const advisorConfigured = () => Boolean($('advisor-model').value.trim() && $('advisor-endpoint').value.trim()
-    && $('advisor-question').value.trim() && Number.isInteger(Number($('advisor-max-output').value))
-    && Number($('advisor-max-output').value) >= 128 && Number($('advisor-max-output').value) <= 4096);
-  function advisorControls() {
-    const locked = advisor.reloadRequired || advisor.busy || advisor.running || advisor.revoking || advisor.checking || advisor.uncertain || Boolean(advisor.automatic?.enabled);
-    $('advisor-config').disabled = locked;
-    $('advisor-key').disabled = locked;
-    $('advisor-consent-send').disabled = locked;
-    $('advisor-automatic-options').disabled = locked;
-    const readConsent = $('advisor-consent-board').checked
-      && (!advisorLines('advisor-repo-files').length || $('advisor-consent-repo').checked)
-      && (!advisorLines('advisor-local-files').length || $('advisor-consent-local').checked);
-    $('advisor-prepare').disabled = locked || !advisorConfigured() || !readConsent;
-    $('advisor-send').disabled = locked || !advisor.preview || !$('advisor-consent-send').checked;
-    const interval = Number($('advisor-interval').value), calls = Number($('advisor-max-calls').value);
-    $('advisor-automate').disabled = $('advisor-send').disabled || !$('advisor-consent-automatic').checked
-      || !Number.isInteger(interval) || interval < 15 || interval > 1440
-      || !Number.isInteger(calls) || calls < 1 || calls > 20;
-    $('advisor-revoke').disabled = advisor.reloadRequired || advisor.revoking;
-  }
-  function advisorInvalidate() {
-    ++advisor.revision;
-    advisor.preview = null;
-    $('advisor-consent-send').checked = false;
-    $('advisor-consent-automatic').checked = false;
-    $('advisor-key').value = '';
-    $('advisor-preview').value = '';
-    $('advisor-preview-section').hidden = true;
-    $('advisor-result-section').hidden = true;
-    $('advisor-result').textContent = '';
-    $('advisor-status').textContent = t(advisor.reloadRequired ? 'page.advisor_reload_required' : 'page.advisor_prepare_again');
-    advisorControls();
-  }
-  function advisorReloadRequired() {
-    advisor.reloadRequired = true;
-    clearTimeout(advisor.timer);
-    advisor.running = false;
-    advisor.uncertain = false;
-    advisor.automatic = null;
-    advisor.job = '';
-    for (const id of ['advisor-consent-board','advisor-consent-repo','advisor-consent-local']) $(id).checked = false;
-    $('advisor-authorized-scope').textContent = '';
-    $('advisor-authorized-scope').hidden = true;
-    advisorInvalidate();  // also invalidate late responses from the previous server session
-  }
-  async function advisorRequest(path, body) {
-    if (advisor.reloadRequired || !advisorPaths.includes(path)) throw new Error('advisor route');
-    const controller = new AbortController();
-    const deadline = setTimeout(() => controller.abort(), 20000);
-    try {
-      const headers = {'X-Flightboard-Advisor':advisorToken()};
-      if (body !== undefined) headers['Content-Type'] = 'application/json';
-      const response = await fetch(path, {method:body === undefined ? 'GET' : 'POST', headers,
-        ...(body === undefined ? {} : {body:JSON.stringify(body)}), cache:'no-store', credentials:'same-origin',
-        redirect:'error', signal:controller.signal});
-      if (response.status === 403) {
-        advisorReloadRequired();
-        throw new Error('advisor authorization expired');
-      }
-      const value = await response.json();
-      if (!response.ok || !value || typeof value !== 'object') throw new Error('advisor request');
-      return value;
-    } finally { clearTimeout(deadline); }
-  }
-  async function advisorPrepare(event) {
-    if (!event.isTrusted || $('advisor-prepare').disabled) return;
-    advisorInvalidate();
-    const revision = advisor.revision;
-    advisor.busy = true;
-    advisorControls();
-    $('advisor-status').textContent = t('page.advisor_preparing');
-    try {
-      const value = await advisorRequest('advisor/preview', {
-        config:{protocol:$('advisor-protocol').value,endpoint:$('advisor-endpoint').value.trim(),
-          model:$('advisor-model').value.trim(),max_output_tokens:Number($('advisor-max-output').value)},
-        question:$('advisor-question').value.trim(),repo_files:advisorLines('advisor-repo-files'),
-        local_files:advisorLines('advisor-local-files'),consent_board:$('advisor-consent-board').checked,
-        consent_repo:$('advisor-consent-repo').checked,consent_local:$('advisor-consent-local').checked});
-      if (revision !== advisor.revision) return;
-      const preview = value.preview;
-      if (value.state !== 'prepared' || !preview || typeof preview.id !== 'string'
-          || typeof preview.sha256 !== 'string' || !preview.config || !preview.context) throw new Error('advisor preview');
-      advisor.preview = preview;
-      $('advisor-preview').value = JSON.stringify({question:preview.question,context:preview.context}, null, 2);
-      $('advisor-preview-meta').textContent = t('page.advisor_preview_meta', {
-        model:preview.config.model,endpoint:preview.config.endpoint,bytes:preview.bytes,
-        at:stamp(preview.created_at),expires:stamp(preview.expires_at),hash:preview.sha256});
-      $('advisor-share-label').textContent = t('page.advisor_consent_send', {
-        protocol:preview.config.protocol,model:preview.config.model,endpoint:preview.config.endpoint});
-      $('advisor-preview-section').hidden = false;
-      $('advisor-status').textContent = t('page.advisor_prepared');
-    } catch (error) {
-      if (revision === advisor.revision) $('advisor-status').textContent = t('page.advisor_request_failed');
-    } finally {
-      advisor.busy = false;
-      advisorControls();
-    }
-  }
-  function advisorSchedule(delay) {
-    clearTimeout(advisor.timer);
-    if (!advisor.reloadRequired && !document.hidden && (advisor.running || advisor.uncertain || advisor.automatic?.enabled)) advisor.timer = setTimeout(advisorPoll, delay);
-  }
-  function advisorResult(value) {
-    if (!value.result || typeof value.result.text !== 'string') return;
-    $('advisor-result').textContent = value.result.text;
-    const usage = value.result.usage || {};
-    const tokens = number => Number.isInteger(number) && number >= 0 ? String(number) : t('page.advisor_unknown');
-    $('advisor-result-meta').textContent = t('page.advisor_usage', {input:tokens(usage.input_tokens),
-      output:tokens(usage.output_tokens),seconds:Number.isFinite(value.result.elapsed_seconds) ? value.result.elapsed_seconds : '—'});
-    $('advisor-result-section').hidden = false;
-  }
-  function advisorStatus(value) {
-    if (!['disabled','prepared','running','complete','error','revoked','expired'].includes(value.state)) throw new Error('advisor status');
-    advisor.uncertain = false;
-    advisor.running = value.state === 'running';
-    advisor.automatic = value.automatic && typeof value.automatic === 'object' ? value.automatic : null;
-    if (['disabled','revoked','expired'].includes(value.state)) {
-      advisor.preview = null;
-      $('advisor-consent-send').checked = false;
-      $('advisor-consent-automatic').checked = false;
-      $('advisor-key').value = '';
-      $('advisor-preview-section').hidden = true;
-      $('advisor-result').textContent = '';
-      $('advisor-result-section').hidden = true;
-    }
-    const authorization = value.authorization;
-    if (advisor.automatic?.enabled && authorization && authorization.config
-        && typeof authorization.question === 'string' && Array.isArray(authorization.repo_files)
-        && Array.isArray(authorization.local_files)) {
-      const config = authorization.config;
-      $('advisor-protocol').value = config.protocol;
-      $('advisor-endpoint').value = config.endpoint;
-      $('advisor-model').value = config.model;
-      $('advisor-max-output').value = String(config.max_output_tokens);
-      $('advisor-question').value = authorization.question;
-      $('advisor-repo-files').value = authorization.repo_files.join('\n');
-      $('advisor-local-files').value = authorization.local_files.join('\n');
-      $('advisor-interval').value = String(advisor.automatic.interval_minutes);
-      $('advisor-max-calls').value = String(advisor.automatic.max_calls);
-      $('advisor-consent-board').checked = true;
-      $('advisor-consent-repo').checked = authorization.repo_files.length > 0;
-      $('advisor-consent-local').checked = authorization.local_files.length > 0;
-      $('advisor-authorized-scope').textContent = t('page.advisor_authorized_scope', {
-        protocol:config.protocol,endpoint:config.endpoint,model:config.model,
-        repo:authorization.repo_files.join(', ') || '—',local:authorization.local_files.join(', ') || '—'});
-      $('advisor-authorized-scope').hidden = false;
-    } else if (!advisor.automatic?.enabled) {
-      $('advisor-authorized-scope').textContent = '';
-      $('advisor-authorized-scope').hidden = true;
-    }
-    advisorResult(value);
-    $('advisor-status').textContent = advisor.automatic?.enabled
-      ? t('page.advisor_automatic_status', {used:advisor.automatic.used,max:advisor.automatic.max_calls,
-        remaining:advisor.automatic.remaining,next:stamp(advisor.automatic.next_check_at),expires:stamp(advisor.automatic.expires_at)})
-        + (value.state === 'error' && value.error !== 'automatic_context_unavailable' ? ' ' + t('page.advisor_state_error') : '')
-      : value.error === 'automatic_context_unavailable' ? '' : t('page.advisor_state_' + value.state);
-    if (advisor.automatic && !advisor.automatic.enabled && Number.isInteger(advisor.automatic.max_calls)) {
-      $('advisor-status').textContent += ' ' + t('page.advisor_automatic_finished', {
-        used:advisor.automatic.used,max:advisor.automatic.max_calls});
-    }
-    if (value.error === 'automatic_context_unavailable') {
-      $('advisor-status').textContent += ' ' + t('page.advisor_automatic_context_unavailable');
-    }
-    advisorControls();
-  }
-  async function advisorPoll(force = false) {
-    if (advisor.reloadRequired || advisor.checking || document.hidden || (!force && !advisor.running && !advisor.uncertain && !advisor.automatic?.enabled)) return;
-    const revision = advisor.revision;
-    if (force) advisor.uncertain = true;
-    advisor.checking = true;
-    advisorControls();
-    try {
-      const value = await advisorRequest('advisor/status');
-      if (revision !== advisor.revision) return;
-      advisorStatus(value);
-      advisorSchedule(advisor.running ? 2000 : 30000);
-    } catch (error) {
-      if (revision !== advisor.revision) return;
-      $('advisor-status').textContent = t('page.advisor_status_failed');
-      advisorSchedule(30000);
-    } finally { advisor.checking = false; advisorControls(); }
-  }
-  async function advisorSend(event, automatic = false) {
-    if (!event.isTrusted || $(automatic ? 'advisor-automate' : 'advisor-send').disabled || !advisor.preview) return;
-    const revision = ++advisor.revision, preview = advisor.preview;
-    advisor.preview = null;  // the server consumes a preview once; uncertain delivery must not make it reusable
-    advisor.busy = true;
-    advisorControls();
-    const request = {preview_id:preview.id,sha256:preview.sha256,consent_send:$('advisor-consent-send').checked,
-      api_key:$('advisor-key').value};
-    if (automatic) Object.assign(request, {consent_automatic:$('advisor-consent-automatic').checked,
-      interval_minutes:Number($('advisor-interval').value),max_calls:Number($('advisor-max-calls').value)});
-    $('advisor-key').value = '';
-    $('advisor-consent-send').checked = false;
-    $('advisor-consent-automatic').checked = false;
-    $('advisor-status').textContent = t('page.advisor_state_running');
-    try {
-      const value = await advisorRequest(automatic ? 'advisor/automate' : 'advisor/analyze', request);
-      request.api_key = '';
-      if (revision !== advisor.revision) return;
-      advisor.job = typeof value.job_id === 'string' ? value.job_id : '';
-      advisorStatus({...value,automatic:value.automatic || (automatic ? {enabled:true} : null)});
-      advisorSchedule(2000);
-    } catch (error) {
-      request.api_key = '';
-      if (revision === advisor.revision) {
-        advisor.uncertain = true;
-        $('advisor-status').textContent = t('page.advisor_send_uncertain');
-        advisorSchedule(0);  // reconcile only status; never repeat a potentially accepted provider request
-      }
-    } finally {
-      advisor.busy = false;
-      advisorControls();
-    }
-  }
-  async function advisorRevoke(event) {
-    if (!event.isTrusted || advisor.reloadRequired || advisor.revoking) return;
-    clearTimeout(advisor.timer);
-    advisor.running = false;
-    advisor.uncertain = false;
-    advisor.automatic = null;
-    advisor.revoking = true;
-    advisorInvalidate();
-    $('advisor-authorized-scope').textContent = '';
-    $('advisor-authorized-scope').hidden = true;
-    const revision = advisor.revision;
-    try {
-      await advisorRequest('advisor/revoke', {});
-      if (revision === advisor.revision) $('advisor-status').textContent = t('page.advisor_state_revoked');
-    } catch (error) {
-      if (revision === advisor.revision) {
-        $('advisor-status').textContent = t('page.advisor_revoke_failed');
-        advisor.uncertain = true;  // do not present a failed revocation as confirmation that the backend stopped
-        advisorSchedule(30000);
-      }
-    } finally {
-      advisor.revoking = false;
-      advisorControls();
-    }
-  }
-  function advisorInit() {
-    const token = advisorToken();
-    if (!polling || !token || token.includes('__FLIGHTBOARD_')) return;
-    $('advisor').hidden = false;
-    const endpoint = protocol => ({openai:'https://api.openai.com/v1',anthropic:'https://api.anthropic.com/v1',
-      gemini:'https://generativelanguage.googleapis.com/v1beta'})[protocol] || '';
-    $('advisor-endpoint').value = endpoint($('advisor-protocol').value);
-    $('advisor-question').value = t('page.advisor_default_question');
-    $('advisor-status').textContent = t('page.advisor_state_unchecked');
-    $('advisor').addEventListener('toggle', () => $('advisor').open ? advisorPoll(true) : undefined);
-    for (const id of advisorFields) $(id).addEventListener('input', advisorInvalidate);
-    $('advisor-protocol').addEventListener('change', () => {
-      $('advisor-endpoint').value = endpoint($('advisor-protocol').value);
-      advisorInvalidate();
-    });
-    for (const id of ['advisor-consent-send','advisor-consent-automatic','advisor-interval','advisor-max-calls']) {
-      $(id).addEventListener('input', advisorControls);
-    }
-    $('advisor-prepare').addEventListener('click', advisorPrepare);
-    $('advisor-send').addEventListener('click', event => advisorSend(event));
-    $('advisor-automate').addEventListener('click', event => advisorSend(event, true));
-    $('advisor-revoke').addEventListener('click', advisorRevoke);
-    document.addEventListener('visibilitychange', () => { clearTimeout(advisor.timer); if (!document.hidden) advisorSchedule(0); });
-    window.addEventListener('pagehide', () => { $('advisor-key').value = ''; clearTimeout(advisor.timer); });
-    advisorControls();
-  }
-  // ---- end optional advisor
+
 
   // ---- live: read again; an error or timeout cannot leave old session verdicts looking current
   function requestTimeout() {
@@ -1310,8 +1045,8 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
         lost = false;
         failed = next.main.state === 'ok' || next.main.state === 'loading' ? '' : next.main.reason_text;
         data = next;  // failed readings replace old verdicts too: they are not evidence of a session's current state
-        const key = keyOf(text);
-        if (key !== lastKey || recovered) { lastKey = key; render(); } else renderLive();
+        const key = keyOf(text, next);
+        if (key !== lastKey || recovered) { lastKey = key; render(); } else { renderBriefing(); renderLive(); }
       } catch (error) {
         if (version !== refreshVersion) return;
         lost = true;
@@ -1331,8 +1066,9 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
         put($('events'), h('li', {className: 'empty'}, t('page.nothing_readable')));
         put($('pointer'));
         $('progress').hidden = true;
-        data = {...data, publication:null, overview:null};
+        data = {...data, publication:null, overview:null, agent_brief:null};
         renderOverview();
+        renderBriefing();
         renderPublication();
         if (openedTask !== null) {
           put($('task-body'), h('h3', {id: 'task-title'}, openedTask), h('p', {className: 'warn-text'}, t('page.task_unavailable')));
@@ -1359,9 +1095,9 @@ footer{margin-top:30px;font-size:12px;color:var(--muted);line-height:1.6}
     for (const node of document.querySelectorAll('[data-ago]')) node.textContent = t(node.getAttribute('data-message') || 'page.ago', {span: span(node.getAttribute('data-ago')) || '—'});
     renderLive();
   }, 1000);
-  advisorInit();
+  $('agent-brief-copy').addEventListener('click', copyBriefing);
   render();
-  lastKey = keyOf(JSON.stringify(data));
+  lastKey = keyOf('', data);
   startPolling();
 })();
 </script>

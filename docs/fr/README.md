@@ -31,16 +31,12 @@ La file ne déclenche ni publication ni activation du produit. Voir [le contrat 
 La synthèse ajoute un bandeau d'attention, l'avancement déclaré dans `main` et dans les sessions, les limites des
 preuves disponibles, ainsi que des actions préparées à lire et copier pour un agent. Elle réutilise la lecture
 existante, sans commande Git ni requête supplémentaire. Voir [le contrat de la synthèse](../progress-and-prepared-actions.md).
-Le [conseiller LLM optionnel](../llm-advisor.md) permet de choisir un fournisseur et un modèle, puis de rapprocher
-les observations de Flightboard avec du code et des preuves locales choisis explicitement. Il faut autoriser la
-lecture, consulter l'aperçu exact, puis consentir séparément à l'envoi. La clé reste en mémoire. Le suivi automatique
-ajoute un consentement pour les versions futures des mêmes fichiers, un intervalle de 15 à 1440 minutes et un plafond
-total de 1 à 20 appels, valable au maximum 24 heures. Il peut continuer même si l'onglet est fermé; la révocation
-arrête les appels futurs. Le collecteur, ses lectures parallèles et ses caches restent indépendants. Cette option
-reste désactivée par défaut et n'est pas nécessaire au fonctionnement du tableau.
-Le panneau est présent sur les pages en direct : « optionnel » signifie que ses lectures de fichiers et ses appels
-au fournisseur restent inactifs sans les consentements requis. Aucune clé n'est enregistrée et il n'y a pas
-d'interrupteur d'activation distinct dans la ligne de commande.
+Le **bilan pour les agents** rassemble les alertes observées, les preuves à vérifier et les actions proposées, avec
+leurs sources et les identifiants complets de commits disponibles. Tu peux le copier depuis le tableau ou demander
+à ton agent de lire directement `/briefing.json` sur le même serveur. Il réutilise le même instantané, sans nouvelle
+lecture ni appel à un modèle. Aucune clé API ni configuration de fournisseur n'est nécessaire.
+Une preuve non déclarée, une référence non vérifiée et une capacité non évaluée restent distinctes; le bilan
+n'approuve aucune action. Voir [le contrat du bilan](../agent-briefing.md).
 
 Les graphiques montrent les tâches faites dans le temps, les jalons et les mouvements quotidiens : nouveaux lots,
 passages à « En cours », mises en revue et tâches terminées, avec une vue en tableau. Les mouvements couvrent tous

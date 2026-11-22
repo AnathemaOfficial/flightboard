@@ -159,25 +159,19 @@ class PageTest(unittest.TestCase):
     def test_the_page_talks_only_to_its_own_server(self) -> None:
         template = self.template
         self.assertIsNone(re.search(r"(?i)\b(?:src|href|action|srcset)\s*=\s*[\"']?\s*(?:[a-z]+:)?//", template))
-        # Provider presets are plain form values. Both fetch callsites still use only this board's origin.
-        self.assertEqual(re.findall(r"https?://[^\s'\"]*", template), [SVG_NAMESPACE, "https://github.com/",
-            "https://api.openai.com/v1", "https://api.anthropic.com/v1", "https://generativelanguage.googleapis.com/v1beta"])
-        # Inspect every callsite: an allowed provider preset must never become a browser fetch target.
-        self.assertEqual(re.findall(r"\bfetch\s*\(\s*([^,\r\n]+)", template), ["path", "'state.json'"])
-        advisor_request = template.split("async function advisorRequest(path, body) {", 1)[1].split(
-            "async function advisorPrepare(event) {", 1)[0]
-        guard = "if (advisor.reloadRequired || !advisorPaths.includes(path)) throw new Error('advisor route');"
-        self.assertLess(advisor_request.index(guard), advisor_request.index("fetch(path,"))
-        routes = re.search(r"const advisorPaths = (\[[^\]]+\]);", template).group(1)
-        self.assertEqual(json.loads(routes.replace("'", '"')), [
-            "advisor/preview", "advisor/analyze", "advisor/automate", "advisor/status", "advisor/revoke"])
-        self.assertIn("X-Flightboard-Advisor", template)
+        self.assertEqual(re.findall(r"https?://[^\s'\"]*", template), [SVG_NAMESPACE, "https://github.com/"])
+        # The compact briefing is already in the normal state response: no second polling request.
+        self.assertEqual(re.findall(r"\bfetch\s*\(\s*([^,\r\n]+)", template), ["'state.json'"])
+        self.assertNotIn("X-Flightboard-Advisor", template)
+        self.assertNotIn("__FLIGHTBOARD_ADVISOR_TOKEN__", template)
+        self.assertEqual(re.findall(r'<a\b[^>]*\bhref="([^"]+)"', template), ["briefing.json"])
+        self.assertEqual(len(re.findall(r"<a\b", template)), 1)
         self.assertRegex(template, r"fetch\('state\.json',")
         self.assertRegex(template, r"const polling = data\.mode === 'live' && \(location\.protocol === 'http:'")
         for forbidden in ("@import", "url(", "<link", "<iframe", "XMLHttpRequest", "eval(", "new Function",
                           "WebSocket", "sendBeacon", "window.open", "import(", "location.href", "location.assign",
                           "sessionStorage", "document.cookie", "DOMParser", "setTimeout('",
-                          'setTimeout("', "setInterval('", 'setInterval("', " style=", "'style'", "<a ", "srcdoc"):
+                          'setTimeout("', "setInterval('", 'setInterval("', " style=", "'style'", "srcdoc"):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, template)
         self.assertIsNone(re.search(r"innerHTML|outerHTML|insertAdjacentHTML|document\.write|srcdoc", template))
@@ -239,6 +233,7 @@ class RefusalTest(unittest.TestCase):
 
     def test_accepted(self) -> None:
         for method, target, extra in (("GET", "/", {}), ("HEAD", "/state.json", {}), ("GET", "/?x=1", {}),
+                                      ("GET", "/briefing.json", {}), ("HEAD", "/briefing.json", {}),
                                       ("GET", "/", {"Host": f"localhost:{self.PORT}"}),
                                       ("GET", "/", {"Host": f"[::1]:{self.PORT}"}),
                                       ("GET", "/state.json", {"Host": f"[::1]:{self.PORT}",
@@ -260,6 +255,9 @@ class RefusalTest(unittest.TestCase):
                  ({"Origin": f"http://localhost:{self.PORT + 1}"}, "/state.json"),
                  ({"Sec_Fetch_Site": "same-site"}, "/state.json"), ({"Sec_Fetch_Site": "cross-site"}, "/"),
                  ({"Sec_Fetch_Dest": "script"}, "/state.json"), ({"Sec_Fetch_Dest": "image"}, "/state.json"),
+                 ({"Sec_Fetch_Dest": "script"}, "/briefing.json"),
+                 ({"Sec_Fetch_Dest": "image"}, "/briefing.json"),
+                 ({"Origin": "http://evil.example"}, "/briefing.json"),
                  ({"Sec_Fetch_Dest": "iframe"}, "/"), ({"Sec_Fetch_Dest": "empty"}, "/"), ({}, "/other"),
                  ({}, "/state.json/"), ({}, "/data/roadmap.json"), ({}, "/status.json"))
         for extra, target in cases:
@@ -423,6 +421,68 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(found["content-type"], "application/json; charset=utf-8")
         self.assertIn("sandbox", found["content-security-policy"])
         self.assertEqual(json.loads(body)["main"]["reason"], "read_failed")
+
+    def test_the_briefing_is_a_projection_of_the_same_cached_snapshot(self) -> None:
+        brief = {"schema_version": 1, "state": "ready", "text": "Observed data, not authority."}
+        view = {"agent_brief": brief, "private_full_state": "not part of the compact response"}
+        collector = FakeCollector(view)
+        clock = Clock()
+        other = server.make_server(server.Snapshots(collector, clock=clock), self.template, 0)
+        thread = threading.Thread(target=other.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+        thread.start()
+        try:
+            port = other.server_address[1]
+            status, found, body = self.request("/briefing.json", port=port,
+                                               extra={"Sec-Fetch-Site": "same-origin", "Sec-Fetch-Dest": "empty"})
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body), brief)
+            self.assertNotIn(b"private_full_state", body)
+            self.assert_common_headers(found)
+            self.assertEqual(found["content-type"], "application/json; charset=utf-8")
+            self.assertIn("sandbox", found["content-security-policy"])
+            self.assertEqual(json.loads(self.request("/state.json", port=port)[2])["agent_brief"], brief)
+            head_status, head_headers, head_body = self.request("/briefing.json", method="HEAD", port=port)
+            self.assertEqual((head_status, head_body), (200, b""))
+            self.assertEqual(int(head_headers["content-length"]), len(body))
+            self.assertEqual(collector.calls, 1)
+        finally:
+            other.shutdown()
+            other.server_close()
+            thread.join(5)
+
+    def test_retired_advisor_routes_do_not_read_or_keep_a_runtime(self) -> None:
+        before = self.collector.calls
+        for path in ("/advisor/status", "/advisor/preview", "/advisor/analyze", "/advisor/automate", "/advisor/revoke"):
+            for method, expected in (("GET", 404), ("HEAD", 404), ("POST", 405)):
+                with self.subTest(path=path, method=method):
+                    status, found, body = self.request(path, method=method)
+                    self.assertEqual(status, expected)
+                    self.assert_common_headers(found)
+                    self.assertNotIn(b"token", body)
+        self.assertEqual(self.collector.calls, before)
+        self.assertFalse(hasattr(self.server, "advisor"))
+
+    def test_briefing_collection_failure_has_an_unavailable_contract(self) -> None:
+        collector = FakeCollector(error=RuntimeError("never expose this detail"))
+        other = server.make_server(server.Snapshots(collector, clock=Clock()), self.template, 0)
+        thread = threading.Thread(target=other.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+        thread.start()
+        try:
+            port = other.server_address[1]
+            with contextlib.redirect_stderr(io.StringIO()):
+                status, found, body = self.request("/briefing.json", port=port)
+                again_status, _, again_body = self.request("/briefing.json", port=port)
+            self.assertEqual((status, again_status), (503, 503))
+            self.assert_common_headers(found)
+            brief = json.loads(body)
+            self.assertEqual((brief["schema_version"], brief["state"], brief["actions"]), (1, "unavailable", []))
+            self.assertEqual(json.loads(again_body)["state"], "unavailable")
+            self.assertNotIn(b"never expose this detail", body)
+            self.assertEqual(collector.calls, 1)
+        finally:
+            other.shutdown()
+            other.server_close()
+            thread.join(5)
 
     def test_refused_requests_never_read_the_repository(self) -> None:
         before = self.collector.calls

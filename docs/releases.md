@@ -35,7 +35,8 @@ The checksums detect accidental
 corruption; they are not an independent signature of the release publisher.
 
 Before replacing an existing skill, retain its current directory as a backup.
-Preserve any separate startup configuration. Installing an archive does not update
+Install its replacement into a fresh directory so retired modules and contracts do
+not remain from an earlier version. Preserve any separate startup configuration. Installing an archive does not update
 an already-running process or the Windows startup helper's copied engine. Use the
 existing startup update procedure deliberately and restart only the dashboards
 you intend to update. Plugin hosts manage their own plugin cache; use their update

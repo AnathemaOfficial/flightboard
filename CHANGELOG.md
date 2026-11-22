@@ -4,6 +4,14 @@ SPDX-FileCopyrightText: 2026 Technologies CoreXalt Inc.
 -->
 # Changelog
 
+## Unreleased
+
+- Add a deterministic agent briefing with source-linked alerts, evidence checks
+  and proposed next actions, copied from the page or read through `/briefing.json`.
+- Reuse the existing snapshot, cache and refresh loop for the briefing.
+- Remove the optional LLM advisor, provider configuration and automatic LLM
+  monitoring; agents can consume the briefing through their existing tools.
+
 ## 0.2.0 base
 
 - Add the Git/GitHub publication overview, unique commit counts, grouped branch
