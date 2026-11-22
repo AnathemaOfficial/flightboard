@@ -51,5 +51,6 @@ facts; it does not grant publication, merge or product-activation authority.
 There is no execution endpoint and no automatic status mutation. Existing
 background polling and refresh on returning to the tab remain in place.
 
-The proposed optional [Flightboard Assistant](optional-assistant.md) is a
-separate delivery. These deterministic features work without an API key.
+The [agent briefing](agent-briefing.md) consolidates these observations, evidence
+checks and prepared actions into one copyable report and a compact JSON export.
+It uses the same snapshot and needs no API key.

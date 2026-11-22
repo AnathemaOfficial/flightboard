@@ -15,6 +15,7 @@ from collections import Counter
 from datetime import datetime
 
 from . import messages as M
+from . import briefing as BRIEFING
 from . import overlay as OVERLAY
 from . import overview as OVERVIEW
 from .ledgers import SATISFIED, STATUSES, Ledger
@@ -636,7 +637,7 @@ def build_view(now: datetime, mode: str, context: dict, sessions: list[dict], ve
     head = context["head"]
     owner_tasks = sum(1 for task in main_tasks.values() if task["owner"] == "owner"
                       and task["status"] in ("ready", "in_progress"))
-    return {
+    model = {
         "generated_at": now.isoformat(timespec="seconds"), "mode": mode, "refresh_seconds": REFRESH_SECONDS,
         "tool": context["tool"], "repository": context.get("repository", ""),
         "publication": _publication_info(context.get("publication"), lang),
@@ -667,13 +668,15 @@ def build_view(now: datetime, mode: str, context: dict, sessions: list[dict], ve
         "settings": settings,
         "i18n": M.page(lang),
     }
+    model["agent_brief"] = BRIEFING.build(model, context)
+    return model
 
 
 def error_view(now: datetime, mode: str, reason: str, detail: str = "", lang: str = "en", git_ok: bool = False,
                tool: dict | None = None, repository: str = "") -> dict:
     """A view that says why nothing could be read; the page draws it like any other."""
     text = clean(M.error(lang, reason, detail), 200)
-    return {
+    model = {
         "generated_at": now.isoformat(timespec="seconds"), "mode": mode, "refresh_seconds": REFRESH_SECONDS,
         "tool": tool or {"name": "flightboard", "version": ""}, "repository": repository,
         "publication": None,
@@ -696,6 +699,8 @@ def error_view(now: datetime, mode: str, reason: str, detail: str = "", lang: st
         "settings": {},
         "i18n": M.page(lang),
     }
+    model["agent_brief"] = BRIEFING.build(model, {"lang": lang})
+    return model
 
 
 def loading_view(now: datetime, lang: str = "en", tool: dict | None = None, repository: str = "",
@@ -708,4 +713,5 @@ def loading_view(now: datetime, lang: str = "en", tool: dict | None = None, repo
     view["sources"] = [{"key": "git", "label": M.say(lang, "source.git"), "state": "loading",
                         "detail": M.say(lang, "summary.loading")}]
     view["settings"] = settings or {}
+    view["agent_brief"] = BRIEFING.build(view, {"lang": lang})
     return view

@@ -230,7 +230,7 @@ def build(repo: Path, commit: str, version: str, output: Path) -> dict:
     skill = {"flightboard/" + name[len(prefix):]: value for name, value in files.items() if name.startswith(prefix)}
     skill.update({"flightboard/" + name: value for name, value in files.items()
                   if name in ("LICENSE", "NOTICE") or name.startswith("LICENSES/")})
-    for contract in ("docs/git-github-publication.md", "docs/llm-advisor.md", "docs/optional-assistant.md"):
+    for contract in ("docs/git-github-publication.md", "docs/agent-briefing.md"):
         if contract in files:
             skill["flightboard/" + contract] = files[contract]
     payload = {f"flightboard-skill-{version}.zip": _zip(skill), f"flightboard-plugin-{version}.zip": _zip(plugin)}

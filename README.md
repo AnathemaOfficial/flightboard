@@ -28,8 +28,8 @@ go. flightboard is one local page, and a few lines of text for an agent, that an
   independent alerts. Optional `--github` verifies branch heads and open PR metadata in a separate background cache.
 - **At a glance**: a summary banner, main versus local declared progress, explicit evidence limits, and prepared
   agent briefs you can inspect and copy. These features reuse the existing snapshot without additional reads.
-- **Optional LLM advisor**: choose a provider and model, preview board data and selected code/evidence files, then
-  explicitly consent to sharing. Analyze once or authorize a capped 24-hour monitor; the key stays in memory.
+- **Agent briefing**: a copyable report of observed alerts, evidence checks and proposed next actions, with source
+  references and exact available commit IDs. Agents can read the compact `/briefing.json` export directly.
 - **The roadmap, live**: the task statuses each session declares in its own copy of your task file, overlaid on
   `main` before anything is merged, with conflicts between sessions shown, never resolved for you.
 - **Progress**: tasks done over time, milestones, and daily new tasks, starts, reviews and completions, each with a
@@ -51,10 +51,8 @@ bounds remain in force.
 It works without any task file too: a repository without one gets the whole sessions view from git alone.
 
 See [overview, progress and prepared actions](docs/progress-and-prepared-actions.md).
-See the [optional LLM advisor](docs/llm-advisor.md) for provider setup, separate reading/sharing consents, file
-selection, capped monitoring and limits. Ordinary dashboard operation does not require it.
-The advisor panel is present on live pages; "optional" means that its file access and provider calls remain
-inactive until the required consents are given. No key is saved, and there is no separate CLI enable/disable flag.
+See the [agent briefing contract](docs/agent-briefing.md) for source references, evidence limits and agent handoff.
+The briefing reuses the current snapshot. It needs no API key or provider configuration and sends no model requests.
 
 flightboard uses guarded Git and file reads, writes nothing in the repository or authorized worktree roots, and
 serves its page to this computer only. Its checks and remaining risks are described below. It needs
@@ -64,7 +62,7 @@ package to install, no network or account by default. Optional GitHub observatio
 Claude Code, Codex and tools running Qwen, MiMo, MiniMax, Kimi or other models can use the same Git workflow. The
 board observes their files, commits and declared task ownership without contacting their providers or reading
 conversations. It does not launch itself when a desktop chat starts. The tool running a model must provide the Git
-worktree/branch workflow. The optional advisor separately contacts only the provider approved by the owner.
+worktree/branch workflow. The agent working with you can use the briefing to plan its own authorized verification.
 
 > flightboard is an independent project; product and model names describe Git workflows it can observe.
 
@@ -541,9 +539,9 @@ the board reads nothing and never looks at what a `.git` file names; it cannot t
 no other program can answer there in its place), and checks every request before any work. It refuses a `Host` other
 than `127.0.0.1:<port>`, `localhost:<port>` or `[::1]:<port>` (DNS rebinding), an `Origin` from elsewhere (`null` included), a
 same-site or cross-site `Sec-Fetch-Site`, the state loaded as a script, an image or a frame (`Sec-Fetch-Dest`), any
-method but `GET` and `HEAD`, and any path but `/` and `/state.json` for ordinary reads. Optional `/advisor/*`
-endpoints additionally require a page token; their JSON POST actions require an exact same-origin Origin and a
-bounded body. They remain disabled until separate reading and sharing consents. A refused request never reads the repository.
+method but `GET` and `HEAD`, and any path but `/`, `/state.json` and `/briefing.json`.
+The briefing is a projection of the same cached observation; it does not create a second collector.
+A refused request never reads the repository.
 The HTML response does not start or wait for a Git reading. It uses a fresh completed view when available, otherwise
 a neutral loading view; the browser requests `/state.json` immediately for that initial loading view. A static
 `--snapshot` is still produced only after its full reading completes and does not poll.
@@ -568,9 +566,9 @@ its SHA-256, and only its own requests (`connect-src 'self'`); Trusted Types are
 `nosniff`, `no-store`, `no-referrer` and same-origin CORP and COOP are sent. The state carries its own sandboxing
 policy and refuses any value JSON cannot hold. Every text read in the repository (titles, commit messages, branch
 and folder names) is cleaned of control, format and bidi characters and only ever becomes a text node, never markup.
-The ordinary board state holds no absolute path of your computer. The optional advisor displays only the exact
-local paths the owner enters; its requests also go only to this local server. Provider transmission is server-side,
-requires consent and never weakens the page CSP. See [advisor boundaries](docs/llm-advisor.md#boundaries-and-performance).
+The briefing uses the board's repository identity without adding an absolute checkout path. Repository text and prepared
+actions remain untrusted observations. The briefing does not open evidence artifacts, execute prompts or contact a model
+provider. See [briefing boundaries](docs/agent-briefing.md#boundaries-and-performance).
 
 **Disk.** Dashboard modes write only the snapshot: in your cache folder by default (made only outside the repository, and
 never through a link planted in its place), or the `--output` file, which must be an `.html` file in an existing
