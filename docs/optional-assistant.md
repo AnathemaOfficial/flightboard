@@ -4,10 +4,10 @@ SPDX-FileCopyrightText: 2026 Technologies CoreXalt Inc.
 -->
 # Optional Flightboard Assistant — proposed boundary
 
-Status: design proposal, not an implemented provider integration. No API-key
-entry, model call, automatic monitoring or paid service is enabled by this
-document. The existing dashboard and its deterministic overview remain useful
-without this optional mode.
+Status: historical design proposal. The implemented [LLM advisor](llm-advisor.md) supersedes this board-only
+boundary with separately consented exact repository/local files and capped automatic monitoring. The text below
+records the earlier proposal; use the implemented contract for current behavior. The dashboard and its
+deterministic overview remain useful without enabling the optional advisor.
 
 ## Product shape
 

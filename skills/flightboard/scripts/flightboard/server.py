@@ -5,14 +5,18 @@ browser only.
 
 It listens on the loopback only (127.0.0.1, and [::1] at the same port so that nobody else answers for localhost), and
 checks every request before any work: Host (DNS rebinding), Origin, Sec-Fetch-Site and Sec-Fetch-Dest (other sites
-and other local pages, other ports included), method (GET and HEAD) and path (/ and /state.json). A refused request
+and other local pages, other ports included), method and path. Ordinary reads use GET/HEAD on / and /state.json;
+optional advisor actions additionally require a page token and JSON POST with an exact Origin. A refused request
 never reads the repository. The repository is read once every MIN_INTERVAL seconds at most, however many pages ask.
 Standard library only, safe under -I.
 """
 from __future__ import annotations
 
 import errno
+import copy
+import hmac
 import http.server
+import json
 import socket
 import sys
 import threading
@@ -22,6 +26,7 @@ from datetime import datetime
 from urllib.parse import urlsplit
 
 from . import TOOL
+from . import advisor as ADVISOR
 from . import page as PAGE
 from . import view as VIEW
 
@@ -30,6 +35,9 @@ MIN_INTERVAL = 5.0  # seconds between two readings of the repository, whatever t
 MAX_CONNECTIONS = 32  # concurrent accepted connections; past this one gets an immediate 503, never a thread
 REQUEST_TIMEOUT = 10
 PATHS = {"/": ("document",), "/state.json": ("empty", "document")}  # each path, with the Sec-Fetch-Dest it accepts
+ADVISOR_PATHS = {"/advisor/status": "GET", "/advisor/preview": "POST", "/advisor/analyze": "POST",
+                 "/advisor/automate": "POST", "/advisor/revoke": "POST"}
+MAX_ADVISOR_BODY = 196_608
 COMMON_HEADERS = (("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff"),
                   ("Referrer-Policy", "no-referrer"), ("X-Frame-Options", "DENY"),
                   ("Cross-Origin-Resource-Policy", "same-origin"), ("Cross-Origin-Opener-Policy", "same-origin"))
@@ -88,6 +96,37 @@ class Snapshots:
         return VIEW.loading_view(self._now(), lang, TOOL, getattr(self._collector, "name", ""),
                                  settings.public() if settings else {})
 
+    def peek(self) -> dict | None:
+        """Copy a completed observation without starting or waiting for Git. Used only on explicit advisor actions."""
+        if not self._lock.acquire(blocking=False):
+            return None
+        try:
+            value = self._view if self._error is None else None
+        finally:
+            self._lock.release()
+        # Views are replaced, never mutated after publication. Copy outside the collector lock.
+        return copy.deepcopy(value) if value is not None else None
+
+    def refresh_if_idle(self) -> dict | None:
+        """An explicitly authorized auto check, at most once per advisor interval. Reuse the normal scan/cache.
+
+        Taking the scan lock is nonblocking: a concurrent browser scan wins and this check is skipped. The
+        collector is never used concurrently, its parallel-reading checks and shared deadline remain intact.
+        """
+        if not self._lock.acquire(blocking=False):
+            return None
+        try:
+            if self._at is None or self._clock() - self._at >= MIN_INTERVAL:
+                try:
+                    self._view, self._error = self._collector.snapshot(self._now(), "live"), None
+                except Exception as exc:
+                    self._error = exc
+                self._at = self._clock()
+            value = self._view if self._error is None else None
+        finally:
+            self._lock.release()
+        return copy.deepcopy(value) if value is not None else None
+
 
 def refusal(method: str, target: str, headers, port: int) -> str | None:
     """Why a request is refused (a code), or None; checked before any work. Host alone stops DNS rebinding; Origin,
@@ -103,9 +142,20 @@ def refusal(method: str, target: str, headers, port: int) -> str | None:
     sites = headers.get_all("Sec-Fetch-Site") or []
     if len(sites) > 1 or (sites and sites[0] not in ("same-origin", "none")):
         return "cross_site"
+    path = urlsplit(target).path
+    if path in ADVISOR_PATHS:
+        if method != ADVISOR_PATHS[path]:
+            return "method"
+        if urlsplit(target).query or urlsplit(target).fragment:
+            return "not_found"
+        if (method == "POST" and len(origins) != 1) or (origins and origins[0] != f"http://{hosts[0]}"):
+            return "origin"
+        destinations = headers.get_all("Sec-Fetch-Dest") or []
+        if len(destinations) > 1 or (destinations and destinations[0] != "empty"):
+            return "destination"
+        return None
     if method not in ("GET", "HEAD"):
         return "method"
-    path = urlsplit(target).path
     if path not in PATHS:
         return "not_found"
     destinations = headers.get_all("Sec-Fetch-Dest") or []
@@ -115,7 +165,7 @@ def refusal(method: str, target: str, headers, port: int) -> str | None:
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
-    """GET and HEAD on / and /state.json, for this computer's own browser only."""
+    """Ordinary board reads and separately guarded advisor actions, for this computer's own browser only."""
 
     server_version = "flightboard"
     sys_version = ""
@@ -142,8 +192,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         head = self.command == "HEAD"
         reason = refusal(self.command, self.path, self.headers, self.server.server_address[1])
         if reason is not None:
+            self.close_connection = True
             self._send(STATUS_OF.get(reason, 403), f"refused: {reason}\n".encode("ascii"),
                        "text/plain; charset=utf-8", PAGE.DATA_POLICY, head)
+            return
+        if urlsplit(self.path).path in ADVISOR_PATHS:
+            self._advisor_answer()
             return
         state = urlsplit(self.path).path == "/state.json"
         try:
@@ -159,13 +213,63 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._send(200, body, "application/json; charset=utf-8", PAGE.DATA_POLICY, head)
             return
         try:  # encoded here too: a text UTF-8 cannot hold (a lone surrogate) gets the error page, never no answer
-            html = PAGE.render(view, self.server.template).encode("utf-8") if view is not None else None
+            html = PAGE.render(view, self.server.template, self.server.advisor.token).encode("utf-8") if view is not None else None
         except ValueError:  # a value JSON or UTF-8 cannot hold: never sent
             html = None
         if html is None:
             html = PAGE.render(VIEW.error_view(now_local(), "live", "unavailable", lang=self.server.lang, tool=TOOL),
-                               self.server.template).encode("utf-8")
+                               self.server.template, self.server.advisor.token).encode("utf-8")
         self._send(200, html, "text/html; charset=utf-8", self.server.policy, head)
+
+    def _advisor_answer(self) -> None:
+        """The only state-changing endpoints. A page token + exact Origin bind consent to this local board."""
+        self.close_connection = True
+        tokens = self.headers.get_all("X-Flightboard-Advisor") or []
+        if len(tokens) != 1 or not tokens[0].isascii() or not hmac.compare_digest(tokens[0], self.server.advisor.token):
+            self._send(403, b'{"error":"token_required"}', "application/json; charset=utf-8", PAGE.DATA_POLICY)
+            return
+        path = urlsplit(self.path).path
+        try:
+            if self.headers.get_all("Transfer-Encoding"):
+                raise ADVISOR.AdvisorError("body_invalid")
+            if self.command == "GET":
+                if self.headers.get_all("Content-Length") not in (None, ["0"]):
+                    raise ADVISOR.AdvisorError("body_invalid")
+                value = self.server.advisor.status()
+            else:
+                lengths = self.headers.get_all("Content-Length") or []
+                types = self.headers.get_all("Content-Type") or []
+                if (len(lengths) != 1 or not lengths[0].isascii() or not lengths[0].isdigit()
+                        or len(lengths[0]) > 9 or not 1 <= int(lengths[0]) <= MAX_ADVISOR_BODY
+                        or types != ["application/json"]):
+                    raise ADVISOR.AdvisorError("body_invalid")
+                raw = self.rfile.read(int(lengths[0]))
+                if len(raw) != int(lengths[0]):
+                    raise ADVISOR.AdvisorError("body_invalid")
+
+                def object_pairs(pairs):
+                    result = {}
+                    for key, item in pairs:
+                        if key in result:
+                            raise ValueError("duplicate key")
+                        result[key] = item
+                    return result
+
+                def reject_constant(_):
+                    raise ValueError("invalid number")
+
+                request = json.loads(raw.decode("utf-8"), object_pairs_hook=object_pairs, parse_constant=reject_constant)
+                if not isinstance(request, dict):
+                    raise ADVISOR.AdvisorError("body_invalid")
+                actions = {"/advisor/preview": self.server.advisor.preview, "/advisor/analyze": self.server.advisor.analyze,
+                           "/advisor/automate": self.server.advisor.automate,
+                           "/advisor/revoke": lambda _: self.server.advisor.revoke()}
+                value = actions[path](request)
+            self._send(200, PAGE.state_json(value), "application/json; charset=utf-8", PAGE.DATA_POLICY)
+        except ADVISOR.AdvisorError as exc:
+            self._send(exc.status, PAGE.state_json({"error": exc.code}), "application/json; charset=utf-8", PAGE.DATA_POLICY)
+        except (ValueError, TypeError, RecursionError, OSError, AttributeError):
+            self._send(400, b'{"error":"body_invalid"}', "application/json; charset=utf-8", PAGE.DATA_POLICY)
 
     do_GET = do_HEAD = do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = _answer
 
@@ -177,6 +281,11 @@ class Server(http.server.ThreadingHTTPServer):
     allow_reuse_address = False
     allow_reuse_port = False
     capacity = threading.BoundedSemaphore(MAX_CONNECTIONS)  # an idle flood never spawns threads without end
+
+    def server_close(self) -> None:
+        if getattr(self, "owns_advisor", False):
+            self.advisor.close()
+        super().server_close()
 
     def process_request(self, request, client_address) -> None:
         if not self.capacity.acquire(blocking=False):
@@ -212,21 +321,26 @@ class Server6(Server):
     address_family = socket.AF_INET6
 
 
-def make_server(snapshots: Snapshots, template: str, port: int, host: str = HOST, lang: str = "en") -> Server:
+def make_server(snapshots: Snapshots, template: str, port: int, host: str = HOST, lang: str = "en",
+                advisor: ADVISOR.Advisor | None = None) -> Server:
     server = (Server6 if ":" in host else Server)((host, port), Handler)
     server.snapshots = snapshots
     server.template = template
     server.policy = PAGE.policy(template)
     server.lang = lang
+    server.owns_advisor = advisor is None
+    server.advisor = advisor or ADVISOR.Advisor(getattr(snapshots._collector, "root", None), snapshots.peek,
+                                               refresh_snapshot=snapshots.refresh_if_idle)
     return server
 
 
-def make_servers(snapshots: Snapshots, template: str, port: int, lang: str = "en") -> list[Server]:
+def make_servers(snapshots: Snapshots, template: str, port: int, lang: str = "en",
+                 advisor: ADVISOR.Advisor | None = None) -> list[Server]:
     """The board on 127.0.0.1, and on [::1] at the same port when this computer has IPv6. A port taken on either is
     an error: the page must never be served by someone else at the address the owner opens."""
-    first = make_server(snapshots, template, port, lang=lang)
+    first = make_server(snapshots, template, port, lang=lang, advisor=advisor)
     try:
-        second = make_server(snapshots, template, first.server_address[1], "::1", lang)
+        second = make_server(snapshots, template, first.server_address[1], "::1", lang, first.advisor)
     except OSError as exc:
         if exc.errno in (errno.EADDRINUSE, errno.EACCES) or getattr(exc, "winerror", None) in (10013, 10048):
             first.server_close()

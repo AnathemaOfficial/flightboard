@@ -75,6 +75,7 @@ class ReleasePackageTest(unittest.TestCase):
             "README.md": "Install the skill.\n",
             "docs/install.md": "Installation instructions.\n",
             "docs/git-github-publication.md": "Publication contract.\n",
+            "docs/llm-advisor.md": "Advisor consent contract.\n",
             "LICENSE": "Fixture Apache license\n", "NOTICE": "Fixture attribution\n",
             "LICENSES/Apache-2.0.txt": "Fixture license\n",
             "tests/private-fixture.txt": "Test content is not shipped.\n",
@@ -133,7 +134,7 @@ class ReleasePackageTest(unittest.TestCase):
         with zipfile.ZipFile(output / f"flightboard-skill-{self.version}.zip") as archive:
             for name in ("flightboard/SKILL.md", "flightboard/LICENSE", "flightboard/NOTICE",
                          "flightboard/LICENSES/Apache-2.0.txt", "flightboard/scripts/flightboard.py",
-                         "flightboard/docs/git-github-publication.md"):
+                         "flightboard/docs/git-github-publication.md", "flightboard/docs/llm-advisor.md"):
                 self.assertIn(name, archive.namelist())
         sums = (output / "SHA256SUMS").read_text().splitlines()
         self.assertEqual(len(sums), 3)

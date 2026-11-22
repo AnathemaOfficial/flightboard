@@ -12,6 +12,16 @@ reproduce it, and what it lets an attacker do. You will get an answer, and credi
 
 Only the latest release is supported.
 
+## Optional LLM transmission
+
+The [LLM advisor](docs/llm-advisor.md) is off by default. Reading board observations or explicitly selected local
+files requires local consent; sending the frozen preview to the chosen provider requires a separate consent.
+Automatic monitoring requires an additional scoped authorization, a total attempted-call cap and a 24-hour expiry.
+Keys stay in memory and outside board state/snapshots/logs. Provider calls are bounded and do not run on the
+collector or normal page-refresh path. The model receives data without executable tools or authority to widen
+file access. Obvious secrets are filtered, but the owner must review the preview before sharing. Revocation cannot
+recall an already-started request. Treat model output and every selected source as untrusted text.
+
 ## What flightboard defends against
 
 flightboard reads a git repository where coding agents write: their worktrees, their branches and their copies of the
@@ -124,4 +134,5 @@ Refs and reflog messages are local evidence, not authenticated provider activity
 mislead the board. Local main remains the baseline when its fetched remote is ahead; remote-tracking refs are not
 proof that a merge has been pulled. Stash attribution and retained detached history are bounded, and old commits
 missing from reflogs may not be discoverable. A ready/ended card does not authorize deletion, merging or approval.
-The board reads no conversations and does not connect to Claude, OpenAI or other model providers.
+The board reads no conversations. Ordinary Git observation does not contact model providers; the optional advisor
+contacts only the endpoint explicitly approved through its separate sharing consent.
