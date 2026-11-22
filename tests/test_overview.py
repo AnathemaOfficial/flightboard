@@ -60,6 +60,25 @@ class OverviewTest(unittest.TestCase):
                       if item["kind"] == "inspect_worktree")
         self.assertEqual((action["more"], action["tasks_more"]), (0, 5))
 
+    def test_present_worktree_kept_files_prevent_clear_without_being_called_uncommitted(self):
+        for kind in ("checkout", "worktree"):
+            with self.subTest(kind=kind):
+                session = {"id": "kept-tree", "kind": kind, "ahead": 0, "modified": 0, "untracked": 0,
+                           "conflicted": 0, "kept": 2, "files_read": True, "file_activity_complete": True}
+                result = self.build(sessions=[session])
+                self.assertEqual(result["banner"], {"state": "attention", "code": "local_work"})
+                self.assertFalse(overview._dirty(session))
+                self.assertNotIn("inspect_worktree", [item["kind"] for item in result["actions"]])
+
+    def test_no_kept_files_and_inapplicable_kept_fields_do_not_create_local_work(self):
+        for kind, kept, gone in (("checkout", 0, False), ("worktree", 0, False),
+                                 ("checkout", 2, True), ("worktree", 2, True),
+                                 ("branch", 2, False), ("remote", 2, False)):
+            with self.subTest(kind=kind, kept=kept, gone=gone):
+                session = {"id": "kept-tree", "kind": kind, "ahead": 0, "kept": kept, "gone": gone,
+                           "files_read": True, "file_activity_complete": True}
+                self.assertEqual(self.build(sessions=[session])["banner"]["state"], "clear")
+
     def test_incomplete_reads_take_priority_over_local_work(self):
         for change in ("coverage", "history", "branches", "invalid", "files", "planted"):
             with self.subTest(change=change):

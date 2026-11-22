@@ -140,7 +140,7 @@ def _banner(context: dict, progress: dict, sessions: list[dict], publication: di
     elif progress["conflicts"]:
         state, code = "attention", "status_conflict"
     elif any(_number(publication.get("unpublished", {}).get(key)) for key in ("unique_commits", "candidate_commits")) \
-            or any(_dirty(session) or session.get("stash") in ("stashed", "unmatched")
+            or any(_dirty(session) or _kept_files(session) or session.get("stash") in ("stashed", "unmatched")
                    or _number(session.get("left_behind")) for session in sessions):
         state, code = "attention", "local_work"
     elif publication.get("main", {}).get("state") in ("ahead", "behind", "diverged"):
@@ -164,6 +164,12 @@ def _banner(context: dict, progress: dict, sessions: list[dict], publication: di
 def _dirty(session: dict) -> bool:
     return session.get("kind") in ("checkout", "worktree") and not session.get("gone") \
         and any(_number(session.get(key)) for key in ("modified", "untracked", "conflicted"))
+
+
+def _kept_files(session: dict) -> bool:
+    """Retained files are local work, without being classified as Git-uncommitted changes."""
+    return session.get("kind") in ("checkout", "worktree") and not session.get("gone") \
+        and _number(session.get("kept")) > 0
 
 
 def _task_ids(values: list) -> list[str]:
